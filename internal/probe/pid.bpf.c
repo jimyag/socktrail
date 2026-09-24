@@ -62,7 +62,13 @@ struct sock_common {
     struct in6_addr skc_v6_daddr;
     struct in6_addr skc_v6_rcv_saddr;
 } __attribute__((preserve_access_index));
-struct sock { struct sock_common __sk_common; } __attribute__((preserve_access_index));
+struct sock {
+    struct sock_common __sk_common;
+    __u16 sk_protocol; // A plain field from Linux 5.6.
+} __attribute__((preserve_access_index));
+struct socket { struct sock *sk; } __attribute__((preserve_access_index));
+struct file { void *private_data; } __attribute__((preserve_access_index));
+struct pipe_inode_info;
 struct ns_common { unsigned int inum; } __attribute__((preserve_access_index));
 struct net { struct ns_common ns; } __attribute__((preserve_access_index));
 struct nsproxy { struct net *net_ns; } __attribute__((preserve_access_index));
@@ -259,6 +265,32 @@ int BPF_PROG(tcp_recv_exit_old, struct sock *sk, struct msghdr *msg,
              unsigned long len, int nonblock, int flags, int *addr_len, int ret)
 {
     if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+// Before Linux 6.5, sendfile and splice into a socket bypass tcp_sendmsg:
+// they go through generic_splice_sendpage, then tcp_sendpage once per page.
+// This hook fires once per pipe of pages instead. Later kernels have no such
+// function and splice through tcp_sendmsg; the loader then drops the hook.
+SEC("fexit/generic_splice_sendpage")
+int BPF_PROG(splice_send_exit, struct pipe_inode_info *pipe, struct file *out, long long *ppos,
+             unsigned long len, unsigned int flags, long ret)
+{
+    if (ret <= 0) return 0;
+    struct socket *sock = BPF_CORE_READ(out, private_data);
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    __u16 protocol = sk ? BPF_CORE_READ(sk, sk_protocol) : 0;
+    if (protocol == 6 || protocol == 17) output(sk, protocol, ROLE_SEND, OP_SEND, ret, 0, 0, -1);
+    return 0;
+}
+
+// splice(2) out of a TCP socket, which Go uses to copy between connections,
+// reads through tcp_splice_read rather than tcp_recvmsg on every kernel.
+SEC("fexit/tcp_splice_read")
+int BPF_PROG(splice_recv_exit, struct socket *sock, long long *ppos, struct pipe_inode_info *pipe,
+             unsigned long len, unsigned int flags, long ret)
+{
+    if (ret > 0) output(BPF_CORE_READ(sock, sk), 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
     return 0;
 }
 

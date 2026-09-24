@@ -6,7 +6,7 @@
 
 `socktrail` 是独立的 Linux 终端程序，直接观察内核事件和网络报文，显示宿主机网络命名空间中被选接口上的 ICMP、TCP、UDP 流量、可见的 HTTP/TLS 信息与可确认的本机进程。借鉴 pktz 的进程关联思路，但不依赖或复用它的代码，也不读取应用日志或配置。支持 `sudo socktrail` 自动选择运行中的宿主接口，也支持 `sudo socktrail --interface <name>` 显式选择；启动前检查接口、采集权限及所需内核能力，失败时给出具体原因。
 
-接口决定报文采集覆盖范围；自动模式选择正在运行的宿主接口，显式指定可用于排查遗漏。当前最多同时采集 8 个接口。TUI 默认显示整机 PID socket 收发量和跨接口连接证据；同五元组、同连接代次的观测合成一条，IP 字节只取单个采集点，不累加接口。`0` 可进入逐网卡诊断。NAT 改写后的不同五元组、桥接转发和未经过本机 socket 的报文仍无法保证形成精确整机 IP 总量，也不得冒充本机进程流量。
+接口决定报文采集覆盖范围；自动模式选择正在运行的宿主接口，显式指定可用于排查遗漏。当前最多同时采集 8 个接口。TUI 默认显示整机 PID socket 收发量和跨接口连接证据；同五元组、同连接代次的观测合成一条，IP 字节只取单个采集点，不累加接口。`0` 可进入逐网卡诊断。conntrack 能查到的 NAT 改写按原始元组合并；代理或隧道改写的地址、桥接转发和未经过本机 socket 的报文仍无法保证形成精确整机 IP 总量，也不得冒充本机进程流量。
 
 ## 两个统计模块与展示平面
 
@@ -30,7 +30,7 @@ TCP 连接与 UDP 观测会话至少显示 `direction`、`local_ip:port`、`remo
 - loopback 两端都在本机时，一个流可能有客户端和服务端两个 PID。入站服务场景展示服务进程，出站场景展示客户端进程；聚合字节只计一份，并在详情展示两个本机参与者。原型必须先证实这种关联方式可行。
 - 连接键包含网络命名空间、地址族、传输协议、双端地址端口和连接代次。TCP 可利用 socket 身份及生命周期事件区分相同五元组的再次使用；UDP 使用有界空闲超时形成观测会话，并标明这是观测会话而非协议连接。ICMP 按报文事件统计；Echo 请求/响应只有在地址、类型、identifier、sequence 与时间窗口匹配时才配对，错误报文保留其引用的原始报文头但不强制归入一个连接。socket 标识不得只依赖可复用的内核指针；需配合创建/销毁事件或代次。所有索引有容量、过期和淘汰计数。
 
-整机 IP、协议和域名页的观测字节从每条逻辑流的**一个报文采集点**产生；同五元组、同 TCP 代次的多接口观测不相加。它是可见流量样本，不是精确整机 IP 总量；NAT、代理或隧道改写地址后仍可能重复或漏计。逐网卡诊断页保留各接口原始计数。PID 页另显示当前网络命名空间内已观察到的 TCP/UDP socket I/O 返回字节，明确标为应用字节，不受接口选择限制，也不与 IP 字节混加。IP 计数按捕获报文的 IP 层长度，含 IP 与上层协议头、负载及实际观测到的重传；不含以太网头、FCS。`lo` 只保留一次发送副本。解析只复制有界负载，计数字节取原始报文长度。
+整机 IP、协议和域名页的观测字节从每条逻辑流的**一个报文采集点**产生；同五元组、同 TCP 代次的多接口观测不相加。它是可见流量样本，不是精确整机 IP 总量；conntrack 关联到的 NAT 两侧只计一份，代理或隧道改写地址后仍可能重复或漏计。逐网卡诊断页保留各接口原始计数。PID 页另显示当前网络命名空间内已观察到的 TCP/UDP socket I/O 返回字节，明确标为应用字节，不受接口选择限制，也不与 IP 字节混加。IP 计数按捕获报文的 IP 层长度，含 IP 与上层协议头、负载及实际观测到的重传；不含以太网头、FCS。`lo` 只保留一次发送副本。解析只复制有界负载，计数字节取原始报文长度。
 
 连接单调计数器按两次采样的差量和实际间隔计算 bps；采样时不得把旧累计值再次累加。丢包、重组超限、超时、索引淘汰、PID 未关联数以及接口状态变化应在界面可见。采集被中断时标记时间缺口，不把缺口期零流量当成确定事实。
 
@@ -46,7 +46,8 @@ TCP 连接与 UDP 观测会话至少显示 `direction`、`local_ip:port`、`remo
 | UDP | 双端端口、数据报数、字节、速率、观测会话 | 无握手；UDP socket 可未连接，目的端点须从单次发送事件或报文确认 |
 | ICMPv4/ICMPv6 | type/code 及名称、Echo 按 identifier 成流并配对 RTT、错误报文所引述的原始协议与端点（标到对应 TCP/UDP 流的状态）、邻居发现/重定向目标、分片需要的 MTU、包数和字节 | 无端口、无 TCP 式连接；本机发出的 Echo 请求按对端和 identifier 关联发送进程，内核应答的 Echo、内核生成的错误、ICMPv6 邻居发现本来就没有进程 |
 | 明文 HTTP/1.1 | 完整请求头中的 Host 及按 Host 汇总的请求数 | 只保留聚合计数和解析状态，不展示或保存逐条请求、路径、请求头或正文 |
-| TLS over TCP / HTTPS | ClientHello 可见 SNI、客户端提供的 ALPN、ECH 标记、握手观测次数；经 CONNECT/SOCKS4/SOCKS5 隧道时另记代理目标，PROXY protocol 头跳过并记下原始客户端 | SNI 是连接级目标提示，不是 HTTPS 请求数或 Host；TLS 1.3 的部分握手及证书信息不可见，真实 ECH 隐藏内层名称 |
+| 明文 HTTP/2（h2c） | 客户端连接前言之后每个请求的 `:authority`（没有时取 `host`）及按它汇总的请求数；请求带 `application/grpc` 内容类型时标 gRPC | 只解码 HEADERS/CONTINUATION，HPACK 状态按连接保留，其余帧按长度跳过；头部块和动态表各限 64 KiB；trailers 不重复计数 |
+| TLS over TCP / HTTPS | ClientHello 可见 SNI、客户端提供的 ALPN、ECH 标记、握手观测次数；经 CONNECT/SOCKS4/SOCKS5 隧道时另记代理目标，PROXY protocol 头跳过并记下原始客户端；服务端 ServerHello 选定的版本和 ALPN；客户端无 SNI 且版本低于 1.3 时的叶子证书名；握手失败时双方的明文 alert | SNI 是连接级目标提示，不是 HTTPS 请求数或 Host；证书名只在无 SNI 时用于命名并标 `[cert]`，不校验证书；TLS 1.3 的证书和 ALPN 加密不可见，真实 ECH 隐藏内层名称 |
 | QUIC v1/v2、其他 IP 协议 | IP/协议包数和字节；QUIC 客户端 Initial 完整且认证成功时读取可见 SNI | 不用端口号推断应用协议或域名；其他 QUIC 版本、ECH 内层名与 HTTP/3 请求域名仍未知 |
 
 DNS 查询名只能作为单独的 DNS 证据。一个查询可返回多个地址，一个地址也可承载多个站点，不能用 DNS 查询名反填 HTTP Host 或 TLS SNI。当前实现把 DNS 应答用作标为 `DNS` 的名称提示，只给没有 Host/SNI/代理目标/进程 SNI 的连接使用。多播、广播、ICMP 控制报文及无法关联进程的流量可在协议/IP 视图查看，并明确显示未知 PID。
@@ -57,7 +58,7 @@ DNS 查询名只能作为单独的 DNS 证据。一个查询可返回多个地�
 
 明文 HTTP/1.1 只在完整请求头后为该 Host 增加一次聚合计数，不保存逐条请求。必须按请求循环解析，同一 TCP 连接可有多个请求和 Host；重传、乱序或重复采集不能重复增加请求数。解析器需要能越过请求体，至少处理 `Content-Length` 和 chunked 编码，才能可靠识别后续请求；消息边界不明、升级协议或超限时停止该方向的请求解析并记录原因；抓包只复制了前缀的请求体按长度跳过。HTTP `CONNECT` 的目标 authority 与 SOCKS4/4a、SOCKS5 请求的地址记为代理目标，不当作普通请求域名，也不计请求数；之后的隧道字节重新识别协议，其中的 ClientHello 或明文请求照常解析。
 
-TLS over TCP 解析客户端 ClientHello 的可见 SNI，作为连接级目标域名；一个握手只产生一次 SNI 证据，不产生 HTTP 请求数。ClientHello 可以跨 TCP 段或 TLS record，须按长度字段逐层解析。QUIC v1/v2 对客户端 Initial 做认证、解保护和有界 CRYPTO offset 重组，再复用 ClientHello 解析。HTTPS 请求 Host、HTTP/2/3 `:authority` 位于加密应用数据中，纯旁路采集无法读取；不能凭 SNI 生成请求数。无 SNI、解析失败或只见握手之后的数据时，按原因显示未命名分组。带 ECH 扩展的 ClientHello 按线上 SNI 分组并标 `[ECH]`：浏览器默认发送 GREASE ECH，此时线上 SNI 就是真实域名；真实 ECH 时它是服务商公共名，内层名旁路不可见。ClientHello 解析完成后该方向停止重组，之后的抓包缺口不计为解析失败。默认 OpenSSL 用户态探针仅在已支持调用路径提供可关联 socket 的进程 SNI；它不是通用解密器。
+TLS over TCP 解析客户端 ClientHello 的可见 SNI，作为连接级目标域名；一个握手只产生一次 SNI 证据，不产生 HTTP 请求数。ClientHello 可以跨 TCP 段或 TLS record，须按长度字段逐层解析。QUIC v1/v2 对客户端 Initial 做认证、解保护和有界 CRYPTO offset 重组，再复用 ClientHello 解析。HTTPS 请求 Host、经 TLS 的 HTTP/2 和 HTTP/3 的 `:authority` 位于加密应用数据中，纯旁路采集无法读取；不能凭 SNI 生成请求数。明文 HTTP/2（h2c，内部 gRPC 常见）不加密，按请求解出 `:authority` 并计数。无 SNI、解析失败或只见握手之后的数据时，按原因显示未命名分组。带 ECH 扩展的 ClientHello 按线上 SNI 分组并标 `[ECH]`：浏览器默认发送 GREASE ECH，此时线上 SNI 就是真实域名；真实 ECH 时它是服务商公共名，内层名旁路不可见。ClientHello 解析完成后该方向停止重组，之后的抓包缺口不计为解析失败。默认 OpenSSL 用户态探针仅在已支持调用路径提供可关联 socket 的进程 SNI；它不是通用解密器。
 
 TCP 两个方向分别维护有界重组状态，以序列号处理跨包、乱序和重传。必须先验证报文截断、IP 分片、TCP 序列号回绕、连接中途加入、缺段、FIN/RST、超时及内存上限的行为。解析 HTTP 请求只检查请求方向；若方向无法确认，不猜测 Host。TLS 只保留握手识别所需的前段数据；HTTP 按请求逐个释放已消费数据。原始正文不写入日志或磁盘。
 
@@ -90,11 +91,19 @@ PID 分组使用 PID 加启动时间，不把复用后的进程合并。进入 P
 ## 参考实现与待验证判断
 
 - pktz 源码快照 [`e580e7e`](https://github.com/immanuwell/pktz/tree/e580e7e3339635e3e6cd9a11e174f38ccc3ccb09)：其 [eBPF 计数](https://github.com/immanuwell/pktz/blob/e580e7e3339635e3e6cd9a11e174f38ccc3ccb09/bpf/pktz.c)使用 TCP send/read 等 socket 路径，[/proc 关联](https://github.com/immanuwell/pktz/blob/e580e7e3339635e3e6cd9a11e174f38ccc3ccb09/internal/collector/procnet.go)扫描 inode 和进程 fd。它可提示 PID 关联与淘汰问题，但计数口径不同，且其 PID 键没有进程启动时间；不复制实现。
-- Linux [Packet MMAP 文档](https://www.kernel.org/doc/html/latest/networking/packet_mmap.html)描述了 AF_PACKET 环形缓冲和抓包状态；具体驱动与 offload 对计数的影响仍需目标机实测。
+- Linux [Packet MMAP 文档](https://www.kernel.org/doc/html/latest/networking/packet_mmap.html)描述了 AF_PACKET 环形缓冲和抓包状态，抓包按其中的 TPACKET_V3 实现；具体驱动与 offload 对计数的影响仍需目标机实测。
 - [RFC 792](https://www.rfc-editor.org/rfc/rfc792.html)与 [RFC 4443](https://www.rfc-editor.org/rfc/rfc4443.html)定义 ICMPv4/ICMPv6 的类型和代码；[RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html)定义 HTTP/1.1 消息边界；[RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html)定义 TLS 握手结构。
 
 当前原型已经选择 AF_PACKET 与内嵌 CO-RE eBPF fentry/fexit 探针，覆盖 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求。accept 在内核有 `__inet_accept`（Linux 6.8 起）时挂它的 fentry，否则挂 `inet_csk_accept` 的 fexit，两者只加载一个：后者在 6.10 改了签名，而且挂载时已经阻塞在 `accept()` 里的调用返回时不经过它。内核 socket 表（`/proc/net` 与 `/proc/<pid>/fd`）为两端都没有 PID 的连接补充进程和中途方向。
 
-跨内核的差异按内核自己的 BTF 处理，不按版本号猜：recvmsg 系列在 5.19 去掉了 nonblock 参数，每个 recvmsg 程序都有旧签名的 `_old` 版本，加载器按 `tcp_recvmsg` 的参数个数保留其一；`iov_iter` 在 5.14 之前没有 `iter_type`，用 CO-RE 回退读旧的 `type` 位集合；5.12 之前 tracing 程序不能调用 `bpf_get_socket_cookie`，加载器用一个极小的探测程序判断，不可用时 socket 层读取以 socket 的内核地址作键，并在 `inet_sock_destruct` 时清掉该地址的预算（`sk_free` 不行，发送路径每次释放写内存引用都会调用它）。进程启动时间读 `start_boottime`（5.5 之前为 `real_start_time`），与 `/proc` 同一基准。老版本校验器不接受栈上未初始化的结构填充字节，写入 map 的结构都显式补齐；socket 层读取的分块循环把游标放在 map 内存里，否则 5.15 的校验器会因路径组合过多拒绝加载。x86-64 上已在 5.10、5.11、5.13、5.15、6.8、6.17、7.0 内核验证；需要 BTF、fentry（5.5）和 ring buffer（5.8）。
+跨内核的差异按内核自己的 BTF 处理，不按版本号猜：recvmsg 系列在 5.19 去掉了 nonblock 参数，每个 recvmsg 程序都有旧签名的 `_old` 版本，加载器按 `tcp_recvmsg` 的参数个数保留其一；`iov_iter` 在 5.14 之前没有 `iter_type`，用 CO-RE 回退读旧的 `type` 位集合；5.12 之前 tracing 程序不能调用 `bpf_get_socket_cookie`，加载器用一个极小的探测程序判断，不可用时 socket 层读取以 socket 的内核地址作键，并在 `inet_sock_destruct` 时清掉该地址的预算（`sk_free` 不行，发送路径每次释放写内存引用都会调用它）。进程启动时间读 `start_boottime`（5.5 之前为 `real_start_time`），与 `/proc` 同一基准。老版本校验器不接受栈上未初始化的结构填充字节，写入 map 的结构都显式补齐；socket 层读取的分块循环把游标放在 map 内存里，否则 5.15 的校验器会因路径组合过多拒绝加载。x86-64 上已在 5.10、5.11、5.13、5.15、6.8、6.17、7.0 内核验证；需要 BTF、fentry（5.5）和 ring buffer（5.8）。`sendfile` 和写往 socket 的 splice 在 6.5 起都经过 `tcp_sendmsg`；之前的内核里 splice 写 socket 走 `generic_splice_sendpage`，另挂它的 fexit，加载器在内核 BTF 里找不到这个函数时删掉该程序。读 socket 的 splice 走 `tcp_splice_read`，各内核都有。两个 hook 的调用频率与 `sendfile`/splice 调用次数相当，不在逐包路径上。
 
-Inbound 服务 PID（含启动前已阻塞在 `accept()` 的服务和双栈监听）、两个并发客户端 PID、`fork` 后共享 TCP socket 的接受者与 I/O 执行者、普通 TCP 双端 socket I/O、UDP 未连接 socket、IPv4/IPv6、loopback、同时观察 `lo`/`br0`、tun 接口、从独立网络命名空间发起的入站 ICMP/ARP/分片/TCP/UDP/QUIC、本机 ping 进程、2,500 条短连接样本和一分钟的关闭流回收已实测；真实 PID 数值复用、其他共享方式、NAT、容器网络、极限负载、arm64 仍需验证或实现。上文超出原型能力的规则继续作为目标，不能视为当前能力。
+抓包的热路径按每秒几十万包设计，从内核到主循环逐包不做系统调用、不分配内存。每张接口一个 TPACKET_V3 环（16 块 × 256 KiB）：内核按长度紧凑写入，块写满或 100 ms 到期才交给读取方，读取方把一整块解码成一批交给主循环，报文负载直接引用环内存，主循环处理完这一批再把块还给内核，批的切片按接口复用。所以负载切片只在处理期间有效，保留数据的地方都要复制；现有解析器、DNS 缓存、QUIC 重组都只保存副本。经典 BPF 过滤器把每帧截到 16 KiB 加 256 B，正好是解析器会读的范围：往环里拷帧发生在转发报文的软中断里，64 KiB 的 GSO 帧整帧拷贝在 veth 实验里让转发吞吐降了约 15%；录制 PCAPNG 时换成保留完整帧。停止读取时过滤器改成全部丢弃，否则退出阶段填满的环会被内核记成丢包。主循环的停顿直接决定丢包：环在低流量下每 100 ms 退一块，16 块能等 1.6 秒，20 Gbps 时只能等约 6 ms，所以扫描所有进程 fd 的 socket 表读取（本机约 30 ms）放在后台 goroutine，读完才回到主循环应用。
+
+NAT 映射不订阅 conntrack 事件：那会让内核为整机每条连接生成事件，而抓到的连接往往只是一小部分。新 TCP/UDP 流出现时发一个 ctnetlink `IPCTNL_MSG_CT_GET` 按元组查询，在单独的 goroutine 里执行，队列满就跳过。查询先按报文方向，查不到再反向，因为 conntrack 只按原始方向和应答方向的元组建索引，改写后的一侧对应应答方向。只保留两个方向不互为反向的条目，按两个元组的流键都能找到，主循环独占这张表。连接两侧由 `nf_nat` 改写，本机进程的 socket 用它那一侧的元组，所以 PID 事件到来时若本侧没有流、条目的另一侧有，就把事件的端点换成另一侧；条目晚于事件到达时，把已记录在 socket 元组下的角色和待匹配 I/O 挪到抓到的流上。程序只在 `nf_nat` 和 `nf_conntrack_netlink` 已加载时启用，查询不会触发内核自动加载模块。
+
+TLS 服务端解析挂在客户端流对象上，因为两者属于同一次握手，证据要落在同一条记录里。它只在客户端 ClientHello 已解析时启动，从服务端第一个以 TLS 记录开头的报文开始，只接受按序报文，任何缺段都结束解析，不引入第二套乱序重组。取到所需信息立即结束并释放缓冲：TLS 1.3 或客户端带 SNI 时读完 ServerHello 就停，只有无 SNI 且低于 TLS 1.3 时才读证书，而且只读叶子证书，用 DER 遍历取 SAN 的 dNSName 或 CN，不引入 `crypto/x509`（它会让二进制大约增加 2 MB）。明文 alert 不经重组，按“一个报文正好是一条 7 字节 alert 记录”判断，一次比较即可排除加密数据。
+
+流表满时先淘汰一次性的流：已关闭的 TCP、没有得到 SYN-ACK 的 SYN、单向不超过两个报文的 UDP，按最后活动时间最旧的 10% 批量淘汰，避免扫描期间每个新流都排序一次。入站尝试按来源 IP 汇总（被拒、无应答、端口集合最多 1024 个），在流被淘汰或过期时计入，所以扫描过后来源页仍能看到它。
+
+Inbound 服务 PID（含启动前已阻塞在 `accept()` 的服务和双栈监听）、两个并发客户端 PID、`fork` 后共享 TCP socket 的接受者与 I/O 执行者、普通 TCP 双端 socket I/O、UDP 未连接 socket、IPv4/IPv6、loopback、同时观察 `lo`/`br0`、tun 接口、从独立网络命名空间发起的入站 ICMP/ARP/分片/TCP/UDP/QUIC、本机 ping 进程、2,500 条短连接样本和一分钟的关闭流回收已实测；网络命名空间搭的网关上的 SNAT/DNAT 和本机 OUTPUT DNAT 的 PID 关联、veth 上 20 Gbps TCP 与每秒约 10 万个小 UDP 报文的抓包、1 小时界面长稳运行也已实测。真实 PID 数值复用、其他共享方式、容器网络、物理网卡上的极限负载、arm64 仍需验证或实现。上文超出原型能力的规则继续作为目标，不能视为当前能力。

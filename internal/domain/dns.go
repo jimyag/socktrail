@@ -51,6 +51,18 @@ func DNSAnswers(msg []byte) (string, []netip.Addr) {
 	return name, addrs
 }
 
+// DNSQuestion returns the name and type of a DNS message's first question.
+func DNSQuestion(msg []byte) (string, uint16, bool) {
+	if len(msg) < 12 || binary.BigEndian.Uint16(msg[4:6]) == 0 {
+		return "", 0, false
+	}
+	name, offset, ok := questionName(msg, 12)
+	if !ok || offset+2 > len(msg) {
+		return "", 0, false
+	}
+	return name, binary.BigEndian.Uint16(msg[offset:]), true
+}
+
 // questionName reads an uncompressed question name, as resolvers send it.
 func questionName(msg []byte, offset int) (string, int, bool) {
 	var name []byte

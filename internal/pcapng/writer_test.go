@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+// A frame the capture cut short keeps its wire length, so readers show it
+// as truncated rather than as a short packet.
+func TestWriterRecordsWireLength(t *testing.T) {
+	var output bytes.Buffer
+	w, err := New(&output, []string{"lo"}, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := output.Len()
+	if err := w.Packet(0, []byte{1, 2, 3, 4}, 1500, time.Unix(1, 0), ""); err != nil {
+		t.Fatal(err)
+	}
+	block := output.Bytes()[start:]
+	if captured, original := binary.LittleEndian.Uint32(block[20:24]), binary.LittleEndian.Uint32(block[24:28]); captured != 4 || original != 1500 {
+		t.Fatalf("captured %d original %d", captured, original)
+	}
+}
+
 func TestWriterProducesAlignedBlocksAndAnnotatedPacket(t *testing.T) {
 	var output bytes.Buffer
 	w, err := New(&output, []string{"lo"}, 1024)
@@ -16,7 +34,7 @@ func TestWriterProducesAlignedBlocksAndAnnotatedPacket(t *testing.T) {
 	}
 	frame := []byte{0, 1, 2, 3, 4}
 	at := time.Unix(1234, 456000000)
-	if err := w.Packet(0, frame, at, "pid=42 app=DNS"); err != nil {
+	if err := w.Packet(0, frame, len(frame), at, "pid=42 app=DNS"); err != nil {
 		t.Fatal(err)
 	}
 	data := output.Bytes()
@@ -42,7 +60,7 @@ func TestWriterProducesAlignedBlocksAndAnnotatedPacket(t *testing.T) {
 		t.Fatalf("unexpected trailing bytes or packet count: %d, %d", len(data), w.Packets)
 	}
 	w.maxBytes = w.Bytes() + 4
-	if err := w.Packet(0, frame, at, "next"); !errors.Is(err, ErrLimit) || w.Packets != 1 {
+	if err := w.Packet(0, frame, len(frame), at, "next"); !errors.Is(err, ErrLimit) || w.Packets != 1 {
 		t.Fatalf("size limit did not stop an entire packet block: error=%v packets=%d", err, w.Packets)
 	}
 }

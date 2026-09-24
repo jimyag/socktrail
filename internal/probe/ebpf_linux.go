@@ -36,6 +36,13 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 		delete(spec.Programs, "inet_accept_entry")
 	}
 	kernelbtf.KeepRecvmsgVariants(spec, "tcp_recv_exit", "udp_recv_exit", "udpv6_recv_exit")
+	// Hooks that exist only on some kernels: generic_splice_sendpage is gone
+	// from 6.5, where splice sends through tcp_sendmsg and is counted there.
+	for program, function := range map[string]string{"splice_send_exit": "generic_splice_sendpage", "splice_recv_exit": "tcp_splice_read"} {
+		if kernelbtf.Params(function) < 0 {
+			delete(spec.Programs, program)
+		}
+	}
 	objects, err := ebpf.NewCollection(spec)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load embedded eBPF programs (need BTF and CAP_BPF/CAP_PERFMON): %w", err)

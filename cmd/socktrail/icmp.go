@@ -141,6 +141,10 @@ func (c *collector) icmp(f *flow, p capture.Packet) {
 	}
 	s.QuotedProtocol, s.Quoted = p.QuotedProtocol, [2]netip.AddrPort{p.QuotedSource, p.QuotedDestination}
 	if referenced := c.flows[keyFor(p.QuotedSource, p.QuotedDestination, p.QuotedProtocol)]; referenced != nil {
+		unreachable := p.Protocol == 1 && p.ICMPType == 3 || p.Protocol == 58 && p.ICMPType == 1
+		if unreachable && referenced.ICMPError == "" && referenced.Key.Protocol == 17 && p.Source.Addr() == referenced.Target.Addr() {
+			c.noteAttempt(referenced, true, at) // The target refused a datagram, as a UDP scan finds out.
+		}
 		referenced.ICMPError = icmpName(p.Protocol, p.ICMPType, p.ICMPCode)
 	}
 }

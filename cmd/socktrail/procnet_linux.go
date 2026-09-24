@@ -30,6 +30,8 @@ type socketTuple struct {
 type socketInventory struct {
 	procRoot  string
 	read      time.Time
+	loading   bool                   // A background reading is under way.
+	loaded    chan *socketInventory  // Delivers it.
 	atStart   map[socketTuple]uint64 // The table before capture began.
 	sockets   map[socketTuple]uint64 // Inode, 0 when no process holds the socket, as in TIME_WAIT.
 	local     map[netip.Addr]bool
@@ -114,21 +116,55 @@ func (inv *socketInventory) load() {
 	}
 }
 
-// refresh applies the socket table to every interface when some TCP or UDP
-// flow has no process on either end.
+// refresh reads the socket tables in the background when some TCP or UDP
+// flow has no process on either end; apply takes the reading once it
+// arrives. Walking every process's descriptors takes tens of milliseconds
+// (30 ms for 6,400 descriptors), longer than a capture ring lasts at 20 Gbps
+// while the main loop does not hand its blocks back.
 func (inv *socketInventory) refresh(collectors map[string]*collector, now time.Time) {
 	inv.read = now
+	if inv.loading || !anyOwnerless(collectors) {
+		return
+	}
+	inv.loading = true
+	next := &socketInventory{procRoot: inv.procRoot}
+	go func() {
+		next.load()
+		next.pids = socketPIDs(next.procRoot)
+		inv.loaded <- next
+	}()
+}
+
+// apply names the processes of ownerless flows from a background reading.
+func (inv *socketInventory) apply(next *socketInventory, collectors map[string]*collector) {
+	inv.loading = false
+	inv.sockets, inv.local, inv.pids, inv.processes = next.sockets, next.local, next.pids, next.processes
+	for _, c := range collectors {
+		c.applySocketInventory(inv)
+	}
+}
+
+// refreshNow reads the socket tables and applies them at once, for the final
+// report after capture stopped.
+func (inv *socketInventory) refreshNow(collectors map[string]*collector) {
+	if !anyOwnerless(collectors) {
+		return
+	}
+	inv.load()
+	for _, c := range collectors {
+		c.applySocketInventory(inv)
+	}
+}
+
+func anyOwnerless(collectors map[string]*collector) bool {
 	for _, c := range collectors {
 		for _, f := range c.flows {
 			if ownerless(f) {
-				inv.load()
-				for _, c := range collectors {
-					c.applySocketInventory(inv)
-				}
-				return
+				return true
 			}
 		}
 	}
+	return false
 }
 
 func ownerless(f *flow) bool {

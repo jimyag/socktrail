@@ -3,6 +3,7 @@ package appproto
 import (
 	"bytes"
 	"encoding/binary"
+	"slices"
 )
 
 // Detection identifies an application protocol from observed bytes. Source
@@ -40,6 +41,9 @@ func TCP(payload []byte, source, destination uint16) Detection {
 	}
 	if bytes.HasPrefix(payload, []byte("HTTP/1.")) || httpRequest(payload) {
 		return detected("HTTP", "payload")
+	}
+	if bytes.HasPrefix(payload, []byte("PRI * HTTP/2.0\r\n")) {
+		return detected("HTTP/2", "payload") // The cleartext (h2c) client preface.
 	}
 	if len(payload) >= 14 && eitherPort(source, destination, 53) {
 		length := int(binary.BigEndian.Uint16(payload[:2]))
@@ -83,10 +87,111 @@ func TCP(payload []byte, source, destination uint16) Detection {
 	if eitherPort(source, destination, 27017) && len(payload) >= 16 && binary.LittleEndian.Uint32(payload[:4]) == uint32(len(payload)) && mongoOpCode(binary.LittleEndian.Uint32(payload[12:16])) {
 		return detected("MongoDB", "payload+port")
 	}
+	if len(payload) >= 8 && bytes.HasPrefix(payload, []byte("AMQP")) && payload[4] <= 3 {
+		return detected("AMQP", "payload") // The 0-9-1 or 1.0 protocol header.
+	}
+	if name := rpcCall(payload, true); name != "" {
+		return detected(name, "payload")
+	}
+	if name := portedTCP(payload, source, destination); name != "" {
+		return detected(name, "payload+port")
+	}
 	if name := textProtocol(payload); name != "" {
 		return detected(name, "payload")
 	}
 	return Detection{}
+}
+
+// portedTCP recognizes protocols whose first message is only distinctive on
+// their usual port: each check reads a few header fields.
+func portedTCP(payload []byte, source, destination uint16) string {
+	port := func(p uint16) bool { return eitherPort(source, destination, p) }
+	length32 := func() int { return int(binary.BigEndian.Uint32(payload[:4])) }
+	switch {
+	case port(9092) && len(payload) >= 12 && length32() == len(payload)-4 &&
+		binary.BigEndian.Uint16(payload[4:6]) <= 80 && binary.BigEndian.Uint16(payload[6:8]) <= 30:
+		return "Kafka" // Request size, API key and version.
+	case port(4222) && (bytes.HasPrefix(payload, []byte("INFO {")) || bytes.HasPrefix(payload, []byte("CONNECT {"))):
+		return "NATS"
+	case port(2181) && (len(payload) >= 8 && length32() == len(payload)-4 && binary.BigEndian.Uint32(payload[4:8]) == 0 ||
+		slices.Contains([]string{"ruok", "stat", "srvr", "mntr", "conf", "cons", "envi", "dump", "wchs", "isro"}, string(payload))):
+		return "ZooKeeper" // A connect request (protocol version 0) or a four-letter command.
+	case port(11211) && (payload[0] == 0x80 || payload[0] == 0x81 || memcachedCommand(payload)):
+		return "Memcached"
+	case port(1433) && len(payload) >= 8 && (payload[0] == 0x12 || payload[0] == 0x10 || payload[0] == 0x04) &&
+		int(binary.BigEndian.Uint16(payload[2:4])) == len(payload):
+		return "SQL Server" // A TDS pre-login, login or response packet.
+	case port(1521) && len(payload) >= 8 && payload[4] >= 1 && payload[4] <= 6 && payload[5] == 0 &&
+		int(binary.BigEndian.Uint16(payload[:2])) <= len(payload):
+		return "Oracle TNS"
+	case (port(389) || port(3268)) && ldapMessage(payload):
+		return "LDAP"
+	case port(88) && len(payload) >= 5 && length32() == len(payload)-4 && kerberosTag(payload[4]):
+		return "Kerberos"
+	case port(9042) && len(payload) >= 9 && payload[0]&0x7f >= 3 && payload[0]&0x7f <= 5 &&
+		int(binary.BigEndian.Uint32(payload[5:9])) == len(payload)-9:
+		return "Cassandra"
+	}
+	return ""
+}
+
+func memcachedCommand(payload []byte) bool {
+	command, _, _ := bytes.Cut(payload[:min(len(payload), 16)], []byte(" "))
+	switch string(bytes.TrimRight(command, "\r\n")) {
+	case "get", "gets", "gat", "gats", "set", "add", "replace", "append", "prepend", "cas", "delete",
+		"incr", "decr", "touch", "stats", "version", "flush_all", "mg", "ms", "md", "ma", "mn":
+		return true
+	}
+	return false
+}
+
+// ldapMessage matches a BER LDAPMessage: a SEQUENCE holding a message ID and
+// an application-class protocol operation.
+func ldapMessage(payload []byte) bool {
+	if len(payload) < 7 || payload[0] != 0x30 {
+		return false
+	}
+	offset := 2
+	if payload[1]&0x80 != 0 {
+		offset += int(payload[1] & 0x7f)
+	}
+	if offset+3 > len(payload) || payload[offset] != 0x02 || payload[offset+1] == 0 || payload[offset+1] > 4 {
+		return false
+	}
+	offset += 2 + int(payload[offset+1])
+	return offset < len(payload) && payload[offset]&0xc0 == 0x40
+}
+
+// kerberosTag matches the ASN.1 application tags of Kerberos messages:
+// AS and TGS requests and replies, AP exchanges and errors.
+func kerberosTag(tag byte) bool {
+	return tag >= 0x6a && tag <= 0x6f || tag == 0x7e
+}
+
+// rpcCall recognizes an ONC RPC call, as NFS and its portmapper and mount
+// services use, by its message type, RPC version and program number. Over
+// TCP a record marker comes first.
+func rpcCall(payload []byte, stream bool) string {
+	if stream {
+		if len(payload) < 4 {
+			return ""
+		}
+		payload = payload[4:]
+	}
+	if len(payload) < 24 || binary.BigEndian.Uint32(payload[4:8]) != 0 || binary.BigEndian.Uint32(payload[8:12]) != 2 {
+		return ""
+	}
+	switch binary.BigEndian.Uint32(payload[12:16]) {
+	case 100003:
+		return "NFS"
+	case 100000:
+		return "RPC portmapper"
+	case 100005:
+		return "NFS mount"
+	case 100021:
+		return "NFS lock"
+	}
+	return ""
 }
 
 // textProtocol recognizes SIP and RTSP, whose requests look like HTTP but
@@ -215,6 +320,12 @@ func UDP(payload []byte, source, destination uint16) Detection {
 	}
 	if (eitherPort(source, destination, 161) || eitherPort(source, destination, 162)) && len(payload) >= 6 && payload[0] == 0x30 && payload[2] == 0x02 && payload[3] == 1 && payload[4] <= 3 {
 		return detected("SNMP", "payload+port")
+	}
+	if eitherPort(source, destination, 88) && kerberosTag(payload[0]) {
+		return detected("Kerberos", "payload+port")
+	}
+	if name := rpcCall(payload, false); name != "" {
+		return detected(name, "payload")
 	}
 	return Detection{}
 }

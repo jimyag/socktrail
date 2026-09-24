@@ -1,10 +1,12 @@
 package probe
 
 import (
+	"io"
 	"maps"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"testing"
@@ -98,6 +100,91 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatalf("events never seen: %v", slices.Sorted(maps.Keys(want)))
+		}
+	}
+}
+
+// sendfile and splice move socket bytes without tcp_sendmsg or tcp_recvmsg
+// on some kernels. Go uses sendfile to copy a file to a connection, and
+// splice to copy one connection to another, as a relay does.
+func TestProbeCountsSendfileAndSplice(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("loading eBPF programs needs root")
+	}
+	info, err := os.Stat("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _, _, err := StartEmbedded(t.Context(), info.Sys().(*syscall.Stat_t).Ino, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 256 << 10
+	path := filepath.Join(t.TempDir(), "payload")
+	if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addr := func(a net.Addr) netip.AddrPort { return netip.MustParseAddrPort(a.String()) }
+
+	sink, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	go func() {
+		if conn, err := sink.Accept(); err == nil {
+			io.Copy(io.Discard, conn)
+			conn.Close()
+		}
+	}()
+	relay, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	relayed := make(chan [2]netip.AddrPort, 1)
+	go func() {
+		in, err := relay.Accept()
+		if err != nil {
+			return
+		}
+		defer in.Close()
+		out, err := net.Dial("tcp", sink.Addr().String())
+		if err != nil {
+			return
+		}
+		defer out.Close()
+		relayed <- [2]netip.AddrPort{addr(in.LocalAddr()), addr(out.LocalAddr())}
+		out.(*net.TCPConn).ReadFrom(in) // splice
+	}()
+	client, err := net.Dial("tcp", relay.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.(*net.TCPConn).ReadFrom(file) // sendfile
+	file.Close()
+	client.Close()
+	ends := <-relayed
+
+	totals := map[string]uint64{}
+	deadline := time.After(10 * time.Second)
+	for totals["sendfile"] < size || totals["splice read"] < size || totals["splice write"] < size {
+		select {
+		case e := <-events:
+			switch {
+			case e.Operation == "send" && e.Local == addr(client.LocalAddr()):
+				totals["sendfile"] += e.AppBytes
+			case e.Operation == "recv" && e.Local == ends[0]:
+				totals["splice read"] += e.AppBytes
+			case e.Operation == "send" && e.Local == ends[1]:
+				totals["splice write"] += e.AppBytes
+			}
+		case <-deadline:
+			t.Fatalf("socket bytes counted %v, want %d each", totals, size)
 		}
 	}
 }

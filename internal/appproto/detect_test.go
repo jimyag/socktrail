@@ -53,6 +53,21 @@ func TestTCPAndUDPProtocolsNeedPayloadEvidence(t *testing.T) {
 		{name: "ZeroTier-like packet with unknown version", udp: true, payload: []byte{0xd7, 0x3e, 0x91, 0x02, 0x55, 4, 1, 2, 3, 4, 0}, src: 9993, dst: 9993},
 		{name: "WireGuard transport data", want: "WireGuard", udp: true, payload: append([]byte{4, 0, 0, 0}, make([]byte, 60)...), src: 41641, dst: 41641},
 		{name: "WireGuard-like data with unpadded length", udp: true, payload: append([]byte{4, 0, 0, 0}, make([]byte, 61)...), dst: 41641},
+		{name: "AMQP 0-9-1", want: "AMQP", payload: []byte("AMQP\x00\x00\x09\x01"), dst: 5672},
+		{name: "Kafka ApiVersions request", want: "Kafka", payload: []byte{0, 0, 0, 10, 0, 18, 0, 3, 0, 0, 0, 1, 0, 0}, dst: 9092},
+		{name: "Kafka-sized bytes elsewhere", payload: []byte{0, 0, 0, 10, 0, 18, 0, 3, 0, 0, 0, 1, 0, 0}, dst: 9000},
+		{name: "NATS", want: "NATS", payload: []byte(`INFO {"server_id":"x"}`), src: 4222},
+		{name: "ZooKeeper four-letter word", want: "ZooKeeper", payload: []byte("ruok"), dst: 2181},
+		{name: "not a ZooKeeper word", payload: []byte("at s"), dst: 2181},
+		{name: "Memcached text", want: "Memcached", payload: []byte("get session:42\r\n"), dst: 11211},
+		{name: "SQL Server pre-login", want: "SQL Server", payload: []byte{0x12, 0x01, 0, 10, 0, 0, 0, 0, 0, 0}, dst: 1433},
+		{name: "Oracle TNS connect", want: "Oracle TNS", payload: []byte{0, 10, 0, 0, 1, 0, 0, 0, 1, 2}, dst: 1521},
+		{name: "LDAP bind request", want: "LDAP", payload: []byte{0x30, 0x0c, 0x02, 0x01, 0x01, 0x60, 0x07, 0x02, 0x01, 0x03, 0x04, 0, 0x80, 0}, dst: 389},
+		{name: "Kerberos over TCP", want: "Kerberos", payload: []byte{0, 0, 0, 2, 0x6a, 0x00}, dst: 88},
+		{name: "Kerberos over UDP", want: "Kerberos", udp: true, payload: []byte{0x6c, 0x81, 0x00}, dst: 88},
+		{name: "Cassandra options", want: "Cassandra", payload: []byte{4, 0, 0, 1, 5, 0, 0, 0, 0}, dst: 9042},
+		{name: "NFS call over TCP", want: "NFS", payload: append([]byte{0x80, 0, 0, 40, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0x86, 0xa3}, make([]byte, 24)...), dst: 2049},
+		{name: "portmapper call over UDP", want: "RPC portmapper", udp: true, payload: append([]byte{0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0x86, 0xa0}, make([]byte, 24)...), dst: 111},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got Detection

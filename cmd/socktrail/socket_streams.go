@@ -153,6 +153,11 @@ func attachSocketDomain(f *flow, stream *domain.Stream) {
 			f.AppProtocol, f.AppSource = "TLS", "ClientHello (socket)"
 		case "http":
 			f.AppProtocol, f.AppSource = "HTTP", "HTTP request header (socket)"
+		case "http2":
+			f.AppProtocol, f.AppSource = "HTTP/2", "HTTP/2 HEADERS (socket)"
+			if stream.Evidence().GRPC {
+				f.AppProtocol = "gRPC"
+			}
 		case "quic":
 			f.AppProtocol, f.AppSource = "QUIC", "QUIC Initial ClientHello (socket)"
 		}

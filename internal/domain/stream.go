@@ -28,8 +28,9 @@ const (
 )
 
 type Evidence struct {
-	Kind        string            // http, tls, quic, openssl, proxy, dns or other; empty until known.
-	Hosts       map[string]uint64 // HTTP/1.x request count per Host.
+	Kind        string            // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
+	Hosts       map[string]uint64 // HTTP request count per Host or HTTP/2 :authority.
+	GRPC        bool              // HTTP/2 requests carried a gRPC content type.
 	SNI         string            // ClientHello server_name as sent, or the OpenSSL process value.
 	NoSNI       bool              // A complete ClientHello carried no server_name.
 	ECH         bool              // The ClientHello carried an encrypted_client_hello extension.
@@ -40,6 +41,10 @@ type Evidence struct {
 	DNS         string            // Name whose DNS answer pointed at the peer address.
 	NoHandshake bool              // TLS records arrived, but their ClientHello was not captured.
 	ParseError  string
+	TLSVersion  string   // Version the server chose in its ServerHello.
+	ServerALPN  string   // Protocol the server chose; TLS 1.3 sends it encrypted.
+	Certificate []string // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
+	Alert       string   // First plaintext alert of the handshake and the side that sent it.
 }
 
 // Group names the destination for the domain page. A ClientHello with an ECH
@@ -52,7 +57,10 @@ func (e Evidence) Group() string {
 		if e.SNI != "" {
 			return e.SNI
 		}
-	case "http":
+		if len(e.Certificate) > 0 {
+			return e.Certificate[0]
+		}
+	case "http", "http2":
 		if len(e.Hosts) == 1 {
 			for host := range e.Hosts {
 				return host
@@ -91,9 +99,16 @@ func (e Evidence) Listed() bool { return e.Kind != "" && e.Kind != "other" }
 
 // Label is the domain page row: evidence source, group and an ECH marker.
 func (e Evidence) Label() string {
-	label := strings.ToUpper(e.Kind) + " " + e.Group()
+	kind := strings.ToUpper(e.Kind)
+	if e.Kind == "http2" {
+		kind = "HTTP/2"
+	}
+	label := kind + " " + e.Group()
 	if e.ECH {
 		label += " [ECH]"
+	}
+	if e.SNI == "" && len(e.Certificate) > 0 {
+		label += " [cert]"
 	}
 	return label
 }
@@ -113,6 +128,19 @@ func (e Evidence) Detail() string {
 	if len(e.ALPN) > 0 {
 		parts = append(parts, "ALPN offered "+strings.Join(e.ALPN, ","))
 	}
+	if e.TLSVersion != "" {
+		server := "server chose " + e.TLSVersion
+		if e.ServerALPN != "" {
+			server += " ALPN " + e.ServerALPN
+		}
+		parts = append(parts, server)
+	}
+	switch {
+	case e.SNI == "" && len(e.Certificate) > 0:
+		parts = append(parts, "name from the server certificate, not SNI: "+strings.Join(e.Certificate, ","))
+	case e.NoSNI && e.TLSVersion == "TLS 1.3":
+		parts = append(parts, "no SNI, and TLS 1.3 encrypts the server certificate")
+	}
 	if e.Kind == "dns" {
 		parts = append(parts, "name from a DNS answer for the peer, not Host/SNI")
 	}
@@ -127,6 +155,7 @@ type Stream struct {
 	pending      map[uint32][]byte
 	pendingBytes int
 	parser       parser
+	server       serverFlight
 	failed       bool
 	lastProgress time.Time
 	gapSince     time.Time
@@ -283,6 +312,8 @@ func (p *parser) finished() bool {
 		return p.tls.done
 	case "http":
 		return p.http.state == httpStopped
+	case "http2":
+		return p.h2.stopped
 	case "proxy":
 		return p.opaque
 	default:
@@ -305,7 +336,7 @@ func (p *parser) incomplete() bool {
 
 // skip consumes n payload bytes that were not captured.
 func (p *parser) skip(n int) error {
-	if p.finished() || p.evidence.Kind == "http" && p.http.skip(n) {
+	if p.finished() || p.evidence.Kind == "http" && p.http.skip(n) || p.evidence.Kind == "http2" && p.h2.skip(n) {
 		return nil
 	}
 	return fmt.Errorf("TCP payload capture truncated")
@@ -317,6 +348,7 @@ type parser struct {
 	opaque   bool // The proxy tunnel carries neither TLS nor HTTP.
 	tls      tlsParser
 	http     httpParser
+	h2       h2Parser
 }
 
 func (p *parser) feed(data []byte) error {
@@ -343,6 +375,9 @@ func (p *parser) feed(data []byte) error {
 				// A load balancer's PROXY header precedes the client's own bytes.
 				p.evidence.ProxyClient = target
 				data, p.sniff = p.sniff[used:], nil
+			case "http2":
+				p.evidence.Kind = kind
+				data, p.sniff = p.sniff[used:], nil
 			default:
 				p.evidence.Kind = kind
 				data, p.sniff = p.sniff, nil
@@ -356,6 +391,8 @@ func (p *parser) feed(data []byte) error {
 			// Bytes after a CONNECT request header belong to the tunnel.
 			data, p.http = p.http.buffer, httpParser{}
 			p.evidence.Kind = "proxy"
+		case "http2":
+			return p.h2.feed(data, &p.evidence)
 		default:
 			return nil
 		}
@@ -388,6 +425,10 @@ func sniffStream(b []byte) (kind string, used int, target string) {
 		return prefix("preamble", proxyV2Header)
 	case bytes.HasPrefix([]byte("PROXY "), b[:min(len(b), 6)]):
 		return prefix("preamble", proxyV1Header)
+	case bytes.HasPrefix(b, h2Preface):
+		return "http2", len(h2Preface), ""
+	case bytes.HasPrefix(h2Preface, b):
+		return "", 0, "" // The start of the HTTP/2 preface: wait for the rest.
 	case len(b) < 8:
 		return "", 0, ""
 	case looksLikeHTTP(b):
@@ -539,7 +580,7 @@ func proxyV2Header(b []byte) (used int, client string, ok bool) {
 // ClientHello record or an HTTP/1.x request line, so parsing can start on a
 // connection whose SYN was not captured.
 func StartsClientMessage(b []byte) bool {
-	if len(b) >= 10 && b[0] == 22 && b[1] == 3 && b[5] == 1 && b[9] == 3 {
+	if len(b) >= 10 && b[0] == 22 && b[1] == 3 && b[5] == 1 && b[9] == 3 || bytes.HasPrefix(b, h2Preface) {
 		return true
 	}
 	line, _, found := bytes.Cut(b[:min(len(b), 256)], []byte("\r\n"))

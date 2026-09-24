@@ -36,8 +36,8 @@
 ## 仍需区分的 HTTPS 情况
 
 - **真实 ECH**：内层 SNI 受加密保护，旁路只能看到公共名；DNS 未加密时，DNS 提示可能给出客户端实际解析的名字。
-- **ALPN 与握手结果**：当前只读取客户端提出的 ALPN 列表。[TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html) 的服务端选择结果在加密握手消息中；不能把列表中的 `h2` 写成已协商 HTTP/2，也不能仅凭 SNI 标记请求数。若要展示握手是否成功或 TLS 1.2 的服务端选择，需新增服务端方向的握手状态机，并对 TLS 1.3 可见性单独标注。
+- **ALPN 与握手结果**：客户端提出的 ALPN 列表与服务端的选择分开记录。服务端方向有一个只收按序报文的小状态机：ServerHello 给出选定版本（TLS 1.3 取 supported_versions）和 TLS 1.2 及以下的 ALPN；[TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html) 的 ALPN 在加密的 EncryptedExtensions 里，看不到时不填，不能把客户端列表中的 `h2` 写成已协商 HTTP/2，也不能仅凭 SNI 标记请求数。握手是否失败看明文 alert：一个报文正好是一条 7 字节 alert 记录才算，双方都看；握手之后的 alert 已加密，不会误判。客户端没发 SNI 且版本低于 1.3 时，状态机再读到叶子证书为止，取 SAN 的 DNS 名或 CN 命名连接，不校验证书。
 - **QUIC/HTTP/3**：[RFC 9001](https://www.rfc-editor.org/rfc/rfc9001.html)和 [RFC 9369](https://www.rfc-editor.org/rfc/rfc9369.html)的 v1/v2 Initial 密钥可由公开的连接 ID 和版本 salt 推导。当前已独立解保护并有界重组 CRYPTO 中的 ClientHello；官方加密向量、本机 quic-go 实际握手和从独立网络命名空间发来的 aioquic Initial 均能识别 SNI。报文没抓到时，本机 UDP socket 发出的 Initial 在 socket 层读取。HTTP/3 `:authority` 位于加密应用数据内；SNI 不能生成请求数。未知版本和漏抓 Initial 仍显示未命名。QUIC 标签要求长包头带已知版本号：此前任意“长包头形状”的数据报都算 QUIC，ZeroTier 和部分 DNS 查询因此被误标，现已排除。
-- **请求级域名**：HTTP/2 连接复用时，一条 TLS 连接可以服务多个域名；逐请求的 Host/`:authority` 和 HTTPS 请求数只能靠读取进程内明文取得。本机常用客户端的 TLS 栈包括静态 BoringSSL、rustls、GnuTLS 和去掉符号的 Go 程序，挂钩覆盖差，而且读明文会改变“不读取请求正文”的约定，因此没有采用。连接详情列出同一 IP 最近解析过的所有域名，用来提示可能存在的复用。
+- **请求级域名**：HTTP/2 连接复用时，一条 TLS 连接可以服务多个域名；逐请求的 Host/`:authority` 和 HTTPS 请求数只能靠读取进程内明文取得。明文 HTTP/2（h2c）例外：线上就是明文，按连接维护 HPACK 状态即可逐请求取 `:authority`，已实现。本机常用客户端的 TLS 栈包括静态 BoringSSL、rustls、GnuTLS 和去掉符号的 Go 程序，挂钩覆盖差，而且读明文会改变“不读取请求正文”的约定，因此没有采用。连接详情列出同一 IP 最近解析过的所有域名，用来提示可能存在的复用。
 
 增加服务端握手字段时，继续把“客户端提供”“服务端选择”“实际 HTTP 请求”分开显示。

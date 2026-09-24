@@ -4,21 +4,21 @@
 
 ## 页面
 
-顶部始终是可排序的统计表，底部默认占约半屏，显示选中分组的连接。启动后默认是整机 PID 页；按 `1`—`4` 或点击顶部入口切换 PID、来源 IP、目标 IP 和协议分组，按 `d` 打开共用域名页。它按 `HTTP`、`TLS`、`QUIC`、`PROXY`、`OPENSSL`、`DNS` 标出证据来源，第二行显示启动后建立的 TLS/QUIC 连接的命名覆盖率，启动前已有的连接流量另列。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入单网卡视图，按 `a` 回到 `OVERVIEW` 多网卡合并视图。`OVERVIEW` 指界面范围，HTTP `Host` 指请求域名。底部只有 `conns` 和 `process` 两个标签。
+顶部始终是可排序的统计表，底部默认占约半屏，显示选中分组的连接。启动后默认是整机 PID 页；按 `1`—`4` 或点击顶部入口切换 PID、来源 IP、目标 IP 和协议分组，按 `d` 打开共用域名页。它按 `HTTP`、`HTTP/2`、`TLS`、`QUIC`、`PROXY`、`OPENSSL`、`DNS` 标出证据来源，第二行显示启动后建立的 TLS/QUIC 连接的命名覆盖率，启动前已有的连接流量另列。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入单网卡视图，按 `a` 回到 `OVERVIEW` 多网卡合并视图。`OVERVIEW` 指界面范围，HTTP `Host` 指请求域名。底部只有 `conns` 和 `process` 两个标签。
 
 | 顶部分组 | 汇总依据 | 底栏内容 |
 | --- | --- | --- |
 | 网卡总览 | 每张采集网卡独立计数，不合并跨接口 IP 字节；网卡可自动选择或显式指定 | 所选网卡观察到的连接与本机 PID |
 | PID | 执行 socket I/O 的 PID 与进程启动时间 | 该 PID 在各采集接口关联的连接；每条连接的观测 IP 字节与该 PID 的 socket 字节分别显示 |
-| 来源 IP、目标 IP | 观测到的连接发起端和目标端 | 匹配连接的双端地址、协议、域名证据与本机 PID |
+| 来源 IP、目标 IP | 观测到的连接发起端和目标端；来源页上，向本机发起过被拒或无应答连接尝试的来源在行名后附 `tried N ports: refused …, unanswered …`，流被淘汰后这一行仍保留 | 匹配连接的双端地址、协议、域名证据与本机 PID |
 | 协议 | TCP、UDP、ICMPv4/ICMPv6、SCTP、GRE 等 IP 协议，以及 ARP、LLDP 等按 EtherType 区分的非 IP 帧；有负载证据时进一步按应用协议标签分组 | 匹配的连接、UDP 会话、ICMP 流或帧 |
-| 域名 | HTTP/1.1 Host、TCP/QUIC ClientHello SNI、CONNECT/SOCKS4/SOCKS5 代理目标、已关联 socket 的 OpenSSL 进程 SNI 或 DNS 应答提示；没有名字的按原因分组 | 该域名分组的连接与本机 PID；HTTP 请求数与 TLS/QUIC 连接数不混用 |
+| 域名 | HTTP/1.1 Host、明文 HTTP/2 `:authority`、TCP/QUIC ClientHello SNI、无 SNI 时 TLS 1.2 及以下的证书名（标 `[cert]`）、CONNECT/SOCKS4/SOCKS5 代理目标、已关联 socket 的 OpenSSL 进程 SNI 或 DNS 应答提示；没有名字的按原因分组 | 该域名分组的连接与本机 PID；HTTP 请求数与 TLS/QUIC 连接数不混用 |
 
 主表列出 RX/TX 速率和累计字节、TCP/UDP 数量、ICMP 报文数、HTTP 请求数、未知 PID 数量、关联流数、首次/最近观测时间，以及 Host/SNI 或一组地址提示。PID 行显示 `PID 进程名`；同一 PID 的多次启动用 `#1`、`#2` 区分，内部仍按完整启动标识分组。PID 行的 RX/TX 来自整个当前网络命名空间的 socket I/O；整机其他分组的 RX/TX 取每条逻辑连接的单个采集点 IP 观测值，不是精确整机总量。单网卡详情显示该接口原始 IP 计数。两种计量点不相加。
 
-`conns` 表按字节排序，列出方向、完整来源和目标地址、传输协议、识别出的应用协议 `APP`、状态、域名或 ICMP 信息、IP RX/TX、SYN 握手 RTT 样本、观测到的 TCP 重传候选数、首次/最近时间及连接两端 PID。状态列是 TCP 观察状态，某条 TCP/UDP 流的报文招来 ICMP 错误时再附上错误名，例如 `port-unreachable`。ICMP 流的信息列给出类型名，Echo 另有请求/应答数、序号和 RTT，错误报文给出所引用的原始连接；ARP 流给出请求/应答数和 MAC 地址，没有 IP 头的帧显示帧数，地址列为 `-`。PID 页还单独列出**选中 PID**在每条连接上的 socket RX/TX；没有匹配 I/O 事件时显示 `-`。选中一条连接后，表格下方显示该连接的归属与计数说明，`EVIDENCE` 行列出代理目标、PROXY protocol 头里的原始客户端、ECH、客户端提供的 ALPN、解析错误、连接是否早于抓包，以及对端 IP 最近解析过的所有域名。`process` 表显示关联的 PID、进程名和进程 socket RX/TX；所选进程下方显示来自 `/proc` 的可读启动时间、父 PID、可执行文件、工作目录、命令行和环境变量。进程退出、PID 复用或读取受限时显示不可用原因。
+`conns` 表按字节排序，列出方向（整机页里从一个接口进、另一个接口出的连接为 `forwarded`）、完整来源和目标地址、传输协议、识别出的应用协议 `APP`、状态、域名或 ICMP 信息（域名后以分号附上应用自报的信息：DNS 的查询与应答码、SSH 两端版本、TLS 握手失败的 alert）、IP RX/TX、SYN 握手 RTT 样本、观测到的 TCP 重传候选数、首次/最近时间及连接两端 PID。状态列是 TCP 观察状态，某条 TCP/UDP 流的报文招来 ICMP 错误时再附上错误名，例如 `port-unreachable`。ICMP 流的信息列给出类型名，Echo 另有请求/应答数、序号和 RTT，错误报文给出所引用的原始连接；ARP 流给出请求/应答数和 MAC 地址，没有 IP 头的帧显示帧数，地址列为 `-`。PID 页还单独列出**选中 PID**在每条连接上的 socket RX/TX；没有匹配 I/O 事件时显示 `-`。选中一条连接后，表格下方显示该连接的归属与计数说明，`EVIDENCE` 行列出代理目标、PROXY protocol 头里的原始客户端、ECH、客户端提供的 ALPN、服务端选定的 TLS 版本和 ALPN、证书名及为何没有证书名（TLS 1.3 加密证书）、解析错误、连接是否早于抓包、NAT 改写（`SNAT … as …`、`DNAT … to …`），以及对端 IP 最近解析过的所有域名。`process` 表显示关联的 PID、进程名和进程 socket RX/TX；所选进程下方显示来自 `/proc` 的可读启动时间、父 PID、可执行文件、工作目录、命令行和环境变量。进程退出、PID 复用或读取受限时显示不可用原因。
 
-域名页的 Host/SNI 是被访问的服务名，不是入站客户端的来源域名。没有完整请求头或 ClientHello、无 SNI 等情况仍保留 IP/PID/流量统计；已识别 TLS/QUIC 但没有名字的连接按原因进入 `handshake not captured`、`no SNI`、`parse failed` 或 `unknown` 组。带 ECH 扩展的连接按线上 SNI 分组并标 `[ECH]`。名字取自 socket 层读到的客户端字节时，行名同样是 `TLS`/`HTTP`，连接详情的 `APP` 来源标 `(socket)`；状态页显示 socket 层读取的块数、内核丢失与队列丢弃。OpenSSL 行只表示进程报告的 SNI，不表示解密后的 HTTP Host；DNS 行表示对端 IP 最近出现在 DNS 应答里，是提示而非实际访问证据；底栏和状态页显示探针来源、冲突与覆盖状态。
+域名页的 Host/SNI 是被访问的服务名，不是入站客户端的来源域名。没有完整请求头或 ClientHello、无 SNI 等情况仍保留 IP/PID/流量统计；已识别 TLS/QUIC 但没有名字的连接按原因进入 `handshake not captured`、`no SNI`、`parse failed` 或 `unknown` 组。带 ECH 扩展的连接按线上 SNI 分组并标 `[ECH]`；客户端没发 SNI、名字取自服务端证书的连接标 `[cert]`，与带 SNI 的同名连接分成两行。名字取自 socket 层读到的客户端字节时，行名同样是 `TLS`/`HTTP`，连接详情的 `APP` 来源标 `(socket)`；状态页显示 socket 层读取的块数、内核丢失与队列丢弃，以及 NAT 映射是否启用、conntrack 查询数、查到改写的条目数、队列满跳过数和失败数。OpenSSL 行只表示进程报告的 SNI，不表示解密后的 HTTP Host；DNS 行表示对端 IP 最近出现在 DNS 应答里，是提示而非实际访问证据；底栏和状态页显示探针来源、冲突与覆盖状态。
 
 ## 窗口与操作
 

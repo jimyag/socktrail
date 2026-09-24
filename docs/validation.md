@@ -35,7 +35,7 @@
 | 多接口 | 同时指定 `--interface lo --interface br0`，本机 HTTP 请求只在 `lo` 形成 1378 IP 字节，`br0` 对该端口为 0；PID socket I/O 在报告末尾只列一次。交互 TUI 用 `i` 在 `lo`/`br0` 切换，`q` 后恢复终端。 |
 | 多网卡总览 | 界面调整前，用 `sudo -n ./socktrail --interface lo --interface br0` 在 120×40 PTY 启动，默认显示 `IFACES (2)` 及两张网卡；按 `i` 切换选择并按 `Enter` 进入所选网卡视图，按 `q` 后退出码 0、终端恢复。单元测试让同一五元组在两张网卡各出现一次，确认总览保留两个独立的 40 B 行，没有生成跨网卡合计。该构造测试不等于实机同包跨接口去重验收。 |
 | 自动选网卡 | `sudo -n ./socktrail --duration 2s --limit 1` 无 `--interface` 正常退出；自动选择 `br0,dae0,eno1,lo,tailscale0,ztdhgp6hvy`，界面调整前每张分别输出 IP 计数。`go test ./...` 通过；候选超过 8 个时显式报错，避免静默漏抓。当时在 PTY 无参数启动，界面显示 `IFACES (6)`，按 `q` 后退出码 0，终端恢复；此次短时快照没有新完整 TLS 握手，不用于域名解析验收。 |
-| 整机默认页面 | 更新后执行 `sudo -n ./socktrail --duration 2s --limit 3`：报告只有一个 `HOST` 观测连接列表与一份 PID socket I/O 汇总；PTY 无参数启动首先显示 `socktrail HOST` 和整机 PID 行，按 `q` 后退出码 0、终端恢复。单元测试构造同一 TCP 连接在两接口各出现一次、Host 仅在第二接口可见：整机页只有 1 条连接、1 次 HTTP 请求、200 B 单点 IP 观测值，PID socket 收发量只保留一份；不同 TCP SYN 序号的复用连接保持两代。实机 NAT 改写后五元组不同，仍可能形成两个观测流，因此 IP 列明确不是精确整机总量。 |
+| 整机默认页面 | 更新后执行 `sudo -n ./socktrail --duration 2s --limit 3`：报告只有一个 `HOST` 观测连接列表与一份 PID socket I/O 汇总；PTY 无参数启动首先显示 `socktrail HOST` 和整机 PID 行，按 `q` 后退出码 0、终端恢复。单元测试构造同一 TCP 连接在两接口各出现一次、Host 仅在第二接口可见：整机页只有 1 条连接、1 次 HTTP 请求、200 B 单点 IP 观测值，PID socket 收发量只保留一份；不同 TCP SYN 序号的复用连接保持两代。实机 NAT 改写后五元组不同，当时仍会形成两个观测流，因此 IP 列明确不是精确整机总量（NAT 映射后来实现，见“2026-09-24 协议补充、NAT 与抓包性能”）。 |
 | 整机页导航与过期 | 最终二进制在 PTY 无参数启动显示 `socktrail HOST`；按 `0` 显示 `IFACES (6)`，按 `a` 返回整机，按 `d` 打开 HTTP/TLS 页，按 `q` 后退出码 0、终端恢复；退出只报告采集接口数及丢包，不把逐接口 IP 字节相加。单元测试覆盖同一观测流切换代表接口后详情指针保持稳定、过期时只保留一份累计字节与域名证据。 |
 | 页面刷新闪烁 | 修复前常规 `render` 每次都发送 `ESC[2J` 整屏清空；改为只更新变化行并清除行尾残留。PTY 无参数运行时，启动阶段有 1 次整屏清空，之后连续 5 秒刷新记录中为 0 次；按 `q` 后退出码 0、终端恢复。单元测试核对未变化行不重画、缩短的行清除旧字符。尚未逐一检查不同终端模拟器的视觉表现。 |
 | 整机页本机 TLS SNI | 启动无参数 6 秒快照和临时 `openssl s_server`，再用 `openssl s_client -servername hostglobal.example.test` 连接 `127.0.0.1:19443`。整机报告显示 1 条已关闭 TCP 连接、TLS `hostglobal.example.test` 1 条、HTTP Host 请求数 0，单采集点 IP 观测值 3,148 B；AF_PACKET dropped 0、PID ring lost 0。服务启动早于探针，服务 PID 本次未知；这是握手域名和全局页合并验收，不作为双端 PID 验收。临时服务已退出。 |
@@ -165,18 +165,89 @@ UDP 的 socket 层 QUIC 读取：本机用 aioquic 连 `cloudflare-quic.com:443`
 
 分发：默认的 cgo 构建在 Ubuntu 24.04 上要求 glibc 2.34，拷到 Debian 11 或 Ubuntu 20.04 上无法启动；虚拟机测试用的都是 `CGO_ENABLED=0` 的静态构建，README 的构建命令已改为这种方式。
 
+## 2026-09-24 协议补充、NAT 与抓包性能
+
+本轮新增 sendfile/splice 计数、DNS 查询与应答码、TCP 上的 DNS 提示、SSH 版本标识、入站扫描汇总与流表淘汰、明文 HTTP/2、十余种应用协议标签、TLS 服务端握手信息和 conntrack NAT 映射，抓包改为 TPACKET_V3 环。`go vet ./...`、`go test ./...`、`go test -race ./...`、`CGO_ENABLED=0 go build` 通过；本机 6.8 上 probe、sockstream、capture、conntrack、tlsprobe、cmd 各包以 root 运行的测试全部通过。
+
+新功能的单元测试：
+
+- DNS 的查询与应答、TCP 上的 DNS（含名称提示缓存）；SSH 两端的版本标识。
+- 扫描：30 次被拒的 TCP、15 次无应答、1 次 UDP 端口不可达，流表满时淘汰一次性流而不是丢掉新流，来源页标签正确。
+- 协议标签：每个新协议一个正例，另有非默认端口上的 Kafka、ZooKeeper 端口上非四字命令的反例。
+- HTTP/2：每次喂 7 字节，第二个请求的头部块跨 HEADERS 和 CONTINUATION 并引用 HPACK 动态表，计 2 次请求并识别 gRPC；只抓到前缀的 20,000 B DATA 帧按长度跳过。
+- TLS 服务端：用 crypto/tls 在回环 TCP 上做真实握手，按 100 B 切段喂入。TLS 1.2 无 SNI 取到两个 SAN 名并标 `[cert]`；TLS 1.3 给出版本和原因；客户端拒绝自签名证书得到 `client alert: bad certificate`；服务端只接受 1.3 时得到 `server alert: protocol version`。
+- conntrack：构造的 ctnetlink 应答（SNAT、ENOENT、其他请求的序号）。root 测试在私有网络命名空间里加一条 nftables DNAT 规则，建立连接后从两个方向都查到同一条目；原始元组反过来查、以及不存在的元组，都返回未跟踪。
+- NAT 关联：网关两侧的流合为一条 `forwarded` 连接，字节只算一份；本机进程连 DNAT 服务地址时，connect 事件和之后的 socket I/O 都挂到抓到的后端元组上。
+- 抓包环：root 测试在 lo 上发一个 40 KB 的 TCP 段，环里只保留 SnapLength，负载前 16 KiB 与原文一致，不计截断。
+
+跨内核：Debian 11 的 5.10 以及 Ubuntu 的 5.11、5.13、5.15、6.17、7.0 虚拟机里，probe、sockstream、capture、conntrack 的测试每个内核通过 15 项（DNAT 测试因镜像里没有 nft 而跳过），包括 sendfile/splice 计数和抓包环。5.10 至 5.15 的 splice 写 socket 走 `generic_splice_sendpage` 的探针，6.17、7.0 走 `tcp_sendmsg`，都计到了。各内核的回环快照都是 7 条流、AF_PACKET 丢包 0，TLS 行带 `server chose TLS 1.3`。
+
+NAT 实验：两个临时网络命名空间 stcli（10.99.1.2）和 stsrv（10.99.2.2）经 veth 接到主机的 stcl0（10.99.1.1）和 stsv0（10.99.2.1）。主机转发，并用一张 nftables 表做三件事：出 stsv0 时 masquerade，stcl0 进来的 8080 DNAT 到 10.99.2.2:80，本机发往 10.99.9.9:80 的连接在 OUTPUT DNAT 到 10.99.2.2:80。stsrv 里跑 Python HTTP 服务、只允许 TLS 1.2 的 `openssl s_server`（证书 SAN 为 lab.internal.test 和 *.lab.internal.test）和只允许 TLS 1.3 的 `openssl s_server`。`sudo socktrail --interface stcl0,stsv0 --duration 20s` 的结果：
+
+| 场景 | 结果 |
+| --- | --- |
+| stcli 里 `curl http://10.99.2.2/` | 两个接口各一条流，都带 `[SNAT 10.99.1.2:P as 10.99.2.1:P]`，名称 `HTTP 10.99.2.2` |
+| `curl http://10.99.1.1:8080/` | `[SNAT …, DNAT 10.99.1.1:8080 to 10.99.2.2:80]`，Host 仍是客户端写的 `10.99.1.1` |
+| `curl -k --tls-max 1.2 https://10.99.2.2/` | `TLS lab.internal.test [cert]`，详情为 `server chose TLS 1.2; name from the server certificate, not SNI: lab.internal.test,*.lab.internal.test` |
+| `curl -k https://10.99.2.2:8443/` | `TLS no SNI`，详情为 `server chose TLS 1.3; no SNI, and TLS 1.3 encrypts the server certificate` |
+| 不带 `-k`，`--resolve` 到 lab.internal.test | `TLS lab.internal.test; client alert: unknown certificate authority` |
+| `--tls-max 1.2` 连只接受 1.3 的服务 | `TLS no SNI; server alert: protocol version` |
+| `curl --http2-prior-knowledge -H 'content-type: application/grpc'` | APP 为 gRPC，名称 `HTTP/2 10.99.2.2` |
+| 主机上 `curl http://10.99.9.9/`，只抓 stsv0 | 后端元组 `主机地址:P → 10.99.2.2:80` 的流带 curl 的 PID 和 `[DNAT 10.99.9.9:80 to 10.99.2.2:80]` |
+
+conntrack 查询 14 次，全部查到改写。长稳负载下另跑的 20 秒自动选接口快照里，279 条经 SNAT 转发的连接每条只有一行，方向都是 `forwarded`；查询 1,204 次，查到改写 406 次，队列满 0，失败 0。
+
+抓包性能：iperf3 从 stcli 经主机转发到 stsrv，socktrail 同时抓 stcl0、stsv0，先跑 10 秒 TCP 单流，再跑 10 秒 64 B 的 UDP（`-b 0`）。CPU 是 socktrail 进程在该阶段的平均占用，100% 为一个核。
+
+| 版本 | TCP 吞吐 | CPU | UDP 报文率 | CPU | AF_PACKET 丢包 |
+| --- | --- | --- | --- | --- | --- |
+| 不运行 socktrail | 23.9 Gbps | - | 11.1 万/s | - | - |
+| 原实现：recvfrom 逐包读取、逐包送主循环 | 20.5 Gbps | 约 230% | 8.6 万/s | 约 180% | 0 |
+| 批量送主循环 | 19.4 Gbps | 243% | 8.1 万/s | 186% | 0 |
+| TPACKET_V3 环（8 MiB），整帧 | 17.1 Gbps | 99% | 9.6 万/s | 20% | 每接口约 400 |
+| 环内每帧截到 16 KiB | 20.1 Gbps | 92% | 9.4 万/s | 20% | 0 |
+| 解码时不再复制负载 | 20.6 Gbps | 22% | 9.8 万/s | 13% | 0 |
+| 环缩到 4 MiB | 21.0–21.7 Gbps | 30% | 9.7 万/s | 12% | 每接口 340–435 |
+| socket 表改为后台读取（当前） | 22.1–22.2 Gbps | 32% | 9.7–9.8 万/s | 13% | 0 |
+
+用 perf 采样原实现：采集 goroutine 在 recvfrom 里阻塞、被逐包唤醒占约 40%，Go 调度器因此反复停起线程（futex）约 30%，真正处理报文的主循环只占 12%，批量送主循环也就没有效果。换成环以后，TCP 大流量下剩下的开销是解码时的负载复制（memmove 15%）和它带来的 GC（约 25%），于是让负载直接引用环内存，主循环处理完一批再把块还给内核。环整帧拷贝时，64 KiB 的 GSO 帧在转发报文的软中断里整帧拷进环，TCP 吞吐降到 17.1 Gbps 并开始丢包；截到解析器会读的 16 KiB 后恢复。环从 8 MiB 缩到 4 MiB 后又丢了包，原因是主循环每 10 秒同步扫描一次所有进程的 fd，本机 6,400 个描述符要 30 ms，而 4 MiB 在 20 Gbps 下只够约 6 ms；扫描移到后台后两轮都是 0。改成环后，快照结束时的统计里还出现过几十到上百个丢包，运行中每秒读取的统计却始终为 0：退出时读取方先停下，探针卸载要几秒，这期间填满的环让内核把之后的报文记为丢包。现在读取方停止时把过滤器改成全部丢弃，lo、br0 上重跑都是 0。
+
+录制：iperf3 以 2 Gbps 运行时，在 PTY 里按 `2`、`/5201`、`Enter`、`c` 录制这条连接，文件达到 64 MiB 上限时自动停止，共 2,827 个包，最大帧 65,226 B，说明录制期间环保留了完整帧。按 `c` 时已在环里的 8 帧只有 16,640 B。第一版把这类帧的原始长度也写成捕获长度，tcpdump 报 `truncated-ip`；现在 EPB 记下线上的原始长度，读取工具会把它们显示为截断帧，报文注释也标出 `captured_frame_truncated=true`。完整帧的上限同时从 256 KiB 改为 64 KiB，与 PCAPNG 接口块声明的抓包长度一致，否则更大的 BIG TCP 帧会让写入器报错并中止录制。
+
+其他回归：lo 上的 HTTP 请求，Host `lo.example.test` 和两端 PID（curl、python3）与之前一致；抓包接口被删除时，程序报 `capture on stdum0: network is down` 并以 1 退出，与原实现一致。最初的环实现在这里会因为 poll 一直返回 POLLERR 而空转，已修正。
+
+界面走查：在 50 行 × 200 列的 PTY 里无参数启动，自动选中包括两张实验 veth 在内的 8 个接口。在长稳负载运行中依次按 `d`、`/cert`、`Enter`、`/gRPC`、`Enter`、`2`、`4`、`!`，结果如下：
+
+- 域名页有 `TLS lab.internal.test [cert]`、`HTTP/2 10.99.2.2`、`HTTP 10.99.9.9` 等行。
+- 选中 `[cert]` 行的连接后，EVIDENCE 为 `ALPN offered h2,http/1.1; server chose TLS 1.2; name from the server certificate, not SNI: lab.internal.test,*.lab.internal.test; SNAT 10.99.1.2:33476 as 10.99.2.1:33476`。
+- 来源页有 `10.99.1.2  tried 41 ports: refused 82, unanswered 0`，同时列出两个真实的公网来源，分别被拒 6 次和 74 次。
+- 状态页有 `NAT lookups 1567  NAT'd 539  queue full 0  failed 0`，AF_PACKET dropped 0。
+- 按 `q` 后退出码为 0。
+
+走查中发现并修正了两处：一是合并后的转发连接方向原来显示为 `unknown`（两侧分别是 inbound 和 outbound），现在为 `forwarded`；二是 `tried 1 ports` 的单复数。另外，个别连接在 conntrack 结果回来之前会短暂显示为两行，下一次刷新即合并。
+
+长稳：在 50 × 200 的 PTY 里无参数运行界面 60.6 分钟，自动选中 8 个接口。所用版本不含之后改的三处小问题：接口删除后空转、PCAPNG 原始长度、`forwarded` 方向。负载脚本每轮从主机发一个经 OUTPUT DNAT 的请求，从 stcli 发 HTTP、TLS 1.2、h2c 三个经 SNAT 的请求，每 60 轮从 stcli 扫一次主机的 41 个关闭端口。一小时共 16,802 轮，约 6.7 万个连接、约 280 次扫描，另有主机本身的真实流量。每 10 秒采样一次：
+
+- CPU 平均 8.3%，峰值 14%。
+- RSS 启动时 98 MiB，6 分钟内升到约 175 MiB，因为流表、DNS 提示和 NAT 表按 1 到 10 分钟的有效期逐步填满；此后在 175 到 185 MiB 之间波动，结束时 173 MiB。其中 32 MiB 是 8 个抓包环，约 18 MiB 是 eBPF map，其余主要是 Go 堆。
+- 同负载下另起一个带 `GODEBUG=gctrace=1` 的 15 分钟快照，GC 后的存活堆在第 4 分钟后稳定在 44 到 49 MB，堆目标约是它的两倍，没有持续增长。
+- 退出码为 0。
+
+最终画面顶部带 `INCOMPLETE`。这个标记在任一采集计数非零、或当前有解析失败的连接时出现，长稳实例退出后已读不到是哪一项。同负载下，15 分钟快照的 AF_PACKET 丢包为 0（交付 802,184 个包）；另跑的 6 分钟界面会话里，丢包、截断、流索引淘汰、PID 事件丢失、解析失败都是 0。所以更可能是主机真实流量里某条连接解析失败，但这一点没有证实。长稳期间，同一主机上还跑了虚拟机矩阵、界面走查和 iperf3 录制测试，它们的流量也被长稳实例抓到了。
+
 ## 尚未完成的验收
 
 - 真正的操作系统 PID 数值复用仍未在实机强制复现；目前 PID 身份包含进程启动时间，且有同 PID、不同启动时间的代次单元测试。共享 socket 的 `accept`/读写由不同进程执行已实测，但 fd 传递、多个写者和更复杂的 socket 交接仍需验证。
-- NAT、桥接转发、非当前网络命名空间及不同内核版本的 PID/方向验证；多接口已能分别观察；整机页按同五元组、同 TCP 代次合并观测，但 NAT 改写的不同五元组仍无法可靠去重，“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
-- `sendfile` 在本机这个受控样本经 `tcp_sendmsg` 计到完整 65,536 B；splice、内核 TLS、其他零拷贝路径及跨内核行为仍未验证。目前 PID 应用字节只承诺已挂 TCP/UDP sendmsg/recvmsg 探针的返回值，其他路径可能少计。
+- 桥接转发、容器网络、非当前网络命名空间的 PID/方向验证。NAT 只在本机网络命名空间搭的网关上验收了 SNAT、DNAT 和本机 OUTPUT DNAT；conntrack zone 非 0 的条目（部分 OVS、CNI 场景）查不到，未验证。多接口已能分别观察，整机页按同五元组、同 TCP 代次或 conntrack 元组合并观测，“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
+- `sendfile` 与 splice（写 socket、读 socket）的计数已在 5.10 至 7.0 的虚拟机和本机 6.8 上由 root 测试核对；内核 TLS 及其他零拷贝路径仍未验证。目前 PID 应用字节只承诺已挂探针的返回值，其他路径可能少计。
 - 探针挂载前已经进入阻塞 `recvfrom` 的 UDP 服务，首次返回可能少计；服务进程在探针之后启动的对照场景两端各为 RX/TX 5 B。启动时抓取的中途连接和调用不能补历史数据。Linux 6.8 以前的内核没有 `__inet_accept`，回退到 `inet_csk_accept` 的 fexit 已在 5.10 至 5.15 上加载并收到 accept 事件，但挂载前就阻塞着的第一次 accept 仍会漏掉，只能靠 socket 表补上仍存在的连接。
-- 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多读一次，两次读取之间开始又结束的连接拿不到。
+- 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
 - 旧内核只在虚拟机里验证了回环流量；arm64（fentry 要到 6.0 才支持）、RHEL 这类大量回移特性的内核都没有测。
-- socket 层读取在高并发短连接和大吞吐下的开销未测；UDP 只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。NAT 改写前后五元组的映射尚未实现。
-- 极限吞吐、数小时以上运行、物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
+- socket 层读取在高并发短连接和大吞吐下的开销未测；UDP 只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。
+- 抓包性能只在两张 veth 之间测过（20 Gbps TCP、每秒约 10 万个 64 B UDP 报文），物理网卡、多队列 RSS、百万级 pps 没有测；长稳运行只做了 1 小时。另外还缺物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
 - ICMP 只有 Echo 请求能归属进程：带 `IP_HDRINCL` 的原始 socket 自己拼 IP 头，其中的 ICMP 不识别；Echo 以外的 ICMP 与其他协议的原始 socket 流量没有进程。tun 接口帧的录制只在单元测试里经 tcpdump 解码，没有在真实 tun 接口上经 TUI 录制并用 Wireshark 核对；跨接口非对称路径的 PCAPNG 导出也没有核对。
-- QUIC v2 目前只有 RFC 官方加密向量，没有本机真实 v2 客户端；QUIC v1 已完成本机真实握手样本。QUIC 长连接同五元组重用、极限乱序/丢包、真实 ECH 和 HTTP/3 加密的 `:authority` 尚未验收或实现。
+- QUIC v2 目前只有 RFC 官方加密向量，没有本机真实 v2 客户端；QUIC v1 已完成本机真实握手样本。QUIC 长连接同五元组重用、极限乱序/丢包、真实 ECH 和 HTTP/3 加密的 `:authority` 尚未验收或实现。明文 HTTP/2 只用 curl 的 prior knowledge 请求和单元测试构造的 gRPC 帧验证过，没有真实 gRPC 服务的长连接样本；经 HTTP/1.1 `Upgrade: h2c` 升级的连接不解析。
 - OpenSSL 进程探针目前仅覆盖系统动态库及已验证的 fd 或同线程 `SSL_connect`/TCP 发送关联路径；其他自定义 BIO 路径、Go TLS、静态链接 TLS、其他 TLS 库与解密后 HTTP/2/3 请求域名未覆盖。正常抓到 ClientHello 时，进程 SNI 通常与报文 SNI 重合，不能保证“所有 HTTPS 域名”。
+- TLS 服务端解析只接受按序报文，服务端首批报文乱序或缺段时不给出版本和证书名；证书名只用 openssl 自签名证书和 Go 生成的证书验证过，没有覆盖多值 RDN、超长证书链或非 DNS 形式的 SAN。Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos、Cassandra、AMQP、NFS/RPC 的识别只有构造报文的单元测试，没有真实服务样本。
 
 IP、协议、域名界面及连接报告的字节取捕获 IP 报文长度；整机页对每条逻辑流只选一个采集点，不能当作精确整机 IP 总量。PID 页和报告末尾的 PID 汇总取 eBPF socket 事件的应用读写字节，两者不相加。`AF_PACKET delivered` 是内核交付给抓包 socket 的数量，包含后来因 `lo` 去重、非 IP 或解析条件而未计入的报文，不能直接与 `IP packets` 相减来当作丢包数。测试用服务为临时进程，不作为程序的一部分。

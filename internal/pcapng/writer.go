@@ -53,7 +53,9 @@ func New(out io.Writer, interfaceNames []string, maxBytes uint64) (*Writer, erro
 	return w, nil
 }
 
-func (w *Writer) Packet(interfaceID uint32, frame []byte, at time.Time, comment string) error {
+// Packet writes one captured frame; wireLength is its length on the wire,
+// larger than len(frame) when the capture kept only a prefix.
+func (w *Writer) Packet(interfaceID uint32, frame []byte, wireLength int, at time.Time, comment string) error {
 	if interfaceID >= w.interfaces {
 		return fmt.Errorf("invalid PCAPNG interface %d", interfaceID)
 	}
@@ -65,7 +67,7 @@ func (w *Writer) Packet(interfaceID uint32, frame []byte, at time.Time, comment 
 	body = binary.LittleEndian.AppendUint32(body, uint32(stamp>>32))
 	body = binary.LittleEndian.AppendUint32(body, uint32(stamp))
 	body = binary.LittleEndian.AppendUint32(body, uint32(len(frame)))
-	body = binary.LittleEndian.AppendUint32(body, uint32(len(frame)))
+	body = binary.LittleEndian.AppendUint32(body, uint32(max(wireLength, len(frame))))
 	body = appendPadded(body, frame)
 	if comment != "" {
 		body = appendOption(body, 1, []byte(comment))

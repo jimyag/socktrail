@@ -140,6 +140,8 @@ type terminalUI struct {
 	tlsProbeStats     *tlsprobe.Statistics
 	streamStatus      string
 	streamStats       *sockstream.Statistics
+	natStatus         string
+	nat               *natTable
 	lastSample        time.Time
 	previous          map[*flow]counters
 	rates             map[*flow]rate
@@ -673,6 +675,18 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 			}
 		}
 	}
+	if mode == viewSource {
+		// A scanning source stays visible after its flows are evicted.
+		for source, a := range c.attempts {
+			key := source.String()
+			r := rows[key]
+			if r == nil {
+				r = &uiRow{key: key, label: key}
+				rows[key] = r
+			}
+			r.label = key + "  " + a.String()
+		}
+	}
 	if mode == viewPID {
 		for id, io := range c.pidIO {
 			key := pidGroupKey(id)
@@ -769,8 +783,17 @@ func flowName(f *flow) string {
 	if f.Key.Protocol == 1 || f.Key.Protocol == 58 {
 		return icmpDescription(f)
 	}
+	var name string
 	if f.Domain != nil && f.Domain.Evidence().Listed() {
-		return f.Domain.Evidence().Label()
+		name = f.Domain.Evidence().Label()
+	}
+	switch detail := appDetail(f); {
+	case detail != "" && name != "":
+		return name + "; " + detail
+	case detail != "":
+		return detail
+	case name != "":
+		return name
 	}
 	return "unknown"
 }
@@ -835,6 +858,9 @@ func evidenceLine(f *flow, c *collector) string {
 	if f.Preexisting {
 		parts = append(parts, "open before capture began")
 	}
+	if f.NAT != nil {
+		parts = append(parts, f.NAT.String())
+	}
 	for _, peer := range dnsPeers(f) {
 		if c.dns == nil || !peer.IsValid() {
 			break
@@ -886,6 +912,9 @@ func rowMatches(row *uiRow, filter string) bool {
 		if f.Domain != nil {
 			e := f.Domain.Evidence()
 			search += " " + e.Label() + " " + e.SNI + " " + e.Proxy + " " + e.DNS
+		}
+		if f.NAT != nil {
+			search += " " + f.NAT.String()
 		}
 		if strings.Contains(strings.ToLower(search), filter) {
 			return true
@@ -1047,6 +1076,10 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, u.streamStatus)
 		if u.streamStats != nil {
 			lines = append(lines, fmt.Sprintf("Socket stream chunks %d  kernel lost %d  queue dropped %d  invalid %d", u.streamStats.Received.Load(), u.streamStats.KernelLost.Load(), u.streamStats.Dropped.Load(), u.streamStats.Invalid.Load()))
+		}
+		lines = append(lines, u.natStatus)
+		if u.nat != nil {
+			lines = append(lines, u.nat.stats())
 		}
 		if u.capturePath != "" {
 			lines = append(lines, "PCAPNG: "+u.captureStatus+"  "+u.capturePath)

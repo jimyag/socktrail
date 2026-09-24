@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/jimyag/socktrail/internal/appproto"
 	"github.com/jimyag/socktrail/internal/capture"
+	"github.com/jimyag/socktrail/internal/conntrack"
 	"github.com/jimyag/socktrail/internal/domain"
 	"github.com/jimyag/socktrail/internal/probe"
 	"github.com/jimyag/socktrail/internal/quicinitial"
@@ -139,25 +141,31 @@ type flow struct {
 	ICMP             icmpState
 	ICMPError        string // Latest ICMP error that quoted this flow's packets.
 	ARP              arpState
+	DNS              dnsState  // DNS, mDNS and LLMNR flows.
+	SSH              [2]string // SSH identification strings of the initiator and the target.
 	AppProtocol      string
 	AppSource        string
 	Health           tcpHealth
 	SYNSeq           uint32
 	SYNSeen          bool
+	SynAck           bool // The target answered the SYN; an RST before it refused the attempt.
 	TCPState         string
 	FinA, FinB       bool
 	Closed           bool
 	ClientWildcard   *wildcardKey
 	ServerWildcard   *wildcardKey
+	NAT              *natEntry // Set when a NAT rewrote the connection's tuple.
 }
 
 type collector struct {
 	flows           map[flowKey]*flow
 	dns             *domain.DNSCache // Shared by all interfaces: answers on lo name flows elsewhere.
+	nat             *natTable        // Shared by all interfaces: a gateway's LAN and WAN flows are one connection.
 	pendingTLS      map[flowKey]pendingTLSEvent
 	pendingSocket   map[flowKey]pendingSocket
 	fragments       map[fragmentKey]fragmentHeader
 	echoOwners      map[echoKey]echoOwner
+	attempts        map[netip.Addr]*attemptSummary // Inbound attempts without a connection, per source.
 	retired         []*flow
 	roles           map[flowKey]roles
 	wildcards       map[wildcardKey]participant
@@ -268,9 +276,13 @@ func (c *collector) joinFragment(p *capture.Packet) {
 
 func (c *collector) packet(p capture.Packet) {
 	c.joinFragment(&p)
-	if c.dns != nil && p.Protocol == 17 && p.Source.Port() == 53 {
+	if c.dns != nil && p.Source.Port() == 53 {
 		// Name hints also serve flows on other interfaces and ports.
-		c.dns.Observe(p.Payload, time.Now())
+		if p.Protocol == 17 {
+			c.dns.Observe(p.Payload, time.Now())
+		} else if p.Protocol == 6 && len(p.Payload) > 2 && int(binary.BigEndian.Uint16(p.Payload)) == len(p.Payload)-2 {
+			c.dns.Observe(p.Payload[2:], time.Now()) // A whole DNS-over-TCP answer in one segment.
+		}
 	}
 	if !c.acceptPort(p.Source, p.Destination) {
 		return
@@ -292,6 +304,9 @@ func (c *collector) packet(p capture.Packet) {
 		f = nil
 	}
 	if f == nil {
+		if len(c.flows)+len(c.retired) >= c.maxFlows {
+			c.evict(time.Now())
+		}
 		if len(c.flows)+len(c.retired) >= c.maxFlows {
 			c.droppedFlow++
 			if p.Outgoing {
@@ -320,6 +335,7 @@ func (c *collector) packet(p capture.Packet) {
 		if p.Protocol == 17 || p.Protocol == 6 && p.SYN && !p.ACK {
 			c.attachPendingIO(key, f)
 		}
+		c.natFlow(f, p.Protocol, p.Source, p.Destination)
 	}
 	f.Last = time.Now()
 	f.Health.observe(p, c.loopback)
@@ -365,6 +381,9 @@ func (c *collector) packet(p capture.Packet) {
 	case p.EtherType == 0 && (p.Protocol == 1 || p.Protocol == 58) && p.FragmentOffset == 0:
 		c.icmp(f, p) // A later fragment adds bytes, not another message.
 	}
+	if p.Protocol == 6 && p.SYN && p.ACK && p.Source == f.Target {
+		f.SynAck = true
+	}
 	if p.Protocol == 6 && p.ACK && f.SYNSeen && f.TCPState == "syn" {
 		f.TCPState = "established"
 	}
@@ -377,12 +396,17 @@ func (c *collector) packet(p capture.Packet) {
 			f.Initiator, f.Target, f.Direction = p.Source, p.Destination, c.direction(p)
 		}
 	}
-	if p.Protocol == 6 && f.WireDomain != nil && p.Source == f.WireClient {
+	if p.Protocol == 6 && f.WireDomain != nil {
 		seq := p.TCPSeq
 		if p.SYN {
 			seq++
 		}
-		f.WireDomain.AddSegment(seq, p.Payload, p.PayloadLen)
+		if p.Source == f.WireClient {
+			f.WireDomain.AddSegment(seq, p.Payload, p.PayloadLen)
+		} else {
+			f.WireDomain.AddServer(seq, p.Payload, p.PayloadLen)
+		}
+		f.WireDomain.Alert(p.Payload, p.Source != f.WireClient)
 	}
 	if f.AppProtocol == "" && len(p.Payload) > 0 {
 		var observed appproto.Detection
@@ -392,6 +416,14 @@ func (c *collector) packet(p capture.Packet) {
 			observed = appproto.UDP(p.Payload, p.Source.Port(), p.Destination.Port())
 		}
 		f.AppProtocol, f.AppSource = observed.Name, observed.Source
+	}
+	if len(p.Payload) > 0 {
+		switch f.AppProtocol {
+		case "DNS", "mDNS", "LLMNR":
+			f.DNS.observe(p)
+		case "SSH":
+			f.sshBanner(p)
+		}
 	}
 	if p.Protocol == 17 && f.AppProtocol == "QUIC" && len(p.Payload) > 0 {
 		if f.QUIC == nil {
@@ -433,10 +465,15 @@ func (c *collector) packet(p capture.Packet) {
 		switch e.Kind {
 		case "http":
 			f.AppProtocol, f.AppSource = "HTTP", "HTTP request header"+via
+		case "http2":
+			f.AppProtocol, f.AppSource = "HTTP/2", "HTTP/2 HEADERS"+via
+			if e.GRPC {
+				f.AppProtocol = "gRPC"
+			}
 		case "tls":
 			f.AppProtocol, f.AppSource = "TLS", "ClientHello"+via
 		case "proxy":
-			f.AppProtocol, f.AppSource = "SOCKS5", "proxy request"
+			f.AppProtocol, f.AppSource = e.ProxyVia, "proxy request"
 			if e.ProxyVia == "CONNECT" {
 				f.AppProtocol = "HTTP CONNECT"
 			}
@@ -467,6 +504,9 @@ func (c *collector) packet(p capture.Packet) {
 	if p.Protocol == 6 {
 		switch {
 		case p.RST:
+			if !f.Closed && f.SYNSeen && !f.SynAck && p.Source == f.Target {
+				c.noteAttempt(f, true, p.CapturedAt) // The target refused the connection.
+			}
 			f.TCPState, f.Closed = "reset", true
 		case p.FIN:
 			if p.Source == f.Key.A {
@@ -649,6 +689,7 @@ func (c *collector) event(e probe.Event) {
 	if c.debugPID {
 		fmt.Fprintf(os.Stderr, "PID event: proto=%d op=%s app-bytes=%d local=%s remote=%s pid=%d netns=%d\n", e.Protocol, e.Operation, e.AppBytes, e.Local, e.Remote, e.PID, e.NetNS)
 	}
+	e.Local, e.Remote = c.natSocket(e.Local, e.Remote, e.Protocol)
 	portMatch := c.acceptPort(e.Local, e.Remote)
 	if !portMatch && e.AppBytes == 0 {
 		return
@@ -796,6 +837,7 @@ func (c *collector) expire(now time.Time) {
 		}
 	}
 	maps.DeleteFunc(c.echoOwners, func(_ echoKey, owner echoOwner) bool { return now.Sub(owner.seen) > echoOwnerIdle })
+	maps.DeleteFunc(c.attempts, func(_ netip.Addr, a *attemptSummary) bool { return now.Sub(a.Last) > attemptIdle })
 	expiredIDs := make(map[processID]struct{})
 	for id, seen := range c.pidSeen {
 		if now.Sub(seen) > 5*time.Minute {
@@ -817,18 +859,12 @@ func (c *collector) expire(now time.Time) {
 			}
 		}
 	}
-	expireFlow := func(f *flow) {
-		c.expiredFlows++
-		c.expiredRX += f.RX
-		c.expiredTX += f.TX
-		if f.Domain != nil && f.Domain.Evidence().Listed() {
-			c.expiredDomainRX += f.RX
-			c.expiredDomainTX += f.TX
-		}
-	}
 	for key, f := range c.flows {
 		if f.WireDomain != nil {
 			f.WireDomain.Tick(now)
+		}
+		if f.NAT != nil && f.Last.After(f.NAT.seen) {
+			f.NAT.seen = f.Last // A NAT entry lives as long as its flows.
 		}
 		if f.QUIC != nil {
 			f.QUIC.Tick(now)
@@ -844,7 +880,7 @@ func (c *collector) expire(now time.Time) {
 		if now.Sub(f.Last) <= ttl {
 			continue
 		}
-		expireFlow(f)
+		c.expireFlow(f, now)
 		delete(c.flows, key)
 	}
 	retained := c.retired[:0]
@@ -857,7 +893,7 @@ func (c *collector) expire(now time.Time) {
 			ttl = time.Minute
 		}
 		if now.Sub(f.Last) > ttl {
-			expireFlow(f)
+			c.expireFlow(f, now)
 		} else {
 			retained = append(retained, f)
 		}
@@ -1021,26 +1057,48 @@ func run() error {
 			streamStatus = "socket stream capture active: first 16 KiB per TCP socket direction, QUIC long-header datagrams per UDP socket"
 		}
 	}
+	nat, natStatus := startNAT(probeCtx)
+	var natResults <-chan conntrack.Entry
+	if nat != nil {
+		natResults = nat.results
+	}
 	streams := make(socketStreams)
-	sockets := &socketInventory{procRoot: "/proc"}
+	sockets := &socketInventory{procRoot: "/proc", loaded: make(chan *socketInventory, 1)}
 	sockets.load()
 	sockets.atStart = sockets.sockets
-	fds := make(map[string]int, len(interfaceNames))
+	captureSockets := make(map[string]*capture.Socket, len(interfaceNames))
+	var captureWG sync.WaitGroup
+	defer func() {
+		cancelRun()
+		captureWG.Wait() // A ring stays mapped until its reader has stopped.
+		for _, s := range captureSockets {
+			s.Close()
+		}
+	}()
 	for _, name := range interfaceNames {
-		fd, err := capture.Open(name)
+		s, err := capture.Open(name)
 		if err != nil {
 			return err
 		}
-		fds[name] = fd
-		defer syscall.Close(fd)
+		captureSockets[name] = s
 	}
-	packets := make(chan capture.Packet, 8192)
+	// A socket has one batch out at a time: its ring block.
+	packets := make(chan capture.Batch, len(interfaceNames))
 	packetErrors := make(chan error, len(interfaceNames))
 	var recordFrames atomic.Bool
-	var captureWG sync.WaitGroup
+	// A recording keeps whole frames; otherwise the rings take SnapLength.
+	fullFrames := func(on bool) error {
+		recordFrames.Store(on)
+		for _, s := range captureSockets {
+			if err := s.SetFullFrames(on); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	for _, name := range interfaceNames {
-		fd := fds[name]
-		captureWG.Go(func() { capture.Run(ctx, fd, name, &recordFrames, packets, packetErrors) })
+		s := captureSockets[name]
+		captureWG.Go(func() { s.Run(ctx, &recordFrames, packets, packetErrors) })
 	}
 	go func() {
 		captureWG.Wait()
@@ -1049,7 +1107,7 @@ func run() error {
 	collectors := make(map[string]*collector, len(interfaceNames))
 	dnsHints := new(domain.DNSCache)
 	for i, name := range interfaceNames {
-		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", debugPID: *debugPID && i == 0}
+		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", debugPID: *debugPID && i == 0}
 	}
 	host, _, members := hostCollector(interfaceNames, collectors)
 	var hostState hostViewState
@@ -1064,6 +1122,7 @@ func run() error {
 		ui.tlsProbeStatus = tlsStatus
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
+		ui.natStatus, ui.nat = natStatus, nat
 		ui.render(host, 0, 0, 0)
 	} else {
 		if autoInterfaces {
@@ -1073,6 +1132,7 @@ func run() error {
 		}
 		fmt.Println(tlsStatus)
 		fmt.Println(streamStatus)
+		fmt.Println(natStatus)
 	}
 	currentCollector := func() *collector {
 		if ui.hostScope && ui.mode != viewInterfaces {
@@ -1097,13 +1157,15 @@ func run() error {
 		if recording == nil {
 			return
 		}
-		recordFrames.Store(false)
+		snapErr := fullFrames(false)
 		closeErr := recording.Close()
 		if ui != nil {
 			ui.capturePath = recording.path
 			ui.captureStatus = fmt.Sprintf("saved %s (%d packets, %s)", filepath.Base(recording.path), recording.writer.Packets, reason)
 			if closeErr != nil {
 				ui.captureStatus = "PCAPNG close failed: " + closeErr.Error()
+			} else if snapErr != nil {
+				ui.captureStatus += "; capture length not restored: " + snapErr.Error()
 			}
 		}
 		recording = nil
@@ -1122,12 +1184,15 @@ func run() error {
 			}
 			dnsHints.Expire(time.Now())
 			streams.expire(time.Now())
+			if nat != nil {
+				nat.expire(time.Now())
+			}
 			for _, name := range interfaceNames {
 				c := collectors[name]
 				c.expire(time.Now())
 				c.reconcileWildcards()
 				c.attachDNSHints()
-				stats, err := capture.SocketStatistics(fds[name])
+				stats, err := captureSockets[name].Statistics()
 				if err != nil {
 					return err
 				}
@@ -1179,23 +1244,28 @@ func run() error {
 					} else {
 						ui.capturePath = recording.path
 						ui.captureStatus = fmt.Sprintf("recording %s for 15s; c stops", recording.label)
-						recordFrames.Store(true)
+						if err := fullFrames(true); err != nil {
+							ui.captureStatus = "capture: frames may be cut short: " + err.Error()
+						}
 					}
 				}
 			}
 			ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
-		case p, ok := <-packets:
+		case batch, ok := <-packets:
 			if !ok {
 				packets = nil
 				continue
 			}
-			collector := collectors[p.Interface]
-			collector.packet(p)
-			if recording != nil {
-				if err := recording.Write(p, collector.flows[packetKey(p)]); err != nil {
-					stopRecording(err.Error())
+			for _, p := range batch.Packets {
+				collector := collectors[p.Interface]
+				collector.packet(p)
+				if recording != nil {
+					if err := recording.Write(p, collector.flows[packetKey(p)]); err != nil {
+						stopRecording(err.Error())
+					}
 				}
 			}
+			batch.Release()
 		case e, ok := <-events:
 			if !ok {
 				events = nil
@@ -1223,6 +1293,13 @@ func run() error {
 				for _, name := range interfaceNames {
 					collectors[name].socketEvidence(stream)
 				}
+			}
+		case next := <-sockets.loaded:
+			sockets.apply(next, collectors)
+		case e := <-natResults:
+			entry := nat.add(e, time.Now())
+			for _, name := range interfaceNames {
+				collectors[name].linkNAT(entry)
 			}
 		case err := <-streamDone:
 			if err != nil {
@@ -1260,13 +1337,16 @@ func run() error {
 	if *duration > 0 && streamStats != nil {
 		fmt.Printf("Socket stream chunks %d kernel-lost %d dropped %d invalid %d\n", streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load())
 	}
-	sockets.refresh(collectors, time.Now())
+	if *duration > 0 && nat != nil {
+		fmt.Println(nat.stats())
+	}
+	sockets.refreshNow(collectors)
 	for _, name := range interfaceNames {
 		c := collectors[name]
 		c.reconcileWildcards()
 		c.attachDNSHints()
 		c.expirePendingIO(time.Now(), true)
-		packetStats, err := capture.SocketStatistics(fds[name])
+		packetStats, err := captureSockets[name].Statistics()
 		if err != nil {
 			return err
 		}
@@ -1318,7 +1398,7 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		return 0
 	})
 	if interfaceName == "OVERVIEW" {
-		fmt.Printf("\nOVERVIEW: %d observed flows; IP bytes below use one capture point per flow, not an exact whole-host total; NAT can produce separate tuples\n", len(flows))
+		fmt.Printf("\nOVERVIEW: %d observed flows; IP bytes below use one capture point per flow, not an exact whole-host total; a NAT's two tuples are one flow once conntrack links them\n", len(flows))
 	} else {
 		fmt.Printf("\n%s: %d IP packets, %d IP bytes, %d retained flows, %d expired flows, %d packets without flow index\n", interfaceName, c.packets, c.bytes, len(flows), c.expiredFlows, c.droppedFlow)
 	}
@@ -1353,11 +1433,20 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		if f.DomainConflict {
 			detail += " DOMAIN-CONFLICT"
 		}
+		if f.NAT != nil {
+			detail += " [" + f.NAT.String() + "]"
+		}
 		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(f.Health.SynRTT), f.Health.Retransmits, formatPID(f.Client), formatPID(f.Server), detail)
 	}
 	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host.")
 	if interfaceName == "OVERVIEW" {
 		fmt.Println("Domain IP bytes are single-point observations; NAT-transformed paths may still appear as separate connections.")
+	}
+	if sources := attemptSources(c.attempts); len(sources) > 0 {
+		fmt.Println("Inbound attempts without a connection (refused or unanswered), most ports first:")
+		for _, source := range sources[:min(len(sources), 10)] {
+			fmt.Printf("  %-39s %s\n", source, c.attempts[source])
+		}
 	}
 	printDomains(flows)
 	if interfaceName == "OVERVIEW" && c.expiredDomainRX+c.expiredDomainTX > 0 {

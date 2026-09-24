@@ -114,7 +114,7 @@ func (s *captureSession) Write(p capture.Packet, observed *flow) error {
 		packetDirection = "tx"
 	}
 	comment := fmt.Sprintf("socktrail interface=%s packet_direction=%s flow_direction=%s app=%s app_source=%q origin_pid=%d origin_start_ns=%d origin_process=%q target_pid=%d target_start_ns=%d target_process=%q", p.Interface, packetDirection, observed.Direction, observed.AppProtocol, observed.AppSource, observed.Client.PID, observed.Client.StartNS, observed.Client.Name, observed.Server.PID, observed.Server.StartNS, observed.Server.Name)
-	if p.Truncated {
+	if p.Truncated || len(p.Frame) < p.FrameLen {
 		comment += " captured_frame_truncated=true"
 	}
 	if observed.Domain != nil && observed.Domain.Evidence().Listed() {
@@ -129,7 +129,7 @@ func (s *captureSession) Write(p capture.Packet, observed *flow) error {
 	if len(comment) > 1024 {
 		comment = comment[:1024]
 	}
-	if err := s.writer.Packet(interfaceID, p.Frame, p.CapturedAt, comment); err != nil {
+	if err := s.writer.Packet(interfaceID, p.Frame, p.FrameLen, p.CapturedAt, comment); err != nil {
 		if errors.Is(err, pcapng.ErrLimit) {
 			return pcapng.ErrLimit
 		}

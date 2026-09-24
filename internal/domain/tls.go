@@ -75,7 +75,7 @@ type cursor struct {
 
 func (c *cursor) take(n int) ([]byte, error) {
 	if n < 0 || n > len(c.data)-c.off {
-		return nil, fmt.Errorf("truncated TLS ClientHello")
+		return nil, fmt.Errorf("truncated TLS handshake message")
 	}
 	part := c.data[c.off : c.off+n]
 	c.off += n
@@ -233,7 +233,18 @@ func parseALPN(data []byte) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		protocols = append(protocols, string(protocol))
+		if printable(protocol) { // GREASE and binary IDs could garble a terminal.
+			protocols = append(protocols, string(protocol))
+		}
 	}
 	return protocols, nil
+}
+
+func printable(b []byte) bool {
+	for _, c := range b {
+		if c < 33 || c > 126 {
+			return false
+		}
+	}
+	return true
 }

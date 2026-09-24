@@ -2,6 +2,7 @@ package main
 
 import (
 	"maps"
+	"net/netip"
 	"slices"
 	"time"
 )
@@ -119,8 +120,21 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 		host.truncated += c.truncated
 		host.droppedFlow += c.droppedFlow
 		host.droppedRole += c.droppedRole
+		for source, a := range c.attempts {
+			if host.attempts == nil {
+				host.attempts = make(map[netip.Addr]*attemptSummary)
+			}
+			if host.attempts[source] == nil {
+				host.attempts[source] = &attemptSummary{Ports: make(map[uint16]struct{})}
+			}
+			host.attempts[source].add(a)
+		}
 		for _, f := range c.allFlows() {
-			byKey[f.Key] = append(byKey[f.Key], observedFlow{flow: f, interfaceName: name})
+			key := f.Key
+			if f.NAT != nil {
+				key = f.NAT.orig // A gateway's LAN and WAN tuples are one connection.
+			}
+			byKey[key] = append(byKey[key], observedFlow{flow: f, interfaceName: name})
 		}
 	}
 	for _, candidates := range byKey {
@@ -233,6 +247,14 @@ func domainEvidenceScore(f *flow) uint64 {
 	return 4 + requests
 }
 
+// crossed reports a flow seen entering the host on one interface and
+// leaving on another: the host routed it, as a NAT gateway does.
+func crossed(a, b string) bool {
+	in := func(d string) bool { return d == "inbound" || d == "first-packet-in" }
+	out := func(d string) bool { return d == "outbound" || d == "first-packet-out" }
+	return in(a) && out(b) || out(a) && in(b)
+}
+
 func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 	packetSource := group[0].flow
 	evidenceSource := packetSource
@@ -297,9 +319,12 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			merged.IO[id] = ioBytes{RX: max(old.RX, io.RX), TX: max(old.TX, io.TX)}
 		}
 		if f.Direction != "" && f.Direction != "unknown" {
-			if direction == "" {
+			switch {
+			case direction == "" || direction == f.Direction:
 				direction = f.Direction
-			} else if direction != f.Direction {
+			case crossed(direction, f.Direction):
+				direction = "forwarded"
+			case direction != "forwarded":
 				direction = "unknown"
 			}
 		}

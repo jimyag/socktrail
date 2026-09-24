@@ -50,6 +50,8 @@ const (
 	BpfProgPingSendEnter    = "ping_send_enter"
 	BpfProgRawSendEnter     = "raw_send_enter"
 	BpfProgRawv6SendEnter   = "rawv6_send_enter"
+	BpfProgSpliceRecvExit   = "splice_recv_exit"
+	BpfProgSpliceSendExit   = "splice_send_exit"
 	BpfProgTcpAcceptExit    = "tcp_accept_exit"
 	BpfProgTcpRecvExit      = "tcp_recv_exit"
 	BpfProgTcpRecvExitOld   = "tcp_recv_exit_old"
@@ -111,6 +113,8 @@ type BpfProgramSpecs struct {
 	PingSendEnter    *ebpf.ProgramSpec `ebpf:"ping_send_enter"`
 	RawSendEnter     *ebpf.ProgramSpec `ebpf:"raw_send_enter"`
 	Rawv6SendEnter   *ebpf.ProgramSpec `ebpf:"rawv6_send_enter"`
+	SpliceRecvExit   *ebpf.ProgramSpec `ebpf:"splice_recv_exit"`
+	SpliceSendExit   *ebpf.ProgramSpec `ebpf:"splice_send_exit"`
 	TcpAcceptExit    *ebpf.ProgramSpec `ebpf:"tcp_accept_exit"`
 	TcpRecvExit      *ebpf.ProgramSpec `ebpf:"tcp_recv_exit"`
 	TcpRecvExitOld   *ebpf.ProgramSpec `ebpf:"tcp_recv_exit_old"`
@@ -188,6 +192,8 @@ type BpfPrograms struct {
 	PingSendEnter    *ebpf.Program `ebpf:"ping_send_enter"`
 	RawSendEnter     *ebpf.Program `ebpf:"raw_send_enter"`
 	Rawv6SendEnter   *ebpf.Program `ebpf:"rawv6_send_enter"`
+	SpliceRecvExit   *ebpf.Program `ebpf:"splice_recv_exit"`
+	SpliceSendExit   *ebpf.Program `ebpf:"splice_send_exit"`
 	TcpAcceptExit    *ebpf.Program `ebpf:"tcp_accept_exit"`
 	TcpRecvExit      *ebpf.Program `ebpf:"tcp_recv_exit"`
 	TcpRecvExitOld   *ebpf.Program `ebpf:"tcp_recv_exit_old"`
@@ -209,6 +215,8 @@ func (p *BpfPrograms) Close() error {
 		p.PingSendEnter,
 		p.RawSendEnter,
 		p.Rawv6SendEnter,
+		p.SpliceRecvExit,
+		p.SpliceSendExit,
 		p.TcpAcceptExit,
 		p.TcpRecvExit,
 		p.TcpRecvExitOld,

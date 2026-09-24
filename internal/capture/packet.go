@@ -17,6 +17,17 @@ const (
 	// EtherTypeLLC groups 802.3 frames, whose type field is a length and whose
 	// payload starts with an LLC header, such as spanning tree BPDUs.
 	EtherTypeLLC = 1
+
+	// maxTCPPayload is the most of a TCP segment the decoder reads; a
+	// ClientHello or an HTTP header block fits within it.
+	maxTCPPayload = 16 * 1024
+	// SnapLength is the most of each frame the capture keeps while nothing is
+	// recorded: the headers and maxTCPPayload bytes of payload.
+	SnapLength = maxTCPPayload + 256
+	// ipSnapLength is the part of SnapLength left for the IP packet after an
+	// Ethernet header with two VLAN tags. A packet cut beyond it lost nothing
+	// the decoder reads, so it does not count as truncated.
+	ipSnapLength = SnapLength - 22
 )
 
 type Packet struct {
@@ -29,9 +40,10 @@ type Packet struct {
 	HardwareAddr        [6]byte // ARP sender hardware address.
 	TCPSeq              uint32
 	TCPAck              uint32
-	Payload             []byte
+	Payload             []byte // Points into the capture ring until its Batch is released: copy what you keep.
 	PayloadLen          int    // TCP payload length on the wire; Payload may hold only a prefix.
 	Frame               []byte // Populated only while an explicit packet recording is active.
+	FrameLen            int    // The frame's length on the wire; Frame may hold only a prefix.
 	CapturedAt          time.Time
 	PayloadTruncated    bool
 	Outgoing            bool
@@ -142,7 +154,7 @@ func decodeIPv4(ip []byte, outgoing bool) (Packet, bool) {
 		Protocol:    ip[9],
 		IPBytes:     uint32(totalLen),
 		Outgoing:    outgoing,
-		Truncated:   len(ip) < totalLen,
+		Truncated:   len(ip) < min(totalLen, ipSnapLength),
 	}
 	if flags := binary.BigEndian.Uint16(ip[6:8]); flags&0x3fff != 0 {
 		p.Fragmented, p.FragmentID, p.FragmentOffset = true, uint32(binary.BigEndian.Uint16(ip[4:6])), flags&0x1fff
@@ -167,7 +179,7 @@ func decodeIPv6(ip []byte, outgoing bool) (Packet, bool) {
 		Protocol:    ip[6],
 		IPBytes:     uint32(length),
 		Outgoing:    outgoing,
-		Truncated:   len(ip) < length,
+		Truncated:   len(ip) < min(length, ipSnapLength),
 	}
 	next, offset := ip[6], 40
 	for range 8 {
@@ -228,7 +240,8 @@ func decodeTransport(p *Packet, data []byte, wireLength int) {
 				p.PayloadLen = max(0, wireLength-headerLen)
 			}
 			if headerLen >= 20 && headerLen <= len(data) {
-				p.Payload = append([]byte(nil), data[headerLen:min(len(data), headerLen+16*1024)]...)
+				end := min(len(data), headerLen+maxTCPPayload)
+				p.Payload = data[headerLen:end:end]
 			}
 			p.PayloadTruncated = len(p.Payload) < p.PayloadLen
 		} else if p.Protocol == 17 && len(data) >= 8 {
@@ -242,7 +255,8 @@ func decodeTransport(p *Packet, data []byte, wireLength int) {
 					limit = 4096 // EDNS answers exceed 1 KiB; they feed DNS name hints.
 				}
 				p.PayloadTruncated = udpLength-8 > limit || len(data) < udpLength
-				p.Payload = append([]byte(nil), data[8:min(len(data), udpLength, 8+limit)]...)
+				end := min(len(data), udpLength, 8+limit)
+				p.Payload = data[8:end:end]
 			}
 		}
 	case 1, 58:
