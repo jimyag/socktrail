@@ -16,14 +16,26 @@ func (r sequenceRange) overlaps(other sequenceRange) bool {
 }
 
 type tcpHealth struct {
-	SynRTT      time.Duration
-	Retransmits uint64
-	synAt       time.Time
-	synFrom     netip.AddrPort
-	synSeq      uint32
-	synSeen     [2]bool
-	synSeqByDir [2]uint32
-	seen        [2][]sequenceRange
+	SynRTT            time.Duration
+	Retransmits       uint64    // Overlapping captured segments: a guess from the capture point.
+	KernelRetransmits [2]uint32 // Each local end's socket total, as ss shows it; indexed like the key's A and B.
+	synAt             time.Time
+	synFrom           netip.AddrPort
+	synSeq            uint32
+	synSeen           [2]bool
+	synSeqByDir       [2]uint32
+	seen              [2][]sequenceRange
+}
+
+// retransmits returns the retransmissions to show and their source. A flow
+// with a local socket has the kernel's own count, zero until the kernel
+// reports one; a flow only passing through has the capture's guess.
+func retransmits(f *flow) (uint64, string) {
+	kernel := f.Health.KernelRetransmits
+	if kernel != [2]uint32{} || f.Client.PID > 0 || f.Server.PID > 0 {
+		return uint64(kernel[0]) + uint64(kernel[1]), "kernel"
+	}
+	return f.Health.Retransmits, "capture"
 }
 
 func formatSYNRTT(value time.Duration) string {

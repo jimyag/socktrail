@@ -14,6 +14,23 @@ func Params(name string) int {
 	if err != nil {
 		return -1
 	}
+	return params(spec, name)
+}
+
+// ModuleParams is Params for a function of a loaded kernel module, or of the
+// kernel itself when the module is built in.
+func ModuleParams(module, name string) int {
+	if n := Params(name); n >= 0 {
+		return n
+	}
+	spec, err := btf.LoadKernelModuleSpec(module)
+	if err != nil {
+		return -1
+	}
+	return params(spec, name)
+}
+
+func params(spec *btf.Spec, name string) int {
 	var fn *btf.Func
 	if err := spec.TypeByName(name, &fn); err != nil {
 		return -1

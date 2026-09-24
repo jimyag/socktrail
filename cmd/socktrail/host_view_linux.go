@@ -1,7 +1,6 @@
 package main
 
 import (
-	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -268,11 +267,9 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		}
 	}
 	merged := *packetSource
-	merged.IO = maps.Clone(packetSource.IO)
-	merged.TLSActors = maps.Clone(packetSource.TLSActors)
-	if merged.IO == nil {
-		merged.IO = make(map[processID]ioBytes)
-	}
+	// Rebuilt below from every observation, packetSource's too; the view is
+	// rebuilt each second, so maps come only with an entry.
+	merged.IO, merged.TLSActors = nil, nil
 	merged.Domain = evidenceSource.Domain
 	// The observation that supplied the name also parsed the application protocol.
 	if merged.AppProtocol == "" || evidenceSource.AppProtocol != "" && domainEvidenceScore(evidenceSource) > 0 {
@@ -299,6 +296,9 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			merged.Health.SynRTT = f.Health.SynRTT
 		}
 		merged.Health.Retransmits = max(merged.Health.Retransmits, f.Health.Retransmits)
+		for side, count := range f.Health.KernelRetransmits {
+			merged.Health.KernelRetransmits[side] = max(merged.Health.KernelRetransmits[side], count)
+		}
 		if !f.First.IsZero() && (merged.First.IsZero() || f.First.Before(merged.First)) {
 			merged.First = f.First
 		}
@@ -315,6 +315,9 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			merged.Server = mergeParticipant(merged.Server, f.Server)
 		}
 		for id, io := range f.IO {
+			if merged.IO == nil {
+				merged.IO = make(map[processID]ioBytes)
+			}
 			old := merged.IO[id]
 			merged.IO[id] = ioBytes{RX: max(old.RX, io.RX), TX: max(old.TX, io.TX)}
 		}

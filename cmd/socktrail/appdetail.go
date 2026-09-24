@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/domain"
@@ -18,6 +19,13 @@ type dnsState struct {
 	Type                         uint16
 	RCode                        uint8
 	Answered                     bool // The latest question has a response.
+	LastRTT, MinRTT              time.Duration
+	pending                      [4]dnsPending // The latest queries awaiting a response.
+}
+
+type dnsPending struct {
+	id uint16
+	at time.Time
 }
 
 // observe reads one message. Its question is parsed only for a query, or
@@ -33,13 +41,25 @@ func (s *dnsState) observe(p capture.Packet) {
 	if len(msg) < 12 {
 		return
 	}
-	response := msg[2]&0x80 != 0
+	response, id := msg[2]&0x80 != 0, binary.BigEndian.Uint16(msg)
 	if response {
 		s.Responses++
 		if s.RCode, s.Answered = msg[3]&0x0f, true; s.RCode != 0 {
 			s.Failures++
 		}
+		for i, query := range s.pending {
+			if !query.at.IsZero() && query.id == id {
+				if rtt := p.CapturedAt.Sub(query.at); rtt >= 0 {
+					s.LastRTT = rtt
+					if s.MinRTT == 0 || rtt < s.MinRTT {
+						s.MinRTT = rtt
+					}
+				}
+				s.pending[i] = dnsPending{}
+			}
+		}
 	} else {
+		s.pending[s.Queries%uint64(len(s.pending))] = dnsPending{id: id, at: p.CapturedAt}
 		s.Queries++
 		s.Answered = false
 	}
@@ -74,6 +94,12 @@ func (s dnsState) String() string {
 	}
 	if s.Failures > 0 {
 		text += fmt.Sprintf(" failed=%d", s.Failures)
+	}
+	if s.LastRTT > 0 {
+		text += " rtt=" + s.LastRTT.Round(100*time.Microsecond).String()
+		if s.MinRTT < s.LastRTT {
+			text += " min=" + s.MinRTT.Round(100*time.Microsecond).String()
+		}
 	}
 	return text
 }
@@ -116,7 +142,9 @@ func sshDescription(banners [2]string) string {
 func appDetail(f *flow) string {
 	switch f.AppProtocol {
 	case "DNS", "mDNS", "LLMNR":
-		return f.DNS.String()
+		if f.DNS != nil {
+			return f.DNS.String()
+		}
 	case "SSH":
 		return sshDescription(f.SSH)
 	case "TLS":

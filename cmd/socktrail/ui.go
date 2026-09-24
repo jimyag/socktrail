@@ -987,9 +987,13 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			}
 		}
 	}
-	var captureIssues uint64
+	var dropped, truncated, flowIndex, pidIndex, unindexed uint64
 	for _, observedCollector := range observed {
-		captureIssues += observedCollector.droppedFlow + observedCollector.droppedRole + observedCollector.truncated + observedCollector.kernelDropped + observedCollector.ioUnindexed.RX + observedCollector.ioUnindexed.TX
+		dropped += observedCollector.kernelDropped
+		truncated += observedCollector.truncated
+		flowIndex += observedCollector.droppedFlow
+		pidIndex += observedCollector.droppedRole
+		unindexed += observedCollector.ioUnindexed.RX + observedCollector.ioUnindexed.TX
 		for _, f := range observedCollector.allFlows() {
 			if f.Domain == nil {
 				continue
@@ -1003,12 +1007,26 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			}
 		}
 	}
+	var sniffLost uint64
 	if u.streamStats != nil {
-		captureIssues += u.streamStats.KernelLost.Load() + u.streamStats.Dropped.Load()
+		sniffLost = u.streamStats.KernelLost.Load() + u.streamStats.Dropped.Load()
+	}
+	// Name each nonzero loss, so the cause shows without the status page.
+	var reasons []string
+	for _, count := range []struct {
+		name string
+		n    uint64
+	}{
+		{"drop", dropped}, {"trunc", truncated}, {"flow-index", flowIndex}, {"pid-index", pidIndex},
+		{"pid-lost", probeLost + probeDropped}, {"io-unindexed", unindexed}, {"sniff-lost", sniffLost}, {"parse", parseFailures},
+	} {
+		if count.n > 0 {
+			reasons = append(reasons, fmt.Sprintf("%s=%d", count.name, count.n))
+		}
 	}
 	mark := ""
-	if captureIssues+probeLost+probeDropped+parseFailures > 0 {
-		mark = " INCOMPLETE"
+	if len(reasons) > 0 {
+		mark = " INCOMPLETE " + strings.Join(reasons, " ")
 	}
 	if strings.Contains(u.tlsProbeStatus, "unavailable") || strings.Contains(u.tlsProbeStatus, "stopped") {
 		mark += " OPENSSL-PROBE-UNAVAILABLE"
@@ -1230,7 +1248,8 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		if app == "" {
 			app, source = "unknown", "no observed signature"
 		}
-		appLine := fmt.Sprintf("APP %s (%s)  SYN RTT %s  RETX %d", app, source, formatSYNRTT(selected.Health.SynRTT), selected.Health.Retransmits)
+		retx, retxSource := retransmits(selected)
+		appLine := fmt.Sprintf("APP %s (%s)  SYN RTT %s  RETX %d (%s)", app, source, formatSYNRTT(selected.Health.SynRTT), retx, retxSource)
 		if selected.DomainConflict {
 			appLine += "  DOMAIN CONFLICT"
 		}

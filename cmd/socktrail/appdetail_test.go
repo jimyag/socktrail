@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/domain"
@@ -27,6 +28,26 @@ func TestDNSFlowShowsQuestionAndAnswer(t *testing.T) {
 	c.packet(capture.Packet{Source: resolver, Destination: client, Protocol: 17, HasPorts: true, Payload: nxdomain, IPBytes: 60})
 	f := c.flows[keyFor(client, resolver, 17)]
 	if got := flowName(f); got != "AAAA missing.example.test NXDOMAIN failed=1" {
+		t.Fatalf("DNS flow detail %q", got)
+	}
+}
+
+// A response pairs with its query by transaction ID; the flow keeps the
+// latest and the fastest round trip.
+func TestDNSRoundTrip(t *testing.T) {
+	client, resolver := netip.MustParseAddrPort("192.0.2.10:40002"), netip.MustParseAddrPort("192.0.2.53:53")
+	c := newTestCollector()
+	start := time.Now()
+	exchange := func(at, rtt time.Duration) {
+		query := append(dnsQuery("rtt.example.test", 1), 0, 1)
+		c.packet(capture.Packet{Source: client, Destination: resolver, Protocol: 17, HasPorts: true, Payload: query, IPBytes: 60, Outgoing: true, CapturedAt: start.Add(at)})
+		answer := append(dnsQuery("rtt.example.test", 1), 0, 1)
+		answer[2], answer[3] = 0x81, 0x80
+		c.packet(capture.Packet{Source: resolver, Destination: client, Protocol: 17, HasPorts: true, Payload: answer, IPBytes: 60, CapturedAt: start.Add(at + rtt)})
+	}
+	exchange(0, 8*time.Millisecond)
+	exchange(time.Second, 15200*time.Microsecond)
+	if got := flowName(c.flows[keyFor(client, resolver, 17)]); got != "A rtt.example.test NOERROR queries=2 rtt=15.2ms min=8ms" {
 		t.Fatalf("DNS flow detail %q", got)
 	}
 }

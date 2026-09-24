@@ -125,6 +125,14 @@ func (t *natTable) stats() string {
 	return line
 }
 
+func (t *natTable) json(status string) jsonNAT {
+	n := jsonNAT{Status: status, Lookups: t.lookups.Load(), Translated: t.found.Load(), QueueFull: t.skipped.Load(), Failed: t.failed.Load()}
+	if last := t.lastError.Load(); last != nil {
+		n.LastError = *last
+	}
+	return n
+}
+
 // natFlow links a new flow to its NAT entry, or asks conntrack for one.
 func (c *collector) natFlow(f *flow, protocol uint8, src, dst netip.AddrPort) {
 	if c.nat == nil || protocol != 6 && protocol != 17 || dst.Addr().IsMulticast() {

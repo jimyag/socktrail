@@ -21,11 +21,10 @@ const (
 	packetOutgoing = 4
 
 	// The receive ring replaces the 8 MiB socket buffer. Packets are packed
-	// by length and cut at SnapLength, so its 4 MiB holds more of them than
-	// that buffer held skbs: a 256 KiB block takes about 2,000 small packets
-	// or 15 cut GSO frames. The ring counts in RSS; the buffer did not.
+	// by length and cut at SnapLength, so 4 MiB holds more of them than that
+	// buffer held skbs: a 256 KiB block takes about 2,000 small packets or 15
+	// cut GSO frames. The ring counts in RSS; the buffer did not.
 	ringBlockSize = 256 << 10
-	ringBlocks    = 16
 	ringFrameSize = 1 << 11 // Only validated by the kernel; TPACKET_V3 packs packets by length.
 	// A partly filled block is handed over after this many milliseconds.
 	// Light traffic retires a block per timeout, so blocks times timeout is
@@ -45,6 +44,7 @@ type Statistics struct {
 type Socket struct {
 	fd       int
 	ring     []byte
+	blocks   int
 	name     string
 	next     int
 	packets  []Packet      // Reused for every batch: one is out at a time.
@@ -65,8 +65,9 @@ func (b Batch) Release() { b.released <- struct{}{} }
 func htons(v uint16) uint16 { return v>>8 | v<<8 }
 
 // Open binds a ring-backed AF_PACKET socket to one interface in the caller's
-// netns. The caller must close it; no promiscuous mode is enabled.
-func Open(interfaceName string) (*Socket, error) {
+// netns; ringSize is rounded down to whole 256 KiB blocks. The caller must
+// close it; no promiscuous mode is enabled.
+func Open(interfaceName string, ringSize int) (*Socket, error) {
 	iface, err := net.InterfaceByName(interfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("interface %q: %w", interfaceName, err)
@@ -77,21 +78,21 @@ func Open(interfaceName string) (*Socket, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open AF_PACKET socket (need CAP_NET_RAW): %w", err)
 	}
-	s := &Socket{fd: fd, name: interfaceName, released: make(chan struct{}, 1)}
+	s := &Socket{fd: fd, blocks: max(1, ringSize/ringBlockSize), name: interfaceName, released: make(chan struct{}, 1)}
 	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_VERSION, unix.TPACKET_V3); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("select TPACKET_V3: %w", err)
 	}
 	request := unix.TpacketReq3{
-		Block_size: ringBlockSize, Block_nr: ringBlocks,
-		Frame_size: ringFrameSize, Frame_nr: ringBlockSize / ringFrameSize * ringBlocks,
+		Block_size: ringBlockSize, Block_nr: uint32(s.blocks),
+		Frame_size: ringFrameSize, Frame_nr: uint32(ringBlockSize / ringFrameSize * s.blocks),
 		Retire_blk_tov: ringBlockTimeout,
 	}
 	if err := unix.SetsockoptTpacketReq3(fd, unix.SOL_PACKET, unix.PACKET_RX_RING, &request); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("set up AF_PACKET receive ring: %w", err)
 	}
-	if s.ring, err = unix.Mmap(fd, 0, ringBlockSize*ringBlocks, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED); err != nil {
+	if s.ring, err = unix.Mmap(fd, 0, ringBlockSize*s.blocks, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("map AF_PACKET receive ring: %w", err)
 	}
@@ -227,7 +228,7 @@ func (s *Socket) Run(ctx context.Context, recordFrames *atomic.Bool, out chan<- 
 			}
 		}
 		atomic.StoreUint32(&desc.Block_status, unix.TP_STATUS_KERNEL)
-		s.next = (s.next + 1) % ringBlocks
+		s.next = (s.next + 1) % s.blocks
 	}
 }
 

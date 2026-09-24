@@ -102,7 +102,10 @@ func (c *collector) icmp(f *flow, p capture.Packet) {
 	if at.IsZero() {
 		at = time.Now()
 	}
-	s := &f.ICMP
+	if f.ICMP == nil {
+		f.ICMP = new(icmpState)
+	}
+	s := f.ICMP
 	if p.ICMPHasEcho {
 		s.LastSeq = p.ICMPSeq
 		if !echoRequest(p) {
@@ -184,7 +187,10 @@ func icmpName(protocol, kind, code uint8) string {
 
 // icmpDescription names an ICMP flow for the connection table.
 func icmpDescription(f *flow) string {
-	s := f.ICMP
+	var s icmpState // A later fragment can open the flow before any message.
+	if f.ICMP != nil {
+		s = *f.ICMP
+	}
 	if f.Key.ICMPEcho {
 		text := fmt.Sprintf("echo id=%d requests=%d replies=%d seq=%d", f.Key.ICMPID, s.Requests, s.Replies, s.LastSeq)
 		if s.RTT > 0 {

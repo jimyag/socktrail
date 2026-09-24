@@ -1,8 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -140,10 +142,10 @@ type flow struct {
 	TLSActors        map[processID]participant
 	DomainConflict   bool
 	QUIC             *quicinitial.Tracker
-	ICMP             icmpState
-	ICMPError        string // Latest ICMP error that quoted this flow's packets.
+	ICMP             *icmpState // ICMP flows only; allocated with their first message, as is DNS.
+	ICMPError        string     // Latest ICMP error that quoted this flow's packets.
 	ARP              arpState
-	DNS              dnsState  // DNS, mDNS and LLMNR flows.
+	DNS              *dnsState // DNS, mDNS and LLMNR flows.
 	SSH              [2]string // SSH identification strings of the initiator and the target.
 	AppProtocol      string
 	AppSource        string
@@ -422,6 +424,9 @@ func (c *collector) packet(p capture.Packet) {
 	if len(p.Payload) > 0 {
 		switch f.AppProtocol {
 		case "DNS", "mDNS", "LLMNR":
+			if f.DNS == nil {
+				f.DNS = new(dnsState)
+			}
 			f.DNS.observe(p)
 		case "SSH":
 			f.sshBanner(p)
@@ -692,6 +697,17 @@ func (c *collector) event(e probe.Event) {
 		fmt.Fprintf(os.Stderr, "PID event: proto=%d op=%s app-bytes=%d local=%s remote=%s pid=%d netns=%d\n", e.Protocol, e.Operation, e.AppBytes, e.Local, e.Remote, e.PID, e.NetNS)
 	}
 	e.Local, e.Remote = c.natSocket(e.Local, e.Remote, e.Protocol)
+	if e.Operation == "retransmit" {
+		// No process and no bytes: only the socket's running total.
+		if f := c.flows[keyFor(e.Local, e.Remote, 6)]; f != nil {
+			side := 0
+			if e.Local == f.Key.B {
+				side = 1
+			}
+			f.Health.KernelRetransmits[side] = max(f.Health.KernelRetransmits[side], e.Retransmits)
+		}
+		return
+	}
 	portMatch := c.acceptPort(e.Local, e.Remote)
 	if !portMatch && e.AppBytes == 0 {
 		return
@@ -1003,10 +1019,18 @@ func run() error {
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
 	captureDir := flag.String("capture-dir", "socktrail-captures", "directory for on-demand 15-second PCAPNG recordings")
+	output := flag.String("output", "text", "snapshot format with --duration: text or json")
+	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	flag.Parse()
 	autoInterfaces := len(interfaceNames) == 0
-	if *port > 65535 || *limit < 1 {
-		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30]")
+	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" || *recordBefore < 0 {
+		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json] [--record-before 10s]")
+	}
+	if *output == "json" && *duration == 0 {
+		return fmt.Errorf("--output json needs --duration: it formats the snapshot")
+	}
+	if *recordBefore > 0 && *duration > 0 {
+		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
 	}
 	var err error
 	interfaceNames, err = resolveInterfaces(interfaceNames)
@@ -1083,8 +1107,13 @@ func run() error {
 			s.Close()
 		}
 	}()
+	// The rings share 16 MiB, at least 4 MiB each. A ring cuts a GSO frame to
+	// SnapLength, 15 to a 256 KiB block: at 600,000 such frames a second a
+	// lone 4 MiB ring held under half a millisecond and dropped 1%, 16 MiB
+	// almost nothing.
+	ringSize := max(4<<20, 16<<20/len(interfaceNames))
 	for _, name := range interfaceNames {
-		s, err := capture.Open(name)
+		s, err := capture.Open(name, ringSize)
 		if err != nil {
 			return err
 		}
@@ -1094,9 +1123,14 @@ func run() error {
 	packets := make(chan capture.Batch, len(interfaceNames))
 	packetErrors := make(chan error, len(interfaceNames))
 	var recordFrames atomic.Bool
+	var history *frameHistory
+	if *recordBefore > 0 {
+		history = &frameHistory{maxAge: *recordBefore}
+		recordFrames.Store(true) // Frames are copied from the start, cut at SnapLength.
+	}
 	// A recording keeps whole frames; otherwise the rings take SnapLength.
 	fullFrames := func(on bool) error {
-		recordFrames.Store(on)
+		recordFrames.Store(on || history != nil)
 		for _, s := range captureSockets {
 			if err := s.SetFullFrames(on); err != nil {
 				return err
@@ -1132,7 +1166,7 @@ func run() error {
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
 		ui.natStatus, ui.nat = natStatus, nat
 		ui.render(host, 0, 0, 0)
-	} else {
+	} else if *output == "text" {
 		if autoInterfaces {
 			fmt.Printf("socktrail OVERVIEW snapshot: %d capture interfaces, netns=%d; PID socket I/O for whole netns\n", len(interfaceNames), stat.Ino)
 		} else {
@@ -1189,6 +1223,9 @@ func run() error {
 		case <-tickCh:
 			if recording != nil && !time.Now().Before(recording.until) {
 				stopRecording("15s complete")
+			}
+			if history != nil {
+				history.trim(time.Now())
 			}
 			dnsHints.Expire(time.Now())
 			streams.expire(time.Now())
@@ -1252,8 +1289,19 @@ func run() error {
 					} else {
 						ui.capturePath = recording.path
 						ui.captureStatus = fmt.Sprintf("recording %s for 15s; c stops", recording.label)
+						if history != nil {
+							ui.captureStatus = fmt.Sprintf("recording %s from %s before, for 15s; c stops", recording.label, *recordBefore)
+						}
 						if err := fullFrames(true); err != nil {
 							ui.captureStatus = "capture: frames may be cut short: " + err.Error()
+						}
+						if history != nil {
+							for _, h := range history.frames {
+								if err := recording.Write(h.packet, h.flow); err != nil {
+									stopRecording(err.Error())
+									break
+								}
+							}
 						}
 					}
 				}
@@ -1272,16 +1320,21 @@ func run() error {
 						stopRecording(err.Error())
 					}
 				}
+				if history != nil {
+					history.add(p, collector.flows[packetKey(p)])
+				}
 			}
 			batch.Release()
-		case e, ok := <-events:
+		case batch, ok := <-events:
 			if !ok {
 				events = nil
 				continue
 			}
-			e.StartNS = tickStartNS(e.StartNS)
-			for _, name := range interfaceNames {
-				collectors[name].event(e)
+			for _, e := range batch {
+				e.StartNS = tickStartNS(e.StartNS)
+				for _, name := range interfaceNames {
+					collectors[name].event(e)
+				}
 			}
 		case e, ok := <-tlsEvents:
 			if !ok {
@@ -1339,14 +1392,16 @@ func run() error {
 			keys = nil
 		}
 	}
-	if *duration > 0 && tlsStats != nil {
-		fmt.Printf("OpenSSL SNI events %d invalid %d dropped %d\n", tlsStats.Received.Load(), tlsStats.Invalid.Load(), tlsStats.Dropped.Load())
-	}
-	if *duration > 0 && streamStats != nil {
-		fmt.Printf("Socket stream chunks %d kernel-lost %d dropped %d invalid %d\n", streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load())
-	}
-	if *duration > 0 && nat != nil {
-		fmt.Println(nat.stats())
+	if *duration > 0 && *output == "text" {
+		if tlsStats != nil {
+			fmt.Printf("OpenSSL SNI events %d invalid %d dropped %d\n", tlsStats.Received.Load(), tlsStats.Invalid.Load(), tlsStats.Dropped.Load())
+		}
+		if streamStats != nil {
+			fmt.Printf("Socket stream chunks %d kernel-lost %d dropped %d invalid %d\n", streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load())
+		}
+		if nat != nil {
+			fmt.Println(nat.stats())
+		}
 	}
 	sockets.refreshNow(collectors)
 	for _, name := range interfaceNames {
@@ -1379,6 +1434,35 @@ func run() error {
 			}
 		}
 		fmt.Printf("PID ring lost %d\n", probeStats.KernelLost.Load())
+	} else if *output == "json" {
+		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, Probes: jsonProbes{
+			PID:          jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
+			OpenSSL:      jsonProbe{Status: tlsStatus},
+			SocketStream: jsonProbe{Status: streamStatus},
+			NAT:          jsonNAT{Status: natStatus},
+		}}
+		if tlsStats != nil {
+			snapshot.Probes.OpenSSL.Received, snapshot.Probes.OpenSSL.Dropped, snapshot.Probes.OpenSSL.Invalid = tlsStats.Received.Load(), tlsStats.Dropped.Load(), tlsStats.Invalid.Load()
+		}
+		if streamStats != nil {
+			snapshot.Probes.SocketStream = jsonProbe{streamStatus, streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load()}
+		}
+		if nat != nil {
+			snapshot.Probes.NAT = nat.json(natStatus)
+		}
+		if autoInterfaces {
+			host, _, members = hostCollector(interfaceNames, collectors)
+			hostState.update(host, members)
+			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit)}
+		} else {
+			for _, name := range interfaceNames {
+				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit))
+			}
+		}
+		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit)
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(snapshot)
 	} else {
 		if autoInterfaces {
 			host, _, members = hostCollector(interfaceNames, collectors)
@@ -1394,17 +1478,25 @@ func run() error {
 	return nil
 }
 
-func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics) {
+// reportFlows returns a snapshot's flows, most bytes first.
+func reportFlows(c *collector) []*flow {
 	flows := c.allFlows()
-	slices.SortFunc(flows, func(a, b *flow) int {
-		if a.RX+a.TX > b.RX+b.TX {
-			return -1
+	slices.SortFunc(flows, func(a, b *flow) int { return cmp.Compare(b.RX+b.TX, a.RX+a.TX) })
+	return flows
+}
+
+func parseFailures(flows []*flow) int {
+	var failures int
+	for _, f := range flows {
+		if f.Domain != nil && f.Domain.Evidence().ParseError != "" {
+			failures++
 		}
-		if a.RX+a.TX < b.RX+b.TX {
-			return 1
-		}
-		return 0
-	})
+	}
+	return failures
+}
+
+func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics) {
+	flows := reportFlows(&c)
 	if interfaceName == "OVERVIEW" {
 		fmt.Printf("\nOVERVIEW: %d observed flows; IP bytes below use one capture point per flow, not an exact whole-host total; a NAT's two tuples are one flow once conntrack links them\n", len(flows))
 	} else {
@@ -1413,7 +1505,7 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 	if c.expiredRX+c.expiredTX+c.unindexedRX+c.unindexedTX > 0 {
 		fmt.Printf("detail unavailable: expired RX=%d TX=%d; unindexed RX=%d TX=%d\n", c.expiredRX, c.expiredTX, c.unindexedRX, c.unindexedTX)
 	}
-	fmt.Printf("capture status: AF_PACKET delivered=%d dropped=%d, truncated IP packets=%d; PID events=%d ring-lost=%d queue-dropped=%d invalid=%d index-dropped=%d\n", c.kernelReceived, c.kernelDropped, c.truncated, probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load(), probeStats.Invalid.Load(), c.droppedRole)
+	fmt.Printf("capture status: AF_PACKET delivered=%d dropped=%d, truncated IP packets=%d; PID events=%d ring-lost=%d queue-dropped=%d invalid=%d index-dropped=%d; parse failures=%d\n", c.kernelReceived, c.kernelDropped, c.truncated, probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load(), probeStats.Invalid.Load(), c.droppedRole, parseFailures(flows))
 	if interfaceName == "OVERVIEW" {
 		fmt.Printf("PID socket I/O: %dB without PID index; separate from observed IP bytes\n", c.ioUnindexed.RX+c.ioUnindexed.TX)
 	} else {
@@ -1444,9 +1536,10 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		if f.NAT != nil {
 			detail += " [" + f.NAT.String() + "]"
 		}
-		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(f.Health.SynRTT), f.Health.Retransmits, formatPID(f.Client), formatPID(f.Server), detail)
+		retx, _ := retransmits(f)
+		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(f.Health.SynRTT), retx, formatPID(f.Client), formatPID(f.Server), detail)
 	}
-	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host.")
+	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host. RETX is the kernel's count for a local socket, otherwise overlapping captured segments.")
 	if interfaceName == "OVERVIEW" {
 		fmt.Println("Domain IP bytes are single-point observations; NAT-transformed paths may still appear as separate connections.")
 	}
@@ -1462,23 +1555,16 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 	}
 }
 
+// pidIOOrder lists processes by socket I/O, most bytes first.
+func pidIOOrder(totals map[processID]processIO) []processID {
+	return slices.SortedFunc(maps.Keys(totals), func(a, b processID) int {
+		return cmp.Compare(totals[b].RX+totals[b].TX, totals[a].RX+totals[a].TX)
+	})
+}
+
 func printPIDIO(c *collector, limit int) {
 	totals := c.pidIO
-	ids := make([]processID, 0, len(totals))
-	for id := range totals {
-		ids = append(ids, id)
-	}
-	slices.SortFunc(ids, func(a, b processID) int {
-		av := totals[a].RX + totals[a].TX
-		bv := totals[b].RX + totals[b].TX
-		if av > bv {
-			return -1
-		}
-		if av < bv {
-			return 1
-		}
-		return 0
-	})
+	ids := pidIOOrder(totals)
 	fmt.Println("\nPID socket I/O (application bytes, independent of IP packet totals):")
 	if c.expiredPIDCount > 0 || c.ioUnindexed.RX+c.ioUnindexed.TX > 0 {
 		fmt.Printf("expired PID detail: %d identities, RX=%d TX=%d; unindexed RX=%d TX=%d\n", c.expiredPIDCount, c.expiredPIDIO.RX, c.expiredPIDIO.TX, c.ioUnindexed.RX, c.ioUnindexed.TX)
@@ -1497,9 +1583,10 @@ type domainTotals struct {
 	UnknownPID  uint64
 }
 
-func printDomains(flows []*flow) {
+// domainSummary totals the flows per domain page row and returns the row
+// labels, most bytes first.
+func domainSummary(flows []*flow) (map[string]*domainTotals, []string) {
 	totals := make(map[string]*domainTotals)
-	var pageBytes uint64
 	for _, f := range flows {
 		if f.Domain == nil || !f.Domain.Evidence().Listed() {
 			continue
@@ -1519,35 +1606,27 @@ func printDomains(flows []*flow) {
 		for _, count := range e.Hosts {
 			row.Requests += count
 		}
-		pageBytes += f.RX + f.TX
 	}
-	fmt.Printf("\nDomain summary (HTTP Host, TLS/QUIC SNI, PROXY target, OpenSSL SNI, DNS answer hint): %d IP bytes on %d recognized connections (subset of capture)\n", pageBytes, countDomainConnections(totals))
-	fmt.Println(httpsCoverage(flows))
-	fmt.Println("SOURCE DOMAIN                                   CONNS RX B      TX B      HTTP HOST COUNT  PID UNKNOWN")
-	keys := slices.Collect(maps.Keys(totals))
-	slices.SortFunc(keys, func(a, b string) int {
-		av := totals[a].RX + totals[a].TX
-		bv := totals[b].RX + totals[b].TX
-		if av > bv {
-			return -1
-		}
-		if av < bv {
-			return 1
-		}
-		return 0
+	labels := slices.SortedFunc(maps.Keys(totals), func(a, b string) int {
+		return cmp.Compare(totals[b].RX+totals[b].TX, totals[a].RX+totals[a].TX)
 	})
-	for _, key := range keys {
-		row := totals[key]
-		fmt.Printf("%-47s %-5d %-9d %-9d %-16d %d\n", key, row.Connections, row.RX, row.TX, row.Requests, row.UnknownPID)
-	}
+	return totals, labels
 }
 
-func countDomainConnections(totals map[string]*domainTotals) uint64 {
-	var count uint64
+func printDomains(flows []*flow) {
+	totals, labels := domainSummary(flows)
+	var pageBytes, connections uint64
 	for _, row := range totals {
-		count += row.Connections
+		pageBytes += row.RX + row.TX
+		connections += row.Connections
 	}
-	return count
+	fmt.Printf("\nDomain summary (HTTP Host, TLS/QUIC SNI, PROXY target, OpenSSL SNI, DNS answer hint): %d IP bytes on %d recognized connections (subset of capture)\n", pageBytes, connections)
+	fmt.Println(httpsCoverage(flows))
+	fmt.Println("SOURCE DOMAIN                                   CONNS RX B      TX B      HTTP HOST COUNT  PID UNKNOWN")
+	for _, label := range labels {
+		row := totals[label]
+		fmt.Printf("%-47s %-5d %-9d %-9d %-16d %d\n", label, row.Connections, row.RX, row.TX, row.Requests, row.UnknownPID)
+	}
 }
 
 func formatPID(p participant) string {

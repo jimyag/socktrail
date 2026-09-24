@@ -17,6 +17,8 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define OP_ACCEPT 2
 #define OP_SEND 3
 #define OP_RECV 4
+#define OP_RETRANSMIT 5
+#define WAKEUP_BYTES (512 << 10) // Of the 4 MiB event ring; the reader drains it every 100 ms anyway.
 
 struct in_addr { __be32 s_addr; } __attribute__((preserve_access_index));
 struct in6_addr {
@@ -53,12 +55,15 @@ struct msghdr {
     struct iov_iter msg_iter;
 } __attribute__((preserve_access_index));
 
+struct net;
+typedef struct { struct net *net; } possible_net_t;
 struct sock_common {
     __be32 skc_daddr;
     __be32 skc_rcv_saddr;
     __be16 skc_dport;
     __u16 skc_num;
     unsigned short skc_family;
+    possible_net_t skc_net;
     struct in6_addr skc_v6_daddr;
     struct in6_addr skc_v6_rcv_saddr;
 } __attribute__((preserve_access_index));
@@ -66,6 +71,7 @@ struct sock {
     struct sock_common __sk_common;
     __u16 sk_protocol; // A plain field from Linux 5.6.
 } __attribute__((preserve_access_index));
+struct tcp_sock { __u32 total_retrans; } __attribute__((preserve_access_index));
 struct socket { struct sock *sk; } __attribute__((preserve_access_index));
 struct file { void *private_data; } __attribute__((preserve_access_index));
 struct pipe_inode_info;
@@ -140,7 +146,10 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
 
     // Not bpf_get_current_task_btf, which needs Linux 5.11.
     struct task_struct *task = (void *)bpf_get_current_task();
-    __u64 netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+    // A retransmission runs in softirq or timer context on behalf of no
+    // particular task: its netns comes from the socket, and it has no PID.
+    __u64 netns = operation == OP_RETRANSMIT ? BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum)
+                                             : BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
     if (netns != cfg->netns) return 0;
 
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
@@ -170,8 +179,11 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
         return 0;
     }
     __builtin_memset(e, 0, sizeof(*e));
-    e->pid = bpf_get_current_pid_tgid() >> 32;
-    e->start_ns = process_start(task);
+    if (operation != OP_RETRANSMIT) {
+        e->pid = bpf_get_current_pid_tgid() >> 32;
+        e->start_ns = process_start(task);
+        bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    }
     e->netns = netns;
     e->app_bytes = app_bytes;
     e->local_port = local_port;
@@ -180,7 +192,6 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
     e->role = role;
     e->operation = operation;
     e->family = family == AF_INET ? 4 : 6;
-    bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     if (family == AF_INET) {
         __be32 local = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
@@ -202,7 +213,11 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
         __builtin_memcpy(e->local_ip, local6.in6_u.u6_addr8, 16);
         __builtin_memcpy(e->remote_ip, remote6.in6_u.u6_addr8, 16);
     }
-    bpf_ringbuf_submit(e, 0);
+    // Waking the reader costs more than handling an event, and a busy host
+    // makes one per socket call: wake it only once events pile up. It also
+    // drains the ring on a timer.
+    __u64 flags = bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) >= WAKEUP_BYTES ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
+    bpf_ringbuf_submit(e, flags);
     return 0;
 }
 
@@ -288,6 +303,69 @@ int BPF_PROG(splice_send_exit, struct pipe_inode_info *pipe, struct file *out, l
 // reads through tcp_splice_read rather than tcp_recvmsg on every kernel.
 SEC("fexit/tcp_splice_read")
 int BPF_PROG(splice_recv_exit, struct socket *sock, long long *ppos, struct pipe_inode_info *pipe,
+             unsigned long len, unsigned int flags, long ret)
+{
+    if (ret > 0) output(BPF_CORE_READ(sock, sk), 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+// Retransmissions of local sockets. The event carries the socket's running
+// total, the figure ss reports as retrans, so a lost event costs nothing:
+// the next one brings the count up to date. A tail loss probe retransmits
+// without tcp_retransmit_skb, so it has its own hook. Both functions are
+// called from other files and cannot be inlined away.
+SEC("fexit/tcp_retransmit_skb")
+int BPF_PROG(tcp_retransmit_exit, struct sock *sk, void *skb, int segs, int ret)
+{
+    if (ret == 0)
+        output(sk, 6, ROLE_SEND, OP_RETRANSMIT, BPF_CORE_READ((struct tcp_sock *)sk, total_retrans), 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tcp_send_loss_probe")
+int BPF_PROG(tcp_loss_probe_exit, struct sock *sk)
+{
+    output(sk, 6, ROLE_SEND, OP_RETRANSMIT, BPF_CORE_READ((struct tcp_sock *)sk, total_retrans), 0, 0, -1);
+    return 0;
+}
+
+// A socket with kernel TLS sends and receives through the tls module, not
+// tcp_sendmsg and tcp_recvmsg; the loader keeps these hooks only while that
+// module is loaded. They count bytes and read nothing. Before Linux 6.5,
+// sendfile and splice into such a socket go through tls_sw_sendpage, which
+// generic_splice_sendpage above already counts.
+SEC("fexit/tls_sw_sendmsg")
+int BPF_PROG(ktls_send_exit, struct sock *sk, struct msghdr *msg, unsigned long size, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_SEND, OP_SEND, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tls_device_sendmsg")
+int BPF_PROG(ktls_device_send_exit, struct sock *sk, struct msghdr *msg, unsigned long size, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_SEND, OP_SEND, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tls_sw_recvmsg")
+int BPF_PROG(ktls_recv_exit, struct sock *sk, struct msghdr *msg, unsigned long len,
+             int flags, int *addr_len, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tls_sw_recvmsg")
+int BPF_PROG(ktls_recv_exit_old, struct sock *sk, struct msghdr *msg, unsigned long len,
+             int nonblock, int flags, int *addr_len, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tls_sw_splice_read")
+int BPF_PROG(ktls_splice_recv_exit, struct socket *sock, long long *ppos, struct pipe_inode_info *pipe,
              unsigned long len, unsigned int flags, long ret)
 {
     if (ret > 0) output(BPF_CORE_READ(sock, sk), 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);

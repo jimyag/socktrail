@@ -27,13 +27,16 @@ type socketStream struct {
 	parser        *domain.Stream
 	quic          *quicinitial.Tracker // UDP only.
 	local, remote netip.AddrPort
+	sent          bool
 	last          time.Time
 }
 
 // socketStreams turns socket-layer chunks into domain evidence. Both
 // directions of every socket are parsed; only one that reads as a client's
-// ClientHello, request or proxy handshake names the connection, so a
-// server's reply never does.
+// ClientHello, request or proxy handshake can name the connection, and once
+// the connection's initiator is known, only the direction that carries its
+// bytes: a server's reply can read like a request, as a TDS pre-login
+// response reads like a SOCKS4 request.
 type socketStreams map[socketStreamKey]*socketStream
 
 // add feeds a chunk and returns its stream once it holds client evidence.
@@ -49,7 +52,7 @@ func (s socketStreams) add(chunk sockstream.Chunk, now time.Time) *socketStream 
 		if stream == nil && len(s) >= maxSocketStreams {
 			return nil
 		}
-		stream = &socketStream{local: chunk.Local, remote: chunk.Remote}
+		stream = &socketStream{local: chunk.Local, remote: chunk.Remote, sent: chunk.Sent}
 		if chunk.Protocol == 17 {
 			stream.quic = new(quicinitial.Tracker)
 		} else {
@@ -87,7 +90,7 @@ func (s socketStreams) expire(now time.Time) {
 }
 
 type pendingSocket struct {
-	stream *domain.Stream
+	stream *socketStream
 	seen   time.Time
 }
 
@@ -120,14 +123,14 @@ func (c *collector) socketEvidence(stream *socketStream) {
 		f = c.datagramFlow(local.Port(), remote)
 	}
 	if f != nil {
-		attachSocketDomain(f, stream.parser)
+		attachSocketDomain(f, stream)
 		return
 	}
 	if c.pendingSocket == nil {
 		c.pendingSocket = make(map[flowKey]pendingSocket)
 	}
 	if len(c.pendingSocket) < maxPendingIOSamples {
-		c.pendingSocket[key] = pendingSocket{stream: stream.parser, seen: time.Now()}
+		c.pendingSocket[key] = pendingSocket{stream: stream, seen: time.Now()}
 	}
 }
 
@@ -145,7 +148,15 @@ func (c *collector) datagramFlow(port uint16, remote netip.AddrPort) *flow {
 // attachSocketDomain records the socket's copy of the client bytes. It also
 // labels the application for a flow whose captured packets never showed
 // them, such as the return path of a transparently proxied connection.
-func attachSocketDomain(f *flow, stream *domain.Stream) {
+func attachSocketDomain(f *flow, s *socketStream) {
+	client := s.local // The client's bytes: what its socket sent, or what the server's received.
+	if !s.sent {
+		client = s.remote
+	}
+	if s.quic == nil && f.Initiator.IsValid() && client != f.Initiator {
+		return
+	}
+	stream := s.parser
 	f.SocketDomain = stream
 	if f.AppProtocol == "" || f.AppSource == "record-prefix" {
 		switch stream.Evidence().Kind {

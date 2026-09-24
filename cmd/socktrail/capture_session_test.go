@@ -71,3 +71,23 @@ func TestCaptureSessionFiltersFlowAndWritesReadablePCAPNG(t *testing.T) {
 		t.Fatalf("tcpdump could not decode PCAPNG: %v: %s", err, out)
 	}
 }
+
+// The history keeps the latest frames within its age and byte limits.
+func TestFrameHistoryKeepsLatestFrames(t *testing.T) {
+	h := &frameHistory{maxAge: 10 * time.Second}
+	f, start := &flow{}, time.Now()
+	for i := range 4 {
+		h.add(capture.Packet{Frame: make([]byte, 100), CapturedAt: start.Add(time.Duration(i) * 4 * time.Second)}, f)
+	}
+	if len(h.frames) != 3 || h.bytes != 300 || !h.frames[0].packet.CapturedAt.Equal(start.Add(4*time.Second)) {
+		t.Fatalf("after aging: %d frames, %d bytes", len(h.frames), h.bytes)
+	}
+	h.add(capture.Packet{Frame: make([]byte, historyLimit-150), CapturedAt: start.Add(12 * time.Second)}, f)
+	if len(h.frames) != 2 || h.bytes != historyLimit-50 {
+		t.Fatalf("over the byte limit: %d frames, %d bytes", len(h.frames), h.bytes)
+	}
+	h.trim(start.Add(time.Minute))
+	if len(h.frames) != 0 || h.bytes != 0 {
+		t.Fatalf("after a quiet minute: %d frames, %d bytes", len(h.frames), h.bytes)
+	}
+}

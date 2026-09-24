@@ -239,9 +239,10 @@ func connectionLayout(flows []*flow, mode viewMode, viewport int) tableLayout {
 
 func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, cursor string) string {
 	source, target := displayedEndpoints(f)
+	retx, _ := retransmits(f)
 	values := []string{
 		f.Direction, source, target, flowProtocol(f), f.AppProtocol, flowState(f), flowName(f),
-		human(f.RX), human(f.TX), formatSYNRTT(f.Health.SynRTT), strconv.FormatUint(f.Health.Retransmits, 10),
+		human(f.RX), human(f.TX), formatSYNRTT(f.Health.SynRTT), strconv.FormatUint(retx, 10),
 	}
 	if mode == viewPID {
 		rx, tx := "-", "-"

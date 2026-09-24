@@ -7,17 +7,18 @@ import (
 
 // Event is a local socket operation observed in the selected network namespace.
 type Event struct {
-	Protocol  uint8
-	Family    int
-	Role      string
-	Operation string
-	AppBytes  uint64
-	PID       int
-	StartNS   uint64
-	Process   string
-	NetNS     uint64
-	Local     netip.AddrPort
-	Remote    netip.AddrPort
+	Protocol    uint8
+	Family      int
+	Role        string
+	Operation   string // connect, accept, send, recv or retransmit.
+	AppBytes    uint64
+	Retransmits uint32 // For retransmit: the socket's running total. Such an event has no process.
+	PID         int
+	StartNS     uint64
+	Process     string
+	NetNS       uint64
+	Local       netip.AddrPort
+	Remote      netip.AddrPort
 }
 
 type Statistics struct {

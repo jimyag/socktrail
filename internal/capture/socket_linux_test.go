@@ -17,7 +17,7 @@ func TestSocketRingOnLoopback(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root")
 	}
-	s, err := Open("lo")
+	s, err := Open("lo", 4<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

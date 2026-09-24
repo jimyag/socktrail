@@ -50,6 +50,30 @@ func TestSocketStreamIgnoresServerDirection(t *testing.T) {
 	}
 }
 
+// A SQL Server pre-login response reads as a SOCKS4 CONNECT request. Once
+// the connection's initiator is known, only its bytes can name it: those
+// its socket sent, or the server's socket received.
+func TestSocketStreamServerReplyLikeARequest(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:57559"), netip.MustParseAddrPort("127.0.0.1:1433")
+	c := newTestCollector()
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, SYN: true, TCPSeq: 1, IPBytes: 60, Outgoing: true})
+	preloginResponse := []byte{4, 1, 0, 48, 0, 0, 1, 0, 0, 0, 36, 0, 6, 1, 0, 42}
+	streams := make(socketStreams)
+	for i, chunk := range []sockstream.Chunk{
+		{Cookie: 6, Sent: true, Local: server, Remote: client, Data: preloginResponse},  // The server socket's reply.
+		{Cookie: 7, Sent: false, Local: client, Remote: server, Data: preloginResponse}, // The same reply, as the client receives it.
+	} {
+		stream := streams.add(chunk, time.Now())
+		if stream == nil {
+			t.Fatalf("chunk %d did not parse as a request, so the test checks nothing", i)
+		}
+		c.socketEvidence(stream)
+	}
+	if f := c.flows[keyFor(client, server, 6)]; f.SocketDomain != nil {
+		t.Fatalf("the server's reply named the connection: %+v", f.SocketDomain.Evidence())
+	}
+}
+
 func TestSocketEvidenceWaitsForFlow(t *testing.T) {
 	client, server := netip.MustParseAddrPort("192.0.2.10:50001"), netip.MustParseAddrPort("198.51.100.7:443")
 	c := newTestCollector()

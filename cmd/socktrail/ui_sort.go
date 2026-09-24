@@ -153,7 +153,9 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
 		case "SYN RTT":
 			order = cmp.Compare(a.Health.SynRTT, b.Health.SynRTT)
 		case "RETX":
-			order = cmp.Compare(a.Health.Retransmits, b.Health.Retransmits)
+			ra, _ := retransmits(a)
+			rb, _ := retransmits(b)
+			order = cmp.Compare(ra, rb)
 		case "PID RX":
 			order = cmp.Compare(a.IO[row.pidID].RX, b.IO[row.pidID].RX)
 		case "PID TX":

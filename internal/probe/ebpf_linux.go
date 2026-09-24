@@ -1,13 +1,14 @@
 package probe
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"runtime"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -20,7 +21,8 @@ import (
 
 // StartEmbedded attaches the compiled eBPF probes. The executable contains
 // their bytecode and does not invoke a separate tracing process at runtime.
-func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event, <-chan error, *Statistics, error) {
+// Events come in batches, each what the ring held when it was read.
+func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Event, <-chan error, *Statistics, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, nil, nil, fmt.Errorf("remove eBPF memlock limit: %w", err)
 	}
@@ -38,10 +40,26 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 	kernelbtf.KeepRecvmsgVariants(spec, "tcp_recv_exit", "udp_recv_exit", "udpv6_recv_exit")
 	// Hooks that exist only on some kernels: generic_splice_sendpage is gone
 	// from 6.5, where splice sends through tcp_sendmsg and is counted there.
-	for program, function := range map[string]string{"splice_send_exit": "generic_splice_sendpage", "splice_recv_exit": "tcp_splice_read"} {
+	for program, function := range map[string]string{"splice_send_exit": "generic_splice_sendpage", "splice_recv_exit": "tcp_splice_read", "tcp_retransmit_exit": "tcp_retransmit_skb", "tcp_loss_probe_exit": "tcp_send_loss_probe"} {
 		if kernelbtf.Params(function) < 0 {
 			delete(spec.Programs, program)
 		}
+	}
+	// Kernel TLS sockets move data through the tls module. Its hooks load
+	// only when the module is loaded at start; one loaded later goes unseen.
+	for program, function := range map[string]string{
+		"ktls_send_exit": "tls_sw_sendmsg", "ktls_device_send_exit": "tls_device_sendmsg",
+		"ktls_recv_exit": "tls_sw_recvmsg", "ktls_recv_exit_old": "tls_sw_recvmsg",
+		"ktls_splice_recv_exit": "tls_sw_splice_read",
+	} {
+		if kernelbtf.ModuleParams("tls", function) < 0 {
+			delete(spec.Programs, program)
+		}
+	}
+	if kernelbtf.ModuleParams("tls", "tls_sw_recvmsg") == 6 { // With nonblock, before 5.19.
+		delete(spec.Programs, "ktls_recv_exit")
+	} else {
+		delete(spec.Programs, "ktls_recv_exit_old")
 	}
 	objects, err := ebpf.NewCollection(spec)
 	if err != nil {
@@ -60,6 +78,10 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 				previous.Close()
 			}
 			objects.Close()
+			if runtime.GOARCH == "arm64" && errors.Is(err, ebpf.ErrNotSupported) {
+				// arm64 attaches fentry/fexit through ftrace direct calls, new in 6.4.
+				return nil, nil, nil, fmt.Errorf("attach eBPF probe %s: %w (arm64 needs Linux 6.4 or later)", name, err)
+			}
 			return nil, nil, nil, fmt.Errorf("attach eBPF probe %s: %w", name, err)
 		}
 		links = append(links, attached)
@@ -72,7 +94,10 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 		objects.Close()
 		return nil, nil, nil, fmt.Errorf("open eBPF event ring: %w", err)
 	}
-	events := make(chan Event, 2048)
+	// Up to 16 batches of 1024 events wait for the consumer: the ring is read
+	// in bursts, which one event at a time would not absorb.
+	const maxBatch = 1024
+	events := make(chan []Event, 16)
 	done := make(chan error, 1)
 	stats := new(Statistics)
 	pollCtx, stopPoll := context.WithCancel(ctx)
@@ -106,8 +131,28 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 			}
 		}()
 		var readErr error
+		var record ringbuf.Record // Reused: every event is copied out of it.
+		var batch []Event
+		send := func() {
+			if len(batch) == 0 {
+				return
+			}
+			select {
+			case events <- batch:
+			default:
+				stats.Dropped.Add(uint64(len(batch)))
+			}
+			batch = nil
+		}
 		for {
-			record, err := reader.Read()
+			// The program wakes the reader only once events pile up; the
+			// deadline drains the ring at least this often.
+			reader.SetDeadline(time.Now().Add(100 * time.Millisecond))
+			err := reader.ReadInto(&record)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				send() // Everything pending has been read.
+				continue
+			}
 			if errors.Is(err, ringbuf.ErrClosed) && ctx.Err() != nil {
 				break
 			}
@@ -115,23 +160,23 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event
 				readErr = fmt.Errorf("read eBPF event ring: %w", err)
 				break
 			}
-			var raw BpfEvent
-			if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &raw); err != nil {
+			if len(record.RawSample) < int(unsafe.Sizeof(BpfEvent{})) {
 				stats.Invalid.Add(1)
 				continue
 			}
-			event, err := decodeEvent(raw)
+			// The program wrote the struct in the generated layout; reflection
+			// through encoding/binary cost a tenth of the CPU under load.
+			event, err := decodeEvent(*(*BpfEvent)(unsafe.Pointer(&record.RawSample[0])))
 			if err != nil {
 				stats.Invalid.Add(1)
 				continue
 			}
 			stats.Received.Add(1)
-			select {
-			case events <- event:
-			default:
-				stats.Dropped.Add(1)
+			if batch = append(batch, event); record.Remaining == 0 || len(batch) == maxBatch {
+				send()
 			}
 		}
+		send()
 		var lost uint64
 		stopPoll()
 		<-pollDone
@@ -164,9 +209,13 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 	if raw.Protocol != 6 && raw.Protocol != 17 && raw.Protocol != 1 && raw.Protocol != 58 {
 		return Event{}, fmt.Errorf("invalid eBPF protocol %d", raw.Protocol)
 	}
-	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv"}[raw.Operation]
+	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit"}[raw.Operation]
 	if operation == "" {
 		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
+	}
+	appBytes, retransmits := raw.AppBytes, uint32(0)
+	if operation == "retransmit" {
+		appBytes, retransmits = 0, uint32(raw.AppBytes)
 	}
 	name := make([]byte, 0, len(raw.Comm))
 	for _, c := range raw.Comm {
@@ -176,16 +225,17 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		name = append(name, byte(c))
 	}
 	return Event{
-		Protocol:  raw.Protocol,
-		Family:    int(raw.Family),
-		Role:      role,
-		Operation: operation,
-		AppBytes:  raw.AppBytes,
-		PID:       int(raw.Pid),
-		StartNS:   raw.StartNs,
-		Process:   procname.Clean(name),
-		NetNS:     raw.Netns,
-		Local:     netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
-		Remote:    netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
+		Protocol:    raw.Protocol,
+		Family:      int(raw.Family),
+		Role:        role,
+		Operation:   operation,
+		AppBytes:    appBytes,
+		Retransmits: retransmits,
+		PID:         int(raw.Pid),
+		StartNS:     raw.StartNs,
+		Process:     procname.Clean(name),
+		NetNS:       raw.Netns,
+		Local:       netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
+		Remote:      netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
 	}, nil
 }

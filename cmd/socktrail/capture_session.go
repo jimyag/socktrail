@@ -15,7 +15,45 @@ import (
 const (
 	recordingDuration = 15 * time.Second
 	recordingLimit    = 64 << 20
+	historyLimit      = 32 << 20 // Frame bytes --record-before keeps.
 )
+
+// frameHistory keeps copies of the latest frames, up to an age and
+// historyLimit bytes, for a recording to start with.
+// ponytail: one allocation per frame, fine for an opt-in debugging aid;
+// a preallocated byte ring if it ever runs on busy links by default.
+type frameHistory struct {
+	frames []historyFrame // Oldest first.
+	bytes  int
+	maxAge time.Duration
+}
+
+type historyFrame struct {
+	packet capture.Packet // Only what captureSession.Write reads: Payload points into the ring.
+	flow   *flow
+}
+
+func (h *frameHistory) add(p capture.Packet, f *flow) {
+	if len(p.Frame) == 0 || f == nil {
+		return
+	}
+	kept := capture.Packet{Interface: p.Interface, Frame: p.Frame, FrameLen: p.FrameLen, CapturedAt: p.CapturedAt, Outgoing: p.Outgoing, Truncated: p.Truncated}
+	h.frames = append(h.frames, historyFrame{kept, f})
+	h.bytes += len(p.Frame)
+	h.trim(p.CapturedAt)
+}
+
+// trim drops frames older than maxAge before now, and the oldest beyond
+// historyLimit.
+func (h *frameHistory) trim(now time.Time) {
+	drop := 0
+	for drop < len(h.frames) && (h.bytes > historyLimit || now.Sub(h.frames[drop].packet.CapturedAt) > h.maxAge) {
+		h.bytes -= len(h.frames[drop].packet.Frame)
+		h.frames[drop] = historyFrame{}
+		drop++
+	}
+	h.frames = h.frames[drop:]
+}
 
 type captureSession struct {
 	file       *os.File
