@@ -78,6 +78,7 @@ Press `1`–`4` for PID, source IP, destination IP, and protocol views; `d` for 
 | [Validation record](docs/validation.md) | Tested kernels, scenarios, and remaining gaps (Chinese) |
 | [Development notes](docs/development.md) | Design and implementation details (Chinese) |
 | [UI guide](docs/ui-design.md) | Screen layout and interaction (Chinese) |
+| [Roadmap](docs/roadmap.md) | Planned release, CI, feature, resource, and validation work (Chinese) |
 
 ## Development
 

@@ -39,6 +39,7 @@ sudo ./socktrail --interface lo --interface br0
 | [解析原理](docs/parsing.md) | 应用协议、HTTP、TLS、QUIC、代理、DNS 与域名证据 |
 | [数据口径与限制](docs/measurement.md) | IP 字节、socket I/O、方向、RTT、重传与丢失 |
 | [验证记录](docs/validation.md) | 已验证的内核与场景、性能和剩余缺口 |
+| [后续计划](docs/roadmap.md) | 待做的发布、CI、功能、资源与验收事项及做法 |
 
 设计和实现约定见 [开发说明](docs/development.md)，页面布局见 [界面说明](docs/ui-design.md)。
 
