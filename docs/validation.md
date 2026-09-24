@@ -330,6 +330,10 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 - h2c 升级和 TLS 服务端乱序：单元测试覆盖升级成功与被拒两种情况，以及服务端第 2、3 个报文交换顺序后仍取到证书名。
 - 安装脚本：从固定的 release tag 下载，v0.0.1 路径实测可用；来源证明要到下一个版本才有，`gh attestation verify` 分支尚未实际运行。
 
+### CI
+
+推送本轮提交后的第一次运行全部通过：Check 的格式与测试、BPF 对象一致性，以及 `ubuntu-24.04` 和 `ubuntu-24.04-arm` 两种 runner 上的 root 测试和冒烟快照（arm64 runner 是实机，这是 socktrail 第一次在 arm64 实机上运行）；Kernels 的 amd64 作业用 KVM 约 5 分钟跑完 9 个内核，arm64 作业在模拟器里约 6 分钟跑完 2 个内核，都含下载和打包 initramfs 的时间。
+
 ## 尚未完成的验收
 
 后续要做的事项和做法见 [后续计划](roadmap.md)。
@@ -338,7 +342,7 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 - `sendfile`、splice 和内核 TLS 的计数由 root 测试核对；io_uring 的零拷贝发送等其他路径没有验证，PID 应用字节只承诺已挂探针的返回值。
 - 探针挂载前已经进入阻塞 `recvfrom` 的 UDP 服务，首次返回可能少计；服务进程在探针之后启动的对照场景两端各为 RX/TX 5 B。启动时抓取的中途连接和调用不能补历史数据。Linux 6.8 以前的内核没有 `__inet_accept`，回退到 `inet_csk_accept` 的 fexit 已在 5.10 至 5.15 上加载并收到 accept 事件，但挂载前就阻塞着的第一次 accept 仍会漏掉，只能靠 socket 表补上仍存在的连接。
 - 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
-- 其他内核只在虚拟机里验证了回环流量；arm64 只在 x86 宿主的模拟器里跑过，没有在 arm64 实机上运行；RHEL 系只测了 CentOS Stream 9、10。
+- 其他内核只在虚拟机里验证了回环流量；arm64 实机只有 CI 的 GitHub arm64 runner（root 测试和冒烟快照），没有带真实负载运行过；RHEL 系只测了 CentOS Stream 9、10。
 - UDP 的 socket 层读取只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。
 - 抓包性能只在 veth 上测过（每秒约 60 万个 TCP 帧、48 万个 64 B UDP 报文），物理网卡、多队列 RSS、百万级 pps 没有测；长稳运行只做了 1 小时。另外还缺物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
 - ICMP 只有 Echo 请求能归属进程：带 `IP_HDRINCL` 的原始 socket 自己拼 IP 头，其中的 ICMP 不识别；Echo 以外的 ICMP 与其他协议的原始 socket 流量没有进程。tun 接口帧的录制只在单元测试里经 tcpdump 解码，没有在真实 tun 接口上经 TUI 录制并用 Wireshark 核对；跨接口非对称路径的 PCAPNG 导出也没有核对。

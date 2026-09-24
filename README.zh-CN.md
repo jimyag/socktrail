@@ -4,7 +4,7 @@
 
 `socktrail` 是 Linux 终端实时流量观察程序。它从所选接口采集报文，并结合 eBPF 事件和内核 socket 表，在同一界面显示连接、进程、IP 流量、应用协议和可见的域名证据。IP 报文字节与进程 socket I/O 分开统计。
 
-目前是原型：本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9、10）和 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量。NAT 在本机网络命名空间网关中验收过，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过；容器网络尚未验收。具体范围见 [验证记录](docs/validation.md)。
+目前是原型：本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9、10）和 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量，CI 另在 amd64 和 arm64 的 runner 上以 root 运行测试。NAT 在本机网络命名空间网关中验收过，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过；容器网络尚未验收。具体范围见 [验证记录](docs/validation.md)。
 
 ## 构建与运行
 

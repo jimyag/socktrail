@@ -25,7 +25,7 @@
 
 socktrail is a Linux terminal application for inspecting live network traffic. It captures packets from selected interfaces with AF_PACKET and uses eBPF socket probes and the kernel socket table to associate local traffic with processes. The interface shows connections, IP traffic, application protocols, and domain names found in observable HTTP, TLS, QUIC, proxy, and DNS data.
 
-It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8. Container networking has not been validated. See the [validation record](docs/validation.md) and [detailed Chinese guide](README.zh-CN.md) for measurement rules and known limits.
+It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8; CI runs the root tests on amd64 and arm64 runners. Container networking has not been validated. See the [validation record](docs/validation.md) and [detailed Chinese guide](README.zh-CN.md) for measurement rules and known limits.
 
 ## Why socktrail
 
