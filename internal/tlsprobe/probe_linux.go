@@ -1,3 +1,5 @@
+//go:build linux && (386 || amd64 || arm64)
+
 package tlsprobe
 
 import (
@@ -11,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -21,29 +22,18 @@ import (
 	"github.com/jimyag/socktrail/internal/procname"
 )
 
-type Event struct {
-	PID      int
-	StartNS  uint64
-	NetNS    uint64
-	Local    netip.AddrPort
-	Remote   netip.AddrPort
-	Hostname string
-	Source   string
-	Process  string
-}
-
-type Statistics struct {
-	Received atomic.Uint64
-	Invalid  atomic.Uint64
-	Dropped  atomic.Uint64
+// libraryDirs are where each supported architecture keeps system libraries.
+var libraryDirs = map[string][]string{
+	"amd64": {"/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64", "/usr/lib64"},
+	"arm64": {"/lib/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/lib64", "/usr/lib64"},
 }
 
 // Start observes SNI only in dynamically linked system OpenSSL. It reads
 // SSL_ctrl / SSL_get_servername strings and verifies a socket tuple from an
 // OpenSSL fd or a TCP send during SSL_connect. No TLS plaintext or key is copied.
 func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Statistics, string, error) {
-	if runtime.GOARCH != "amd64" {
-		return nil, nil, nil, "", fmt.Errorf("OpenSSL probe supports amd64 only")
+	if libraryDirs[runtime.GOARCH] == nil { // The x86 object reads 64-bit registers; 386 has others.
+		return nil, nil, nil, "", fmt.Errorf("OpenSSL probe supports amd64 and arm64 only")
 	}
 	path, err := systemOpenSSL()
 	if err != nil {
@@ -230,16 +220,13 @@ func bytesFromInt8(value []int8) []byte {
 }
 
 func systemOpenSSL() (string, error) {
-	for _, pattern := range []string{
-		"/lib/x86_64-linux-gnu/libssl.so.3", "/usr/lib/x86_64-linux-gnu/libssl.so.3",
-		"/lib64/libssl.so.3", "/usr/lib64/libssl.so.3",
-		"/lib/x86_64-linux-gnu/libssl.so.1.1", "/usr/lib/x86_64-linux-gnu/libssl.so.1.1",
-		"/lib64/libssl.so.1.1", "/usr/lib64/libssl.so.1.1",
-	} {
-		path, err := filepath.EvalSymlinks(pattern)
-		if err == nil {
-			if _, err := os.Stat(path); err == nil {
-				return path, nil
+	for _, version := range []string{"3", "1.1"} {
+		for _, dir := range libraryDirs[runtime.GOARCH] {
+			path, err := filepath.EvalSymlinks(filepath.Join(dir, "libssl.so."+version))
+			if err == nil {
+				if _, err := os.Stat(path); err == nil {
+					return path, nil
+				}
 			}
 		}
 	}

@@ -13,13 +13,23 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define S_IFSOCK 0140000
 #define SSL_CTRL_SET_TLSEXT_HOSTNAME 55
 
-// x86_64 uprobe register context. The userspace probe is available on this
-// architecture only; the socket probe remains architecture independent.
+// The uprobe register context, as bpf_tracing.h reads it on each
+// architecture this object is built for.
+#if defined(__TARGET_ARCH_arm64)
+struct pt_regs;
+struct user_pt_regs {
+    __u64 regs[31];
+    __u64 sp;
+    __u64 pc;
+    __u64 pstate;
+};
+#else
 struct pt_regs {
     unsigned long r15, r14, r13, r12, bp, bx;
     unsigned long r11, r10, r9, r8, rax, rcx, rdx, rsi, rdi;
     unsigned long orig_ax, ip, cs, flags, sp, ss;
 };
+#endif
 
 struct in6_addr {
     union { __u8 u6_addr8[16]; } in6_u;
