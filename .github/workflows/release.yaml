@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write # Signs the build provenance attestation.
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -37,3 +39,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/checksums.txt
