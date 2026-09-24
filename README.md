@@ -50,7 +50,7 @@ Prebuilt Linux amd64 and arm64 binaries are available as uncompressed files on [
 curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
 ```
 
-The installer asks for `sudo` if the destination is not writable. Run the installed binary with `sudo`, or follow the [file capability setup](docs/usage.md#不使用-sudo-运行).
+The installer asks for `sudo` if the destination is not writable. Run the installed binary with `sudo socktrail`, or follow the [file capability setup](docs/usage.md#不使用-sudo-运行).
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail

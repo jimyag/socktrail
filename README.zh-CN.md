@@ -16,7 +16,7 @@
 curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
 ```
 
-目标目录不可写时会请求 `sudo`；安装后运行仍需 `sudo`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
+目标目录不可写时会请求 `sudo`；安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
