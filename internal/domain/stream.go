@@ -27,24 +27,26 @@ const (
 	groupParseFailed = "parse failed"
 )
 
+// Evidence is what a connection's bytes said about its destination. The JSON
+// names are part of socktrail's --output json document.
 type Evidence struct {
-	Kind        string            // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
-	Hosts       map[string]uint64 // HTTP request count per Host or HTTP/2 :authority.
-	GRPC        bool              // HTTP/2 requests carried a gRPC content type.
-	SNI         string            // ClientHello server_name as sent, or the OpenSSL process value.
-	NoSNI       bool              // A complete ClientHello carried no server_name.
-	ECH         bool              // The ClientHello carried an encrypted_client_hello extension.
-	ALPN        []string          // Protocols the client offered, not the negotiated one.
-	Proxy       string            // Destination requested through an HTTP CONNECT or SOCKS tunnel.
-	ProxyVia    string            // CONNECT, SOCKS4 or SOCKS5.
-	ProxyClient string            // Original client address from a PROXY protocol header.
-	DNS         string            // Name whose DNS answer pointed at the peer address.
-	NoHandshake bool              // TLS records arrived, but their ClientHello was not captured.
-	ParseError  string
-	TLSVersion  string   // Version the server chose in its ServerHello.
-	ServerALPN  string   // Protocol the server chose; TLS 1.3 sends it encrypted.
-	Certificate []string // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
-	Alert       string   // First plaintext alert of the handshake and the side that sent it.
+	Kind        string            `json:"kind,omitempty"`         // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
+	Hosts       map[string]uint64 `json:"hosts,omitempty"`        // HTTP request count per Host or HTTP/2 :authority.
+	GRPC        bool              `json:"grpc,omitempty"`         // HTTP/2 requests carried a gRPC content type.
+	SNI         string            `json:"sni,omitempty"`          // ClientHello server_name as sent, or the OpenSSL process value.
+	NoSNI       bool              `json:"no_sni,omitempty"`       // A complete ClientHello carried no server_name.
+	ECH         bool              `json:"ech,omitempty"`          // The ClientHello carried an encrypted_client_hello extension.
+	ALPN        []string          `json:"alpn,omitempty"`         // Protocols the client offered, not the negotiated one.
+	Proxy       string            `json:"proxy,omitempty"`        // Destination requested through an HTTP CONNECT or SOCKS tunnel.
+	ProxyVia    string            `json:"proxy_via,omitempty"`    // CONNECT, SOCKS4 or SOCKS5.
+	ProxyClient string            `json:"proxy_client,omitempty"` // Original client address from a PROXY protocol header.
+	DNS         string            `json:"dns,omitempty"`          // Name whose DNS answer pointed at the peer address.
+	NoHandshake bool              `json:"no_handshake,omitempty"` // TLS records arrived, but their ClientHello was not captured.
+	ParseError  string            `json:"parse_error,omitempty"`
+	TLSVersion  string            `json:"tls_version,omitempty"` // Version the server chose in its ServerHello.
+	ServerALPN  string            `json:"server_alpn,omitempty"` // Protocol the server chose; TLS 1.3 sends it encrypted.
+	Certificate []string          `json:"certificate,omitempty"` // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
+	Alert       string            `json:"alert,omitempty"`       // First plaintext alert of the handshake and the side that sent it.
 }
 
 // Group names the destination for the domain page. A ClientHello with an ECH
@@ -162,7 +164,7 @@ type Stream struct {
 }
 
 func New(initialSeq uint32) *Stream {
-	return &Stream{expected: initialSeq, pending: make(map[uint32][]byte), parser: parser{evidence: Evidence{Hosts: make(map[string]uint64)}}, lastProgress: time.Now()}
+	return &Stream{expected: initialSeq, lastProgress: time.Now()} // Maps come with their first entry: most streams never need them.
 }
 
 func (s *Stream) Evidence() Evidence { return s.parser.evidence }
@@ -183,6 +185,9 @@ func (s *Stream) Fail(reason string) {
 }
 
 func (s *Stream) Tick(now time.Time) {
+	if len(s.server.pending) > 0 && now.Sub(s.server.gapSince) > 10*time.Second {
+		s.server.stop() // The missing server segment was never captured.
+	}
 	if s.failed || s.parser.finished() {
 		return
 	}
@@ -191,6 +196,12 @@ func (s *Stream) Tick(now time.Time) {
 		return
 	}
 	if s.parser.incomplete() && now.Sub(s.lastProgress) > 30*time.Second {
+		if s.parser.evidence.Kind == "" {
+			// A client that sent a few bytes, such as memcached's stats or a
+			// Cassandra OPTIONS frame, and nothing since: too little to tell.
+			s.parser.evidence.Kind, s.parser.sniff = "other", nil
+			return
+		}
 		s.Fail("protocol parse timeout")
 	}
 }
@@ -214,6 +225,9 @@ func (s *Stream) Add(seq uint32, payload []byte) {
 			return
 		} else {
 			s.pendingBytes -= len(old)
+		}
+		if s.pending == nil {
+			s.pending = make(map[uint32][]byte)
 		}
 		s.pending[seq] = bytes.Clone(payload)
 		s.pendingBytes += len(payload)
@@ -348,7 +362,7 @@ type parser struct {
 	opaque   bool // The proxy tunnel carries neither TLS nor HTTP.
 	tls      tlsParser
 	http     httpParser
-	h2       h2Parser
+	h2       *h2Parser // Set with Kind http2; few streams need its buffers.
 }
 
 func (p *parser) feed(data []byte) error {
@@ -376,7 +390,7 @@ func (p *parser) feed(data []byte) error {
 				p.evidence.ProxyClient = target
 				data, p.sniff = p.sniff[used:], nil
 			case "http2":
-				p.evidence.Kind = kind
+				p.evidence.Kind, p.h2 = kind, new(h2Parser)
 				data, p.sniff = p.sniff[used:], nil
 			default:
 				p.evidence.Kind = kind
@@ -385,12 +399,19 @@ func (p *parser) feed(data []byte) error {
 		case "tls":
 			return p.tls.feed(data, &p.evidence)
 		case "http":
-			if err := p.http.feed(data, &p.evidence); err != nil || p.http.state != httpTunnel {
+			if err := p.http.feed(data, &p.evidence); err != nil {
 				return err
 			}
-			// Bytes after a CONNECT request header belong to the tunnel.
-			data, p.http = p.http.buffer, httpParser{}
-			p.evidence.Kind = "proxy"
+			switch p.http.state {
+			case httpTunnel: // Bytes after a CONNECT request header belong to the tunnel.
+				data, p.http = p.http.buffer, httpParser{}
+				p.evidence.Kind = "proxy"
+			case httpH2C:
+				data, p.http = p.http.buffer[len(h2Preface):], httpParser{}
+				p.evidence.Kind, p.h2 = "http2", new(h2Parser)
+			default:
+				return nil
+			}
 		case "http2":
 			return p.h2.feed(data, &p.evidence)
 		default:
@@ -587,6 +608,10 @@ func StartsClientMessage(b []byte) bool {
 	return found && looksLikeHTTP(line) && (bytes.HasSuffix(line, []byte(" HTTP/1.1")) || bytes.HasSuffix(line, []byte(" HTTP/1.0")))
 }
 
+// looksLikeHTTP reports whether data starts an HTTP/1.x request line: a
+// method, then a target that starts like a path, a URI or an authority. A
+// complete line must end in the version. NATS clients, for one, open with
+// CONNECT {...}.
 func looksLikeHTTP(data []byte) bool {
 	space := bytes.IndexByte(data, ' ')
 	if space < 3 || space > 10 {
@@ -594,10 +619,19 @@ func looksLikeHTTP(data []byte) bool {
 	}
 	switch string(data[:space]) {
 	case "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "TRACE", "CONNECT":
-		return true
 	default:
 		return false
 	}
+	if space+1 == len(data) {
+		return false // The target is still to come.
+	}
+	if t := data[space+1]; t != '/' && t != '*' && t != '[' && !('a' <= t && t <= 'z' || 'A' <= t && t <= 'Z' || '0' <= t && t <= '9') {
+		return false
+	}
+	if line, _, complete := bytes.Cut(data, []byte("\r\n")); complete {
+		return bytes.HasSuffix(line, []byte(" HTTP/1.1")) || bytes.HasSuffix(line, []byte(" HTTP/1.0"))
+	}
+	return true
 }
 
 // validHostname accepts printable ASCII names without separators, which also

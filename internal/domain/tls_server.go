@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"time"
 )
 
 const (
@@ -16,17 +17,23 @@ const (
 
 // serverFlight reads the plaintext start of a TLS server's reply: the
 // ServerHello and, when the client sent no SNI and the version is below TLS
-// 1.3, the leaf certificate. It takes segments in order only; a gap ends the
-// parse, since the flight is a few back-to-back segments.
+// 1.3, the leaf certificate. Segments that arrive ahead of a gap, as after a
+// loss upstream of the capture point, wait for the retransmission within the
+// same bounds as the client side.
 type serverFlight struct {
-	expected  uint32
-	started   bool
-	done      bool
-	record    []byte
-	handshake []byte
+	expected     uint32
+	started      bool
+	done         bool
+	record       []byte
+	handshake    []byte
+	pending      map[uint32][]byte
+	pendingBytes int
+	gapSince     time.Time
 }
 
-func (f *serverFlight) stop() { f.done, f.record, f.handshake = true, nil, nil }
+func (f *serverFlight) stop() {
+	f.done, f.record, f.handshake, f.pending, f.pendingBytes = true, nil, nil, nil, 0
+}
 
 // AddServer reads one server segment of a connection whose ClientHello was
 // parsed; length is the segment's payload length on the wire. The reply
@@ -43,13 +50,41 @@ func (s *Stream) AddServer(seq uint32, payload []byte, length int) {
 		}
 		f.started, f.expected = true, seq
 	}
-	d := int32(seq - f.expected)
-	if d > 0 {
-		f.stop() // A server segment was not captured.
+	if int32(seq-f.expected) > 0 {
+		if length > len(payload) || len(f.pending) >= maxPendingParts || f.pendingBytes+len(payload) > maxServerFlight {
+			f.stop()
+			return
+		}
+		if f.pending == nil {
+			f.pending, f.gapSince = make(map[uint32][]byte), time.Now()
+		}
+		if old := f.pending[seq]; len(old) < len(payload) {
+			f.pending[seq] = bytes.Clone(payload)
+			f.pendingBytes += len(payload) - len(old)
+		}
 		return
 	}
-	truncated := length > len(payload)
-	if d < 0 {
+	f.add(seq, payload, length > len(payload), e)
+	for delivered := true; delivered && !f.done; {
+		delivered = false
+		for pendingSeq, segment := range f.pending {
+			if int32(pendingSeq-f.expected) <= 0 {
+				delete(f.pending, pendingSeq)
+				f.pendingBytes -= len(segment)
+				f.add(pendingSeq, segment, false, e)
+				delivered = true
+				break
+			}
+		}
+	}
+	if len(f.pending) > 0 {
+		f.gapSince = time.Now() // Progress: the next gap starts now.
+	}
+}
+
+// add feeds a segment that starts at or before the next expected byte.
+func (f *serverFlight) add(seq uint32, payload []byte, truncated bool, e *Evidence) {
+	if d := int32(seq - f.expected); d < 0 {
 		if int(-d) >= len(payload) {
 			return // A retransmission.
 		}

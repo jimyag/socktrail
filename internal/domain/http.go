@@ -25,6 +25,7 @@ const (
 	httpChunkEnd
 	httpChunkTrailer
 	httpTunnel // A CONNECT request header ended; later bytes are tunnel payload.
+	httpH2C    // An h2c upgrade succeeded; the buffer starts with the HTTP/2 preface.
 	httpStopped
 )
 
@@ -32,6 +33,7 @@ type httpParser struct {
 	state     httpState
 	buffer    []byte
 	remaining uint64
+	h2c       bool // The last request asked to upgrade to cleartext HTTP/2.
 }
 
 func (p *httpParser) feed(data []byte, evidence *Evidence) error {
@@ -42,6 +44,18 @@ func (p *httpParser) feed(data []byte, evidence *Evidence) error {
 	for {
 		switch p.state {
 		case httpHeaders:
+			if p.h2c {
+				// The client sends the HTTP/2 preface only after the server's
+				// 101 Switching Protocols; after a refusal it goes on in HTTP/1.1.
+				if bytes.HasPrefix(p.buffer, h2Preface) {
+					p.state = httpH2C
+					return nil
+				}
+				if bytes.HasPrefix(h2Preface, p.buffer) {
+					return nil
+				}
+				p.h2c = false
+			}
 			end := bytes.Index(p.buffer, []byte("\r\n\r\n"))
 			if end < 0 {
 				if len(p.buffer) > maxHTTPHeader {
@@ -67,10 +81,15 @@ func (p *httpParser) feed(data []byte, evidence *Evidence) error {
 				if evidence.Hosts[host] == 0 && len(evidence.Hosts) >= maxHTTPHosts {
 					return fmt.Errorf("HTTP distinct Host limit")
 				}
+				if evidence.Hosts == nil {
+					evidence.Hosts = make(map[string]uint64)
+				}
 				evidence.Hosts[host]++
 			}
-			if upgrade {
-				p.state, p.buffer = httpStopped, nil
+			if strings.EqualFold(upgrade, "h2c") {
+				p.h2c = true
+			} else if upgrade != "" {
+				p.state, p.buffer = httpStopped, nil // WebSocket and others: not HTTP any more.
 				return nil
 			}
 			if chunked {
@@ -161,10 +180,10 @@ func (p *httpParser) skip(n int) bool {
 	return true
 }
 
-func parseHTTPHeader(header []byte) (method, target string, bodyLength uint64, chunked, upgrade bool, host string, err error) {
+func parseHTTPHeader(header []byte) (method, target string, bodyLength uint64, chunked bool, upgrade, host string, err error) {
 	lines := bytes.Split(header, []byte("\r\n"))
 	parts := bytes.Fields(lines[0])
-	if len(parts) != 3 || !looksLikeHTTP(append(bytes.Clone(parts[0]), ' ')) || (string(parts[2]) != "HTTP/1.1" && string(parts[2]) != "HTTP/1.0") {
+	if len(parts) != 3 || !looksLikeHTTP(lines[0]) || (string(parts[2]) != "HTTP/1.1" && string(parts[2]) != "HTTP/1.0") {
 		err = fmt.Errorf("invalid HTTP/1.1 request line")
 		return
 	}
@@ -203,7 +222,7 @@ func parseHTTPHeader(header []byte) (method, target string, bodyLength uint64, c
 				return
 			}
 		case "upgrade":
-			upgrade = true
+			upgrade = string(value)
 		}
 	}
 	if sawLength && sawEncoding {

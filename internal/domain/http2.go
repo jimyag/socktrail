@@ -126,6 +126,9 @@ func (p *h2Parser) headers(e *Evidence) error {
 		if e.Hosts[host] == 0 && len(e.Hosts) >= maxHTTPHosts {
 			return fmt.Errorf("HTTP distinct Host limit")
 		}
+		if e.Hosts == nil {
+			e.Hosts = make(map[string]uint64)
+		}
 		e.Hosts[host]++
 	}
 	return nil

@@ -61,6 +61,28 @@ func TestHTTP2CleartextCountsRequestsPerAuthority(t *testing.T) {
 	}
 }
 
+// A client may reach cleartext HTTP/2 through an HTTP/1.1 Upgrade. The
+// preface follows only if the server switched; otherwise HTTP/1.1 goes on.
+func TestHTTP2CleartextUpgrade(t *testing.T) {
+	upgrade := []byte("GET / HTTP/1.1\r\nHost: orders.internal.test\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings: AAMAAABkAAQAAP__\r\n\r\n")
+	for name, tc := range map[string]struct {
+		next []byte
+		kind string
+	}{
+		"switched": {h2cClient(t, 10, grpcRequest), "http2"},
+		"refused":  {[]byte("GET /next HTTP/1.1\r\nHost: orders.internal.test\r\n\r\n"), "http"},
+	} {
+		data := append(bytes.Clone(upgrade), tc.next...)
+		s := New(1)
+		for offset := 0; offset < len(data); offset += 7 {
+			s.Add(uint32(1+offset), data[offset:min(offset+7, len(data))])
+		}
+		if e := s.Evidence(); e.Kind != tc.kind || e.Hosts["orders.internal.test"] != 2 || e.ParseError != "" {
+			t.Fatalf("%s: %+v", name, e)
+		}
+	}
+}
+
 // A DATA frame the capture cut short is skipped by length; the next
 // request's headers still count.
 func TestHTTP2SkipsUncapturedDataFrames(t *testing.T) {

@@ -32,6 +32,27 @@ func clientHello(host string, ech bool) []byte {
 	return append(record, handshake...)
 }
 
+// NATS clients open with CONNECT and a JSON object, which is not an HTTP
+// request line and must not count as a failed one.
+func TestNATSConnectIsNotHTTP(t *testing.T) {
+	s := New(1)
+	s.Add(1, []byte("CONNECT {\"verbose\":false,\"pedantic\":false}\r\nPING\r\n"))
+	if e := s.Evidence(); e.Kind != "other" || e.ParseError != "" {
+		t.Fatalf("NATS CONNECT: %+v", e)
+	}
+}
+
+// A client that sends fewer bytes than the protocols need to be told apart,
+// and nothing more, has an unrecognized stream, not a failed parse.
+func TestShortClientStreamIsNotAParseFailure(t *testing.T) {
+	s := New(1)
+	s.Add(1, []byte("stats\r\nquit\r\n"))
+	s.Tick(time.Now().Add(31 * time.Second))
+	if e := s.Evidence(); e.Kind != "other" || e.ParseError != "" {
+		t.Fatalf("short stream: %+v", e)
+	}
+}
+
 func TestReassemblyGapTimeoutKeepsDomainUnknown(t *testing.T) {
 	s := New(1001)
 	s.Add(1020, []byte("Host: example.test\r\n\r\n"))
