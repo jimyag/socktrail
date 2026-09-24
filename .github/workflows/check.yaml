@@ -30,3 +30,53 @@ jobs:
         run: go test -race ./...
       - name: Build
         run: CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
+
+  # Probe loading, verifier acceptance, the capture ring and conntrack are
+  # tested only as root, on the runner's own kernel of each architecture.
+  root:
+    name: root (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Prepare
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables
+          sudo modprobe tls || true # Kernel TLS; its test skips without it.
+      - name: Root tests
+        run: |
+          for package in probe sockstream capture conntrack; do
+            go test -c -o "$RUNNER_TEMP/$package.test" "./internal/$package"
+            sudo "$RUNNER_TEMP/$package.test" -test.v
+          done
+      - name: Snapshot smoke test
+        run: |
+          go build -o "$RUNNER_TEMP/socktrail" ./cmd/socktrail
+          sudo test/smoke.sh "$RUNNER_TEMP/socktrail"
+
+  bpf:
+    name: BPF objects match sources
+    # Its clang 18.1.3 built the committed objects; other versions emit other bytes.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang-18 llvm-18 libbpf-dev
+      - name: Regenerate
+        run: go generate ./internal/...
+      - name: Compare
+        run: |
+          git status --short
+          test -z "$(git status --porcelain)"

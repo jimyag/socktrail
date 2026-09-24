@@ -1,0 +1,63 @@
+name: Kernels
+
+# Boots the distribution kernels of test/vm/kernels.txt and runs the probes'
+# root tests and a snapshot in each. Weekly, since distributions update their
+# kernels, and whenever the probes or the VM tooling change.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "internal/**/*.bpf.c"
+      - "test/vm/**"
+      - ".github/workflows/kernels.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernels:
+    name: ${{ matrix.arch }} kernels
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64] # arm64 is emulated: about ten minutes a kernel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Prepare
+        id: prepare
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-system-arm cpio
+          echo "week=$(date +%G-%V)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/socktrail-vm
+          key: vm-${{ matrix.arch }}-${{ hashFiles('test/vm/kernels.txt') }}-${{ steps.prepare.outputs.week }}
+          restore-keys: vm-${{ matrix.arch }}-
+      - name: Boot each kernel
+        env:
+          VM_OUT: ${{ runner.temp }}/vm
+        run: |
+          echo "### ${{ matrix.arch }}" >>"$GITHUB_STEP_SUMMARY"
+          test/vm/run.sh ${{ matrix.arch }} | sed -u 's/^/- /' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: vm-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/vm/*.log
