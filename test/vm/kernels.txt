@@ -1,0 +1,17 @@
+# Kernels test/vm/run.sh boots. Each line: name, architecture, then a
+# Debian-style archive (mirror, index path, package name pattern; the newest
+# match is used), "url URL" for one kernel package, or "container IMAGE
+# PACKAGE" for an RPM kernel that dnf downloads inside that container image.
+# arm64 attaches fentry/fexit only from 6.4 on (ftrace direct calls), so
+# Debian 12's 6.1 and Ubuntu's 6.2 cannot run socktrail; 6.4 is the minimum.
+debian11-5.10   amd64  http://deb.debian.org/debian          dists/bullseye/main/binary-amd64/Packages.gz       ^linux-image-5\.10\.0-[0-9]+-amd64$
+ubuntu-5.11     amd64  http://archive.ubuntu.com/ubuntu       dists/focal-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?5\.11\.0-[0-9]+-generic$
+ubuntu-5.13     amd64  http://archive.ubuntu.com/ubuntu       dists/focal-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?5\.13\.0-[0-9]+-generic$
+ubuntu-5.15     amd64  http://archive.ubuntu.com/ubuntu       dists/jammy-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?5\.15\.0-[0-9]+-generic$
+ubuntu-6.8      amd64  http://archive.ubuntu.com/ubuntu       dists/noble-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?6\.8\.0-[0-9]+-generic$
+ubuntu-6.17     amd64  http://archive.ubuntu.com/ubuntu       dists/noble-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?6\.17\.0-[0-9]+-generic$
+ubuntu-7.0      amd64  http://archive.ubuntu.com/ubuntu       dists/noble-updates/main/binary-amd64/Packages.gz  ^linux-image-(unsigned-)?7\.0\.0-[0-9]+-generic$
+centos9-5.14    amd64  container quay.io/centos/centos:stream9  kernel-core
+centos10-6.12   amd64  container quay.io/centos/centos:stream10 kernel-core
+mainline-6.4    arm64  url https://kernel.ubuntu.com/mainline/v6.4/arm64/linux-image-unsigned-6.4.0-060400-generic_6.4.0-060400.202306271339_arm64.deb
+ubuntu-6.8      arm64  http://ports.ubuntu.com/ubuntu-ports   dists/noble-updates/main/binary-arm64/Packages.gz  ^linux-image-(unsigned-)?6\.8\.0-[0-9]+-generic$
