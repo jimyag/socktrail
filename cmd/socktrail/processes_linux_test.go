@@ -116,12 +116,24 @@ func TestServicePageAndProcessFilter(t *testing.T) {
 	if len(rows) != 2 || nginx == nil || session == nil || len(nginx.flows) != 2 || len(session.flows) != 1 || nginx.rx != 10 || nginx.tx != 100 || len(nginx.members) != 1 {
 		t.Fatalf("service rows: %+v", rows)
 	}
-	// The connection table leads with the group's own process doing the I/O,
-	// not its peer in another service.
-	layout := connectionLayout(nginx, viewService)
-	for f, want := range map[*flow]string{c.flows[local]: "401(nginx)", c.flows[upstream]: "-"} {
-		if got := strings.Fields(connectionLine(layout, f, nginx, viewService, " "))[0]; got != want {
-			t.Errorf("I/O PID of %s: %q, want %q", f.Key.A, got, want)
+	// The connection table leads with the row's processes that did the I/O:
+	// the group's own on the service page, not its peer in another service;
+	// the selected one on the PID page; every one on the other pages.
+	curlRow := &uiRow{pidID: curl, flows: []*flow{c.flows[local]}}
+	for _, tc := range []struct {
+		row  *uiRow
+		mode viewMode
+		f    *flow
+		want string
+	}{
+		{nginx, viewService, c.flows[local], "401(nginx)"},
+		{nginx, viewService, c.flows[upstream], "-"},
+		{curlRow, viewPID, c.flows[local], "300(curl)"},
+		{&uiRow{flows: []*flow{c.flows[local]}}, viewProtocol, c.flows[local], "300(curl),401(nginx)"},
+	} {
+		layout := connectionLayout(tc.row, tc.mode, c)
+		if got := strings.Fields(connectionLine(layout, tc.f, tc.row, tc.mode, c, " "))[0]; got != tc.want {
+			t.Errorf("%s page: I/O PID of %s is %q, want %q", viewNames[tc.mode], tc.f.Key.A, got, tc.want)
 		}
 	}
 

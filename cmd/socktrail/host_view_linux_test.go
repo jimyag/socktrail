@@ -14,15 +14,17 @@ func TestHostViewKeepsOneCaptureCopyAndDomainEvidence(t *testing.T) {
 	server := netip.MustParseAddrPort("198.51.100.20:80")
 	key := keyFor(client, server, 6)
 	id := processID{PID: 123, StartNS: 456}
+	defer func(names []string) { captureInterfaces = names }(captureInterfaces)
+	captureInterfaces = []string{"br0", "eno1"}
 	first := &flow{
 		Key: key, SYNSeen: true, SYNSeq: 100, First: now, Last: now.Add(time.Second),
-		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4,
+		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: 1 << 0,
 		Client: participant{PID: id.PID, StartNS: id.StartNS, Name: "curl"},
 		IO:     map[processID]ioBytes{id: {RX: 35, TX: 45}},
 	}
 	second := &flow{
 		Key: key, SYNSeen: true, SYNSeq: 100, First: now, Last: now.Add(time.Second),
-		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4,
+		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: 1 << 1,
 		Domain: domain.New(1),
 		IO:     map[processID]ioBytes{id: {RX: 35, TX: 45}},
 	}
@@ -40,6 +42,9 @@ func TestHostViewKeepsOneCaptureCopyAndDomainEvidence(t *testing.T) {
 	pidRows := u.rows(host, viewPID)
 	if len(pidRows) != 1 || pidRows[0].rx != 35 || pidRows[0].tx != 45 || len(pidRows[0].flows) != 1 {
 		t.Fatalf("PID view is not global: %+v", pidRows)
+	}
+	if got := interfaceList(flows[0].Interfaces, 0); got != "br0,eno1" || interfaceList(pidRows[0].ifaces, 2) != got {
+		t.Fatalf("the merged flow names the interfaces %q, its row %q", got, interfaceList(pidRows[0].ifaces, 2))
 	}
 	domainRows := u.rows(host, viewDomain)
 	if len(domainRows) != 1 || domainRows[0].label != "HTTP api.example.test" || domainRows[0].reqs != 1 || domainRows[0].rx+domainRows[0].tx != 200 {

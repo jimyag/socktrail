@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/domain"
 	"github.com/jimyag/socktrail/internal/probe"
@@ -134,7 +135,8 @@ func TestProcessTabAvailableForPIDWithoutCapturedFlow(t *testing.T) {
 	var lines []string
 	u.renderBottom(&lines, u.rows(c, viewPID), c)
 	shown := strings.Join(lines, "\n")
-	if !strings.Contains(shown, "[process]") || !strings.Contains(shown, "99999999") || !strings.Contains(shown, "PROCESS DETAILS:") {
+	plain := ansi.Strip(shown)
+	if !strings.Contains(shown, styleBar.paint(" process ")) || !strings.Contains(plain, "99999999") || !strings.Contains(plain, "PROCESS DETAILS:") {
 		t.Fatalf("PID without selected-interface flow has no process detail: %s", shown)
 	}
 }
@@ -168,8 +170,8 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.Contains(got, host) {
 		t.Fatalf("narrow layout discarded the domain before scrolling: %q", got)
 	}
-	detail := connectionLayout(row, viewPID)
-	line := connectionLine(detail, f, row, viewPID, "▸")
+	detail := connectionLayout(row, viewPID, &collector{})
+	line := connectionLine(detail, f, row, viewPID, &collector{}, "▸")
 	if !strings.Contains(line, source.String()) || !strings.Contains(line, target.String()) || !strings.Contains(line, host) {
 		t.Fatalf("connection layout truncated IPv6 endpoints or Host: %q", line)
 	}
@@ -234,7 +236,7 @@ func TestPIDConnectionDetailUsesSelectedProcessIO(t *testing.T) {
 	u := &terminalUI{mode: viewPID}
 	var lines []string
 	u.renderBottom(&lines, []*uiRow{row}, &collector{})
-	detail := strings.Join(lines, "\n")
+	detail := ansi.Strip(strings.Join(lines, "\n"))
 	if !strings.Contains(detail, "Selected PID socket I/O RX 10B TX 20B; connection IP RX 80B TX 120B") || strings.Contains(detail, "socket I/O PID 202") {
 		t.Fatalf("connection detail did not isolate selected PID I/O: %s", detail)
 	}
@@ -276,6 +278,10 @@ func TestInterfaceSelectionDoesNotMergeCapturedFlows(t *testing.T) {
 	u.handleKey("i")
 	if u.interfaceName != "br0" {
 		t.Fatalf("interface switch selected %q", u.interfaceName)
+	}
+	u.hostScope = true
+	if u.handleKey("i"); u.hostScope || u.interfaceName != "br0" {
+		t.Fatalf("i from the overview opened %q, not the current interface", u.interfaceName)
 	}
 }
 

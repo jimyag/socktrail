@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jimyag/socktrail/internal/domain"
 	"github.com/jimyag/socktrail/internal/sockstream"
@@ -44,6 +43,7 @@ type uiRow struct {
 	iface                string
 	pidID                processID
 	members              map[processID]string // A service page row's processes with socket I/O, by name.
+	ifaces               uint8                // The capture interfaces of its flows.
 	flows                []*flow
 	rx, tx               uint64
 	rxRate, txRate       uint64
@@ -84,6 +84,7 @@ func formatPIDBrief(p participant) string {
 
 func (r *uiRow) add(f *flow, speed rate, ownBytes bool) {
 	r.flows = append(r.flows, f)
+	r.ifaces |= f.Interfaces
 	if ownBytes {
 		r.rx += f.RX
 		r.tx += f.TX
@@ -270,8 +271,11 @@ func (u *terminalUI) handleKey(key string) bool {
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
 	case "i":
 		if len(u.interfaces) > 1 {
+			// From the overview, i opens the current interface; then it moves on.
+			if !u.hostScope || u.mode == viewInterfaces {
+				u.interfaceName = u.interfaces[(slices.Index(u.interfaces, u.interfaceName)+1)%len(u.interfaces)]
+			}
 			u.hostScope = false
-			u.interfaceName = u.interfaces[(slices.Index(u.interfaces, u.interfaceName)+1)%len(u.interfaces)]
 			u.globalRate = u.interfaceRates[u.interfaceName]
 			u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
@@ -509,12 +513,16 @@ func (u *terminalUI) handleMouse(m mouseInput, c *collector) {
 	u.help, u.status, u.filtering = false, false, false
 	if m.y == 0 {
 		for _, item := range [...]struct{ label, key string }{
-			{"a OVERVIEW", "a"}, {"0 IFACES", "0"}, {"1 PID", "1"}, {"2 SRC", "2"}, {"3 DST", "3"}, {"4 PROTO", "4"}, {"5 SVC", "5"}, {"d DOMAINS", "d"}, {"i NEXT", "i"},
+			{"1 PID", "1"}, {"2 SRC", "2"}, {"3 DST", "3"}, {"4 PROTO", "4"}, {"5 SVC", "5"}, {"d DOMAINS", "d"}, {"0 IFACES", "0"},
+			{"a overview", "a"}, {"i per interface", "i"}, {"i next interface", "i"},
 		} {
-			start := strings.Index(u.topLine, item.label)
-			if start >= 0 && m.x >= start && m.x < start+len(item.label) {
-				u.handleKey(item.key)
-				return
+			// The line holds wider characters than ASCII, such as the bar
+			// before the scope keys: find the entry by its screen column.
+			if start := strings.Index(u.topLine, item.label); start >= 0 {
+				if column := displayWidth(u.topLine[:start]); m.x >= column && m.x < column+len(item.label) {
+					u.handleKey(item.key)
+					return
+				}
 			}
 		}
 	}
@@ -1088,28 +1096,50 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			reasons = append(reasons, fmt.Sprintf("%s=%d", count.name, count.n))
 		}
 	}
-	mark := ""
+	// Marks name what the view misses or leaves out: red for lost data,
+	// yellow for a missing probe or a process filter.
+	mark, styledMark := "", ""
+	addMark := func(text string, s style) {
+		mark += " " + text
+		styledMark += " " + s.paint(text)
+	}
 	if len(reasons) > 0 {
-		mark = " INCOMPLETE " + strings.Join(reasons, " ")
+		addMark("INCOMPLETE "+strings.Join(reasons, " "), styleAlert)
 	}
 	if strings.Contains(u.tlsProbeStatus, "unavailable") || strings.Contains(u.tlsProbeStatus, "stopped") {
-		mark += " OPENSSL-PROBE-UNAVAILABLE"
+		addMark("OPENSSL-PROBE-UNAVAILABLE", styleYellow)
 	}
 	if strings.Contains(u.streamStatus, "unavailable") || strings.Contains(u.streamStatus, "stopped") {
-		mark += " SOCKET-SNIFF-UNAVAILABLE"
+		addMark("SOCKET-SNIFF-UNAVAILABLE", styleYellow)
 	}
 	if u.scopeFilter.active() {
-		mark += " ONLY " + u.scopeFilter.String()
+		addMark("ONLY "+u.scopeFilter.String(), styleYellow)
 	}
-	u.topLine = fmt.Sprintf("socktrail %s (%d/%d) IP RX %sB/s TX %sB/s%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), human(u.globalRate.rx), human(u.globalRate.tx), mark)
-	if u.mode == viewInterfaces {
-		u.topLine = fmt.Sprintf("socktrail IFACES (%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", len(u.interfaces), mark)
-	} else if u.hostScope {
-		u.topLine = fmt.Sprintf("socktrail OVERVIEW (%d ifaces)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES", len(u.interfaces), mark)
-	} else if width < 125 {
-		u.topLine = fmt.Sprintf("socktrail %s (%d/%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), mark)
+	// The title names the scope, the merged interfaces or one of them. The
+	// page keys follow, and after a bar the keys that change the scope.
+	title := fmt.Sprintf("%s (%d/%d)", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces))
+	rate := fmt.Sprintf(" IP RX %sB/s TX %sB/s", human(u.globalRate.rx), human(u.globalRate.tx))
+	scope := "a overview  i next interface"
+	switch {
+	case u.mode == viewInterfaces:
+		title, rate = fmt.Sprintf("IFACES (%d)", len(u.interfaces)), ""
+	case u.hostScope:
+		title, rate, scope = fmt.Sprintf("OVERVIEW (%d ifaces)", len(u.interfaces)), "", "i per interface"
+	case width < 125:
+		rate = ""
 	}
-	lines = append(lines, u.topLine)
+	if len(u.interfaces) < 2 {
+		scope = strings.TrimSuffix(strings.TrimSuffix(scope, "i per interface"), "  i next interface")
+	}
+	// Mouse clicks find the keys in the plain line, which must read as the
+	// styled one does.
+	u.topLine = " socktrail   " + title + rate + mark + "  " + topPages
+	styled := styleBold.paint(styleBar.paint(" socktrail ")) + "  " + styleBold.paint(title) + rate + styledMark + "  " + topKeys(topPages, pageEntries[u.mode], style{})
+	if scope != "" {
+		u.topLine += " │ " + scope
+		styled += styleFaint.paint(" │ ") + topKeys(scope, "", styleFaint)
+	}
+	lines = append(lines, styled)
 	if u.mode == viewInterfaces {
 		lines = append(lines, fmt.Sprintf("%d interfaces; IP bytes/rates are per interface, not a host total. Enter opens selected interface; i cycles.", len(rows)))
 	} else if u.mode == viewService {
@@ -1132,29 +1162,28 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, fmt.Sprintf("%s  IP bytes %s  flows %d  netns:%d  since %s", viewNames[u.mode], human(c.bytes), len(c.allFlows()), u.netNS, u.started.Format("15:04:05")))
 	}
 	if width < 110 && u.mode != viewInterfaces && !u.hostScope {
-		lines[1] = fmt.Sprintf("IP RX %sB/s TX %sB/s%s | %s", human(u.globalRate.rx), human(u.globalRate.tx), mark, lines[1])
+		lines[1] = fmt.Sprintf("IP RX %sB/s TX %sB/s%s | %s", human(u.globalRate.rx), human(u.globalRate.tx), styledMark, lines[1])
 	}
-	lines = append(lines, strings.Repeat("─", width))
+	lines[1] = strings.ReplaceAll(lines[1], " | ", styleFaint.paint(" | "))
+	lines = append(lines, styleFaint.paint(strings.Repeat("─", width)))
 	layout := groupLayout(rows, u.mode, width)
 	u.mainLayout = layout
 	u.mainCanvas = layout.width
 	u.mainX = min(u.mainX, max(0, layout.width-width))
-	lines = append(lines, scrollTableLine(layout.sortedHeader(u.mainSort), u.mainX, width))
+	lines = append(lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.mainSort), u.mainX, width)))
 	for i := u.scroll; i < u.scroll+tableHeight; i++ {
 		if i >= len(rows) {
 			lines = append(lines, "")
 			continue
 		}
 		r := rows[i]
-		cursor := " "
-		if i == u.selected {
-			cursor = "▸"
-		}
-		lines = append(lines, scrollTableLine(groupLine(layout, r, u.mode, cursor), u.mainX, width))
+		lines = append(lines, tableRow(layout, u.mainX, width, i == u.selected, !u.focusBottom, func(layout tableLayout, cursor string) string {
+			return groupLine(layout, r, u.mode, cursor)
+		}))
 	}
-	lines = append(lines, "─ drag to resize ─"+strings.Repeat("─", max(0, width-18)))
+	lines = append(lines, styleFaint.paint("─ drag to resize ─"+strings.Repeat("─", max(0, width-18))))
 	if u.help {
-		lines = append(lines, "HELP  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 services (g groups by service, cgroup or process tree)  d domains  i next interface")
+		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 services (g groups by service, cgroup or process tree)  d domains  i next interface")
 		lines = append(lines, "↑↓/jk select  Enter focus details  Tab conns/process  PgUp/PgDn page  c capture  ←→ columns")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
@@ -1175,7 +1204,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			lines = append(lines, "PCAPNG: "+u.captureStatus+"  "+u.capturePath)
 		}
 		if u.mode == viewInterfaces {
-			lines = append(lines, "STATUS per interface; IP packet bytes are separate from PID socket I/O")
+			lines = append(lines, styleAccent.paint("STATUS")+" per interface; IP packet bytes are separate from PID socket I/O")
 			for _, name := range u.interfaces {
 				ifaceCollector := u.collectors[name]
 				if ifaceCollector == nil {
@@ -1185,7 +1214,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			}
 			lines = append(lines, fmt.Sprintf("PID events %d  ring lost %d  queue dropped %d; PID I/O belongs to the whole netns", probeReceived, probeLost, probeDropped))
 		} else {
-			lines = append(lines, "STATUS  IP packet bytes and PID socket I/O bytes are separate measures")
+			lines = append(lines, styleAccent.paint("STATUS")+"  IP packet bytes and PID socket I/O bytes are separate measures")
 			if u.hostScope {
 				lines = append(lines, "OVERVIEW: selected interfaces merged per flow; IP bytes are not an exact whole-host total")
 			}
@@ -1214,7 +1243,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, "")
 	}
 	if u.filtering {
-		lines = append(lines, "/"+u.filter+"_")
+		lines = append(lines, styleAccent.paint("/")+u.filter+styleFaint.paint("_"))
 	} else {
 		mainOrder := sortName(u.sortRate)
 		if u.mainSort.key != "" {
@@ -1224,24 +1253,38 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			}
 			mainOrder = u.mainSort.key + arrow
 		}
-		lines = append(lines, fmt.Sprintf("↑↓ rows  ←→ columns  wheel/Shift+wheel  top:%d/%d detail:%d/%d  /:%s sort:%s s:total c:capture %s ? q", u.mainX, max(0, u.mainCanvas-width), u.detailX, max(0, u.detailCanvas-width), u.filter, mainOrder, u.captureStatus))
+		capture := u.captureStatus
+		if strings.HasPrefix(capture, "recording") {
+			capture = styleAlert.paint(capture)
+		}
+		keys := fmt.Sprintf("↑↓ rows  ←→ columns  wheel/Shift+wheel  top:%d/%d detail:%d/%d  /:%s sort:%s s:total c:capture ", u.mainX, max(0, u.mainCanvas-width), u.detailX, max(0, u.detailCanvas-width), u.filter, mainOrder)
+		lines = append(lines, styleFaint.paint(keys)+capture+styleFaint.paint(" ? q"))
 	}
 	u.draw(lines, width, height)
 }
 
 func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) {
+	// notice explains an empty detail area, below the row it is about.
+	notice := func(title string, text ...string) {
+		if title != "" {
+			*lines = append(*lines, styleBold.paint(title))
+		}
+		for _, line := range text {
+			*lines = append(*lines, styleFaint.paint(line))
+		}
+	}
 	if len(rows) == 0 {
 		if u.mode == viewDomain && u.filter == "" {
 			if u.hostScope {
-				*lines = append(*lines, "No HTTP, TLS, QUIC, proxy or DNS name evidence on captured host interfaces yet.",
+				notice("", "No HTTP, TLS, QUIC, proxy or DNS name evidence on captured host interfaces yet.",
 					"Names come from requests and handshakes captured after start, or later DNS answers.", "", "")
 			} else {
-				*lines = append(*lines, "No HTTP, TLS, QUIC, proxy or DNS name evidence on "+u.interfaceName+" yet.",
+				notice("", "No HTTP, TLS, QUIC, proxy or DNS name evidence on "+u.interfaceName+" yet.",
 					"The client request or ClientHello must cross this interface after capture starts.",
 					"If traffic uses a proxy/tunnel, select its interface for outbound handshakes.", "")
 			}
 		} else {
-			*lines = append(*lines, "No matching group", "", "", "")
+			notice("", "No matching group", "", "", "")
 		}
 		return
 	}
@@ -1252,36 +1295,35 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 	}
 	if len(row.flows) == 0 && !(u.tab == 1 && u.mode == viewPID && row.pidID.PID > 0) {
 		if u.mode == viewInterfaces {
-			*lines = append(*lines, row.label, "No retained connections on this interface yet.", "Select another interface or wait for new traffic.", "")
+			notice(row.label, "No retained connections on this interface yet.", "Select another interface or wait for new traffic.", "")
 		} else if u.mode == viewPID && row.pidID.PID > 0 {
 			where := u.interfaceName
 			if u.hostScope {
 				where = "captured host interfaces"
 			}
-			*lines = append(*lines, row.label, fmt.Sprintf("PID socket I/O in whole netns: RX %sB TX %sB", human(row.rx), human(row.tx)),
+			notice(row.label, fmt.Sprintf("PID socket I/O in whole netns: RX %sB TX %sB", human(row.rx), human(row.tx)),
 				"No matching connection on "+where+". It may predate capture.", "")
 		} else {
-			*lines = append(*lines, row.label, "Connection detail is no longer retained; bytes remain in session totals.", "", "")
+			notice(row.label, "Connection detail is no longer retained; bytes remain in session totals.", "", "")
 		}
 		return
 	}
-	tabs := make([]string, len(tabNames))
+	var tabs strings.Builder
 	position := 0
 	for i, name := range tabNames {
-		tabs[i] = name
+		tab := " " + name + " "
+		u.tabHits[i] = hitSpan{position, position + len(tab)}
+		position += len(tab) + 1
 		if i == u.tab {
-			tabs[i] = "[" + name + "]"
+			tabs.WriteString(styleBar.paint(tab) + " ")
+		} else {
+			tabs.WriteString(styleFaint.paint(tab) + " ")
 		}
-		u.tabHits[i] = hitSpan{position, position + utf8.RuneCountInString(tabs[i])}
-		position += utf8.RuneCountInString(tabs[i]) + 2
 	}
-	*lines = append(*lines, strings.Join(tabs, "  ")+"   "+row.label)
+	*lines = append(*lines, tabs.String()+"  "+styleBold.paint(row.label))
 	switch u.tab {
 	case 0:
-		if u.mode != viewPID && (u.flowSort.key == "PID RX" || u.flowSort.key == "PID TX") {
-			u.flowSort = sortSpec{}
-		}
-		sortFlows(row.flows, row, u.flowSort)
+		sortFlows(row.flows, row, u.flowSort, u.mode, c)
 		if u.selectedFlowRef != nil {
 			if index := slices.Index(row.flows, u.selectedFlowRef); index >= 0 {
 				u.selectedFlow = index
@@ -1290,11 +1332,11 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.selectedFlow = min(u.selectedFlow, len(row.flows)-1)
 		u.selectedFlowRef = row.flows[u.selectedFlow]
 		u.flowOrder = slices.Clone(row.flows)
-		layout := connectionLayout(row, u.mode)
+		layout := connectionLayout(row, u.mode, c)
 		u.detailLayout = layout
 		u.detailCanvas = layout.width
 		u.detailX = min(u.detailX, max(0, layout.width-u.screenWidth))
-		*lines = append(*lines, scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth))
+		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth)))
 		visible := max(1, u.bottomHeight-7) // Rows plus tabs, header, APP, TCP, name and EVIDENCE lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
 		if u.selectedFlow < start {
@@ -1306,11 +1348,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.flowCount = min(visible, len(row.flows)-start)
 		for i := start; i < start+u.flowCount; i++ {
 			f := row.flows[i]
-			cursor := " "
-			if u.focusBottom && i == u.selectedFlow {
-				cursor = "▸"
-			}
-			*lines = append(*lines, scrollTableLine(connectionLine(layout, f, row, u.mode, cursor), u.detailX, u.screenWidth))
+			*lines = append(*lines, tableRow(layout, u.detailX, u.screenWidth, i == u.selectedFlow, u.focusBottom, func(layout tableLayout, cursor string) string {
+				return connectionLine(layout, f, row, u.mode, c, cursor)
+			}))
 		}
 		selected := row.flows[u.selectedFlow]
 		app, source := selected.AppProtocol, selected.AppSource
@@ -1319,41 +1359,46 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		}
 		retx, retxSource := retransmits(selected)
 		rtt, rttSource := flowRTT(selected)
-		appLine := fmt.Sprintf("APP %s (%s)  RTT %s", app, source, formatSYNRTT(rtt))
-		if rttSource != "" {
-			appLine += " (" + rttSource + ")"
+		retxText := strconv.FormatUint(retx, 10)
+		if retx > 0 {
+			retxText = styleYellow.paint(retxText)
 		}
-		appLine += fmt.Sprintf("  RETX %d (%s)", retx, retxSource)
+		appLine := label("APP") + " " + app + " " + styleFaint.paint("("+source+")") + "  " + label("RTT") + " " + formatSYNRTT(rtt)
+		if rttSource != "" {
+			appLine += " " + styleFaint.paint("("+rttSource+")")
+		}
+		appLine += "  " + label("RETX") + " " + retxText + " " + styleFaint.paint("("+retxSource+")")
 		if selected.DomainConflict {
-			appLine += "  DOMAIN CONFLICT"
+			appLine += "  " + styleAlert.paint("DOMAIN CONFLICT")
 		}
 		if len(selected.TLSActors) > 0 {
-			appLine += fmt.Sprintf("  OpenSSL PID %d", slices.SortedFunc(maps.Keys(selected.TLSActors), func(a, b processID) int { return a.PID - b.PID })[0].PID)
+			appLine += "  " + label("OpenSSL PID") + " " + strconv.Itoa(slices.SortedFunc(maps.Keys(selected.TLSActors), func(a, b processID) int { return a.PID - b.PID })[0].PID)
 		}
 		*lines = append(*lines, appLine)
-		tcpLine := "TCP -"
+		tcpLine := label("TCP") + " -"
 		if detail := kernelDetail(selected); detail != "" {
-			tcpLine = "TCP " + detail
+			tcpLine = label("TCP") + " " + detail
 		}
 		*lines = append(*lines, tcpLine)
-		*lines = append(*lines, fmt.Sprintf("%s  origin PID %s  target PID %s  first %s  last %s", flowName(selected), formatPIDBrief(selected.Client), formatPIDBrief(selected.Server), displayTime(selected.First), displayTime(selected.Last)))
-		*lines = append(*lines, evidenceLine(selected, c))
+		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
+			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))
+		*lines = append(*lines, label("EVIDENCE")+strings.TrimPrefix(evidenceLine(selected, c), "EVIDENCE"))
 		if u.mode == viewPID && row.pidID.PID > 0 {
 			packetLabel := "connection IP"
 			if u.hostScope {
 				packetLabel = "single-point observed IP"
 			}
 			if io, ok := selected.IO[row.pidID]; ok {
-				*lines = append(*lines, fmt.Sprintf("Selected PID socket I/O RX %sB TX %sB; %s RX %sB TX %sB", human(io.RX), human(io.TX), packetLabel, human(selected.RX), human(selected.TX)))
+				*lines = append(*lines, label("Selected PID socket I/O")+fmt.Sprintf(" RX %sB TX %sB; %s RX %sB TX %sB", human(io.RX), human(io.TX), packetLabel, human(selected.RX), human(selected.TX)))
 			} else {
-				*lines = append(*lines, fmt.Sprintf("Selected PID socket I/O unavailable; %s RX %sB TX %sB", packetLabel, human(selected.RX), human(selected.TX)))
+				*lines = append(*lines, label("Selected PID socket I/O")+fmt.Sprintf(" unavailable; %s RX %sB TX %sB", packetLabel, human(selected.RX), human(selected.TX)))
 			}
 			return
 		}
 		for _, id := range slices.SortedFunc(maps.Keys(selected.IO), func(a, b processID) int { return a.PID - b.PID }) {
 			io := selected.IO[id]
 			p := participant{PID: id.PID, StartNS: id.StartNS, Name: c.pidIO[id].Name}
-			*lines = append(*lines, fmt.Sprintf("socket I/O PID %s RX %sB TX %sB", formatPIDBrief(p), human(io.RX), human(io.TX)))
+			*lines = append(*lines, label("socket I/O PID")+fmt.Sprintf(" %s RX %sB TX %sB", formatPIDBrief(p), human(io.RX), human(io.TX)))
 			if len(*lines) >= 9 {
 				break
 			}
@@ -1415,20 +1460,6 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.processListStart, u.processListCount, u.processTotal = start, visible, len(processes)
 		layout := processLayout(processes, depths)
 		u.detailLayout = layout
-		processLines := []string{layout.sortedHeader(u.processSort)}
-		for i := start; i < start+visible; i++ {
-			p := processes[i]
-			io, observed := c.pidIO[p.id()]
-			cursor := " "
-			if u.focusBottom && i == u.selectedProcess {
-				cursor = "▸"
-			}
-			var parent processID
-			if m := u.processes.meta(p.id()); m != nil {
-				parent = m.Parent
-			}
-			processLines = append(processLines, processLine(layout, p, parent, depths[p.id()], io, observed, cursor))
-		}
 		p := processes[u.selectedProcess]
 		if u.processInfoID != p.id() || time.Since(u.processInfoAt) >= 2*time.Second {
 			if u.processInfoID != p.id() {
@@ -1439,56 +1470,60 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		info := u.processInfo
 		detailLines := make([]string, 0, 8)
 		if info.errorText != "" {
-			detailLines = append(detailLines, "PROCESS DETAILS: "+info.errorText)
+			detailLines = append(detailLines, label("PROCESS DETAILS:")+" "+styleYellow.paint(info.errorText))
 		} else {
 			cgroup := u.processes.cgroupOf(u.processes.meta(p.id()))
 			_, service := serviceOf(cgroup)
 			detailLines = append(detailLines,
-				fmt.Sprintf("STARTED %s   PARENT PID %d", info.started, info.parentPID),
-				"EXECUTABLE "+info.executable,
-				"WORKDIR    "+info.workingDir,
-				"COMMAND    "+info.command,
-				"CGROUP     "+cgroup+"  ("+service+")",
+				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID),
+				label("EXECUTABLE")+" "+info.executable,
+				label("WORKDIR")+"    "+info.workingDir,
+				label("COMMAND")+"    "+info.command,
+				label("CGROUP")+"     "+cgroup+"  "+styleFaint.paint("("+service+")"),
 			)
 			detailLines = append(detailLines, "") // Filled after the visible environment range is known.
 		}
 		u.processEnvTotal = len(info.environment)
-		u.processEnvCount = min(u.processEnvTotal, max(0, u.bottomHeight-1-len(processLines)-len(detailLines)))
+		u.processEnvCount = min(u.processEnvTotal, max(0, u.bottomHeight-1-(1+visible)-len(detailLines)))
 		u.processEnvScroll = min(u.processEnvScroll, max(0, u.processEnvTotal-u.processEnvCount))
 		if info.errorText == "" {
-			label := fmt.Sprintf("ENVIRONMENT (exec snapshot) %d-%d/%d; PgUp/PgDn or wheel", min(u.processEnvTotal, u.processEnvScroll+1), u.processEnvScroll+u.processEnvCount, u.processEnvTotal)
+			envLine := label("ENVIRONMENT") + styleFaint.paint(fmt.Sprintf(" (exec snapshot) %d-%d/%d; PgUp/PgDn or wheel", min(u.processEnvTotal, u.processEnvScroll+1), u.processEnvScroll+u.processEnvCount, u.processEnvTotal))
 			if info.truncated {
-				label += " [truncated at 2 MiB]"
+				envLine += " " + styleYellow.paint("[truncated at 2 MiB]")
 			}
-			detailLines[len(detailLines)-1] = label
+			detailLines[len(detailLines)-1] = envLine
 		}
 		u.detailCanvas = layout.width
 		for _, line := range detailLines {
-			u.detailCanvas = max(u.detailCanvas, utf8.RuneCountInString(line))
+			u.detailCanvas = max(u.detailCanvas, displayWidth(line))
 		}
 		for _, line := range info.environment {
-			u.detailCanvas = max(u.detailCanvas, utf8.RuneCountInString(line)+2)
+			u.detailCanvas = max(u.detailCanvas, displayWidth(line)+2)
 		}
 		u.detailX = min(u.detailX, max(0, u.detailCanvas-u.screenWidth))
-		for _, line := range processLines {
-			*lines = append(*lines, scrollTableLine(line, u.detailX, u.screenWidth))
+		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.processSort), u.detailX, u.screenWidth)))
+		for i := start; i < start+visible; i++ {
+			proc := processes[i]
+			io, observed := c.pidIO[proc.id()]
+			var parent processID
+			if m := u.processes.meta(proc.id()); m != nil {
+				parent = m.Parent
+			}
+			*lines = append(*lines, tableRow(layout, u.detailX, u.screenWidth, i == u.selectedProcess, u.focusBottom, func(layout tableLayout, cursor string) string {
+				return processLine(layout, proc, parent, depths[proc.id()], io, observed, cursor)
+			}))
 		}
 		for _, line := range detailLines {
 			*lines = append(*lines, scrollLine(line, u.detailX, u.screenWidth))
 		}
 		u.processEnvY = len(*lines)
 		for _, entry := range info.environment[u.processEnvScroll:min(len(info.environment), u.processEnvScroll+u.processEnvCount)] {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				entry = styleCyan.paint(key) + "=" + value
+			}
 			*lines = append(*lines, scrollLine("  "+entry, u.detailX, u.screenWidth))
 		}
 	}
-}
-
-func fit(line string, width int) string {
-	runes := []rune(line)
-	if len(runes) > width {
-		return string(runes[:width])
-	}
-	return line
 }
 
 func human(n uint64) string {

@@ -136,6 +136,7 @@ type flow struct {
 	WireDomain       *domain.Stream // TCP client stream: HTTP, TLS or proxy tunnel.
 	WireClient       netip.AddrPort // Endpoint whose bytes WireDomain parses.
 	Preexisting      bool           // Open before capture began, so its handshake was never visible.
+	Interfaces       uint8          // Bit i: captured on captureInterfaces[i]; fits the padding.
 	SocketDomain     *domain.Stream // The same client bytes read at the socket layer.
 	QUICDomain       *domain.Stream
 	ProcessDomain    *domain.Stream
@@ -179,6 +180,7 @@ type collector struct {
 	maxFlows        int
 	filterPort      uint16
 	loopback        bool
+	interfaceBit    uint8 // Its interface's bit in flow.Interfaces.
 	debugPID        bool
 	pidIO           map[processID]processIO
 	rxBytes         uint64
@@ -321,7 +323,7 @@ func (c *collector) packet(p capture.Packet) {
 			}
 			return
 		}
-		f = &flow{Key: key, Direction: "unknown", First: time.Now()}
+		f = &flow{Key: key, Direction: "unknown", First: time.Now(), Interfaces: c.interfaceBit}
 		if p.Protocol == 6 {
 			f.TCPState = "midstream"
 		}
@@ -1057,6 +1059,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	captureInterfaces = interfaceNames
 	if *duration == 0 && *debugPID {
 		return fmt.Errorf("--debug-pid-events requires --duration to keep the interactive screen readable")
 	}
@@ -1170,7 +1173,7 @@ func run() error {
 	collectors := make(map[string]*collector, len(interfaceNames))
 	dnsHints := new(domain.DNSCache)
 	for i, name := range interfaceNames {
-		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", debugPID: *debugPID && i == 0}
+		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", interfaceBit: 1 << i, debugPID: *debugPID && i == 0}
 	}
 	host, _, members := hostCollector(interfaceNames, collectors)
 	var hostState hostViewState
@@ -1547,7 +1550,7 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 	if c.loopback {
 		fmt.Println("lo: duplicate receive copies omitted; TX/RX columns reflect capture direction, not two local sockets")
 	}
-	fmt.Println("PROTO APP            STATE       DIR              SOURCE                  TARGET                  RX B      TX B      RTT        RETX    ORIGIN ENDPOINT PID  TARGET ENDPOINT PID  DETAIL")
+	fmt.Println("PROTO APP            STATE       DIR              IFACE        SOURCE                  TARGET                  RX B      TX B      RTT        RETX    ORIGIN ENDPOINT PID  TARGET ENDPOINT PID  DETAIL")
 	for _, f := range flows[:min(limit, len(flows))] {
 		proto := flowProtocol(f)
 		src, dst := displayedEndpoints(f)
@@ -1574,7 +1577,7 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		}
 		retx, _ := retransmits(f)
 		rtt, _ := flowRTT(f)
-		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(rtt), retx, formatPID(f.Client), formatPID(f.Server), detail)
+		fmt.Printf("%-6s %-14s %-11s %-16s %-12s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, interfaceList(f.Interfaces, 0), src, dst, f.RX, f.TX, formatSYNRTT(rtt), retx, formatPID(f.Client), formatPID(f.Server), detail)
 	}
 	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host. RTT and RETX are the kernel's for a local socket, otherwise the SYN handshake sample and overlapping captured segments.")
 	if interfaceName == "OVERVIEW" {

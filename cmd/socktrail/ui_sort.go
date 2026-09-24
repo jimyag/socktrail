@@ -20,7 +20,7 @@ func (s *sortSpec) selectColumn(key string) {
 		return
 	}
 	s.key = key
-	s.desc = !slices.Contains([]string{"GROUP", "DIR", "SOURCE", "TARGET", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
+	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "I/O PID", "DIR", "SOURCE", "TARGET", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
 }
 
 func (s sortSpec) direction(order int) int {
@@ -91,6 +91,8 @@ func sortGroups(rows []*uiRow, mode viewMode, spec sortSpec, sortRate bool) {
 			order = rowTime(a, false).Compare(rowTime(b, false))
 		case "HOST/SNI OR PEER":
 			order = strings.Compare(groupHint(a, mode), groupHint(b, mode))
+		case "IFACE":
+			order = strings.Compare(interfaceList(a.ifaces, 2), interfaceList(b.ifaces, 2))
 		default:
 			av, bv := a.rx+a.tx, b.rx+b.tx
 			if sortRate {
@@ -128,12 +130,16 @@ func flowEndpointForSort(f *flow, source bool) netip.AddrPort {
 	return f.Key.B
 }
 
-func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
+func sortFlows(flows []*flow, row *uiRow, spec sortSpec, mode viewMode, c *collector) {
 	slices.SortFunc(flows, func(a, b *flow) int {
 		var order int
 		switch spec.key {
 		case "I/O PID":
-			order = strings.Compare(groupIO(a, row.members), groupIO(b, row.members))
+			pa, _ := rowIO(a, row, mode, c)
+			pb, _ := rowIO(b, row, mode, c)
+			order = strings.Compare(pa, pb)
+		case "IFACE":
+			order = strings.Compare(interfaceList(a.Interfaces, 0), interfaceList(b.Interfaces, 0))
 		case "DIR":
 			order = strings.Compare(a.Direction, b.Direction)
 		case "SOURCE":
@@ -160,10 +166,13 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
 			ra, _ := retransmits(a)
 			rb, _ := retransmits(b)
 			order = cmp.Compare(ra, rb)
-		case "PID RX":
-			order = cmp.Compare(a.IO[row.pidID].RX, b.IO[row.pidID].RX)
-		case "PID TX":
-			order = cmp.Compare(a.IO[row.pidID].TX, b.IO[row.pidID].TX)
+		case "PID RX", "PID TX":
+			_, ia := rowIO(a, row, mode, c)
+			_, ib := rowIO(b, row, mode, c)
+			order = cmp.Compare(ia.RX, ib.RX)
+			if spec.key == "PID TX" {
+				order = cmp.Compare(ia.TX, ib.TX)
+			}
 		case "ORIGIN PID":
 			order = cmp.Or(cmp.Compare(a.Client.PID, b.Client.PID), cmp.Compare(a.Client.StartNS, b.Client.StartNS))
 		case "TARGET PID":

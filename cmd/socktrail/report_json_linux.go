@@ -82,6 +82,7 @@ type jsonFlow struct {
 	App              string           `json:"app,omitempty"`
 	State            string           `json:"state,omitempty"`
 	Direction        string           `json:"direction,omitempty"`
+	Interfaces       []string         `json:"interfaces,omitempty"` // The capture interfaces that saw it.
 	Source           string           `json:"source"`
 	Target           string           `json:"target"`
 	InitiatorUnknown bool             `json:"initiator_unknown,omitempty"`
@@ -180,7 +181,7 @@ func reportJSON(c *collector, name string, limit int, processes *processTable, s
 	for _, f := range flows[:min(limit, len(flows))] {
 		source, target := displayedEndpoints(f)
 		row := jsonFlow{
-			Protocol: flowProtocol(f), App: f.AppProtocol, State: flowState(f), Direction: f.Direction,
+			Protocol: flowProtocol(f), App: f.AppProtocol, State: flowState(f), Direction: f.Direction, Interfaces: interfacesOf(f.Interfaces),
 			Source: strings.TrimPrefix(source, "?"), Target: strings.TrimPrefix(target, "?"), InitiatorUnknown: strings.HasPrefix(source, "?"),
 			RXBytes: f.RX, TXBytes: f.TX, Packets: f.Packets, FirstSeen: f.First, LastSeen: f.Last,
 			SYNRTTMicros: f.Health.SynRTT.Microseconds(),
