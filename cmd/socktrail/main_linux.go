@@ -1024,7 +1024,13 @@ func run() error {
 	if !ok {
 		return fmt.Errorf("read network namespace inode: unexpected stat type")
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	stopSignals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		// A hang-up stops cleanly, closing any recording; under nohup it
+		// stays ignored.
+		stopSignals = append(stopSignals, syscall.SIGHUP)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals...)
 	defer stop()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()

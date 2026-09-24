@@ -34,7 +34,10 @@ type uiInput struct {
 	mouse mouseInput
 }
 
+// readKeys decodes terminal input until the terminal fails or goes away,
+// which it reports as a quit: nobody could stop the capture otherwise.
 func readKeys(out chan<- uiInput) {
+	defer func() { out <- uiInput{key: "quit"} }()
 	fd := int32(os.Stdin.Fd())
 	buffer := make([]byte, 128)
 	var pending []byte

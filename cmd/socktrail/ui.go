@@ -222,7 +222,7 @@ func (u *terminalUI) close() {
 }
 
 func (u *terminalUI) handleKey(key string) bool {
-	if key == "q" || key == "quit" {
+	if key == "quit" { // Ctrl-C, or the terminal went away.
 		return true
 	}
 	if u.filtering {
@@ -243,6 +243,9 @@ func (u *terminalUI) handleKey(key string) bool {
 		u.selected, u.scroll = 0, 0
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
 		return false
+	}
+	if key == "q" { // Quits from help and status too; a filter takes q as text.
+		return true
 	}
 	if u.help || u.status {
 		u.help, u.status = false, false

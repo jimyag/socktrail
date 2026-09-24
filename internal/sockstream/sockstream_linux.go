@@ -23,6 +23,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/jimyag/socktrail/internal/kernelbtf"
+	"github.com/jimyag/socktrail/internal/procname"
 )
 
 // Chunk is part of the first 16 KiB one socket sent or received.
@@ -191,7 +192,7 @@ func decode(raw []byte) (Chunk, error) {
 		name = append(name, byte(c))
 	}
 	return Chunk{
-		Cookie: header.Cookie, PID: int(header.Pid), StartNS: header.StartNs, Process: string(name), Protocol: header.Protocol,
+		Cookie: header.Cookie, PID: int(header.Pid), StartNS: header.StartNs, Process: procname.Clean(name), Protocol: header.Protocol,
 		Local:  netip.AddrPortFrom(local, header.LocalPort),
 		Remote: netip.AddrPortFrom(remote, header.RemotePort),
 		Sent:   header.Direction == 1, Offset: header.Offset,

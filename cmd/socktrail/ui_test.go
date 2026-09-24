@@ -19,7 +19,6 @@ func TestQuitFromEveryUIState(t *testing.T) {
 		{name: "main"},
 		{name: "help", key: "?"},
 		{name: "status", key: "!"},
-		{name: "filter", key: "/"},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			u := &terminalUI{}
@@ -30,6 +29,20 @@ func TestQuitFromEveryUIState(t *testing.T) {
 				t.Fatal("q did not exit on the first press")
 			}
 		})
+	}
+}
+
+// A filter can name QUIC or a qq.com host; Ctrl-C still quits from it.
+func TestFilterTakesQAsText(t *testing.T) {
+	u := &terminalUI{}
+	u.handleKey("/")
+	for _, key := range []string{"q", "u", "i", "c"} {
+		if u.handleKey(key) {
+			t.Fatalf("%q quit while typing a filter", key)
+		}
+	}
+	if u.filter != "quic" || !u.handleKey("quit") {
+		t.Fatalf("filter %q, or Ctrl-C did not quit", u.filter)
 	}
 }
 

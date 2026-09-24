@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -16,6 +15,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/jimyag/socktrail/internal/kernelbtf"
+	"github.com/jimyag/socktrail/internal/procname"
 )
 
 // StartEmbedded attaches the compiled eBPF probes. The executable contains
@@ -183,7 +183,7 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		AppBytes:  raw.AppBytes,
 		PID:       int(raw.Pid),
 		StartNS:   raw.StartNs,
-		Process:   strings.TrimSpace(string(name)),
+		Process:   procname.Clean(name),
 		NetNS:     raw.Netns,
 		Local:     netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
 		Remote:    netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),

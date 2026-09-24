@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jimyag/socktrail/internal/procname"
 )
 
 // The kernel socket table fills in what the eBPF probes cannot see: sockets
@@ -215,7 +217,7 @@ func (inv *socketInventory) owner(inode uint64) (participant, bool) {
 	clockTicks, clockErr := systemClockTicks()
 	if statErr == nil && parseErr == nil && clockErr == nil {
 		comm, _ := os.ReadFile(filepath.Join(base, "comm"))
-		p = participant{PID: pid, StartNS: ticksToNS(ticks, clockTicks), Name: strings.TrimSpace(string(comm))}
+		p = participant{PID: pid, StartNS: ticksToNS(ticks, clockTicks), Name: procname.Clean(comm)}
 	}
 	inv.processes[pid] = p
 	return p, p.PID != 0

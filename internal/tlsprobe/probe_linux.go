@@ -17,6 +17,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+
+	"github.com/jimyag/socktrail/internal/procname"
 )
 
 type Event struct {
@@ -210,18 +212,12 @@ func decodeEvent(raw TlsEvent) (Event, error) {
 	} else if raw.Source != 1 {
 		return Event{}, fmt.Errorf("invalid OpenSSL hostname source")
 	}
-	process := bytes.TrimRight(bytesFromInt8(raw.Comm[:]), "\x00")
-	for i, b := range process {
-		if b < 32 || b == 127 {
-			process[i] = '?'
-		}
-	}
 	return Event{
 		PID: int(raw.Pid), StartNS: raw.StartNs, NetNS: raw.Netns,
 		Local:    netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
 		Remote:   netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
 		Hostname: strings.ToLower(strings.TrimSuffix(string(name), ".")), Source: source,
-		Process: string(process),
+		Process: procname.Clean(bytesFromInt8(raw.Comm[:])),
 	}, nil
 }
 
