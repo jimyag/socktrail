@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -142,11 +143,11 @@ type flow struct {
 	TLSActors        map[processID]participant
 	DomainConflict   bool
 	QUIC             *quicinitial.Tracker
-	ICMP             *icmpState // ICMP flows only; allocated with their first message, as is DNS.
+	ICMP             *icmpState // ICMP flows only; allocated with their first message, as are the next.
 	ICMPError        string     // Latest ICMP error that quoted this flow's packets.
-	ARP              arpState
-	DNS              *dnsState // DNS, mDNS and LLMNR flows.
-	SSH              [2]string // SSH identification strings of the initiator and the target.
+	ARP              *arpState
+	DNS              *dnsState  // DNS, mDNS and LLMNR flows.
+	SSH              *[2]string // SSH identification strings of the initiator and the target.
 	AppProtocol      string
 	AppSource        string
 	Health           tcpHealth
@@ -381,6 +382,9 @@ func (c *collector) packet(p capture.Packet) {
 	}
 	switch {
 	case p.EtherType == 0x0806:
+		if f.ARP == nil {
+			f.ARP = new(arpState)
+		}
 		f.ARP.observe(p)
 	case p.EtherType == 0 && (p.Protocol == 1 || p.Protocol == 58) && p.FragmentOffset == 0:
 		c.icmp(f, p) // A later fragment adds bytes, not another message.
@@ -602,10 +606,21 @@ func (c *collector) tlsEvent(e tlsprobe.Event) bool {
 		}
 		return false
 	}
-	if f.Closed {
+	if !f.takesEvents(time.Now()) {
 		return false
 	}
 	return c.applyTLSEvent(f, e)
+}
+
+// lateEventWindow is how long a closed flow still takes its socket's
+// events. Events trail their packets by up to the PID ring's 100 ms drain
+// interval, so a short connection often closes before its connect and I/O
+// events arrive; a later connection on the same tuple would need a new SYN
+// within this window to be confused with it.
+const lateEventWindow = 2 * time.Second
+
+func (f *flow) takesEvents(now time.Time) bool {
+	return !f.Closed || now.Sub(f.Last) < lateEventWindow
 }
 
 func (c *collector) applyTLSEvent(f *flow, e tlsprobe.Event) bool {
@@ -697,16 +712,17 @@ func (c *collector) event(e probe.Event) {
 		fmt.Fprintf(os.Stderr, "PID event: proto=%d op=%s app-bytes=%d local=%s remote=%s pid=%d netns=%d\n", e.Protocol, e.Operation, e.AppBytes, e.Local, e.Remote, e.PID, e.NetNS)
 	}
 	e.Local, e.Remote = c.natSocket(e.Local, e.Remote, e.Protocol)
-	if e.Operation == "retransmit" {
-		// No process and no bytes: only the socket's running total.
+	if e.Protocol == 6 && e.TCP != (probe.TCPInfo{}) {
 		if f := c.flows[keyFor(e.Local, e.Remote, 6)]; f != nil {
 			side := 0
 			if e.Local == f.Key.B {
 				side = 1
 			}
-			f.Health.KernelRetransmits[side] = max(f.Health.KernelRetransmits[side], e.Retransmits)
+			f.Health.observeKernel(side, e.TCP)
 		}
-		return
+	}
+	if e.Operation == "retransmit" {
+		return // No process and no bytes: only the socket's state.
 	}
 	portMatch := c.acceptPort(e.Local, e.Remote)
 	if !portMatch && e.AppBytes == 0 {
@@ -747,7 +763,7 @@ func (c *collector) event(e probe.Event) {
 		key := keyFor(e.Local, e.Remote, e.Protocol)
 		if !portMatch {
 			c.ioUnmatched += e.AppBytes
-		} else if f := c.flows[key]; f != nil && !f.Closed {
+		} else if f := c.flows[key]; f != nil && f.takesEvents(time.Now()) {
 			addFlowIO(f, id, e.Operation, e.AppBytes)
 		} else if c.flows[key] == nil && c.pendingIOCount < maxPendingIOSamples {
 			if c.pendingIO == nil {
@@ -796,7 +812,7 @@ func (c *collector) event(e probe.Event) {
 	} else {
 		c.droppedRole++
 	}
-	if f := c.flows[key]; f != nil && !f.Closed {
+	if f := c.flows[key]; f != nil && f.takesEvents(time.Now()) {
 		if e.Protocol == 6 {
 			known := f.Client
 			if e.Role == "in" {
@@ -1021,6 +1037,10 @@ func run() error {
 	captureDir := flag.String("capture-dir", "socktrail-captures", "directory for on-demand 15-second PCAPNG recordings")
 	output := flag.String("output", "text", "snapshot format with --duration: text or json")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
+	var filter processFilter
+	flag.Var(&filter.names, "process", "show only these processes: names or globs, comma-separated; the kernel keeps 15 bytes of a name")
+	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
+	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
 	flag.Parse()
 	autoInterfaces := len(interfaceNames) == 0
 	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" || *recordBefore < 0 {
@@ -1095,6 +1115,7 @@ func run() error {
 		natResults = nat.results
 	}
 	streams := make(socketStreams)
+	processes := newProcessTable("/proc")
 	sockets := &socketInventory{procRoot: "/proc", loaded: make(chan *socketInventory, 1)}
 	sockets.load()
 	sockets.atStart = sockets.sockets
@@ -1165,6 +1186,7 @@ func run() error {
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
 		ui.natStatus, ui.nat = natStatus, nat
+		ui.processes, ui.scopeFilter = processes, filter
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
 		if autoInterfaces {
@@ -1227,6 +1249,7 @@ func run() error {
 			if history != nil {
 				history.trim(time.Now())
 			}
+			processes.expire(time.Now())
 			dnsHints.Expire(time.Now())
 			streams.expire(time.Now())
 			if nat != nil {
@@ -1332,6 +1355,7 @@ func run() error {
 			}
 			for _, e := range batch {
 				e.StartNS = tickStartNS(e.StartNS)
+				processes.observe(e)
 				for _, name := range interfaceNames {
 					collectors[name].event(e)
 				}
@@ -1450,37 +1474,46 @@ func run() error {
 		if nat != nil {
 			snapshot.Probes.NAT = nat.json(natStatus)
 		}
+		scope := newProcessScope(processes, filter)
+		// A service's connections span every interface, like the host view.
+		host, _, members = hostCollector(interfaceNames, collectors)
 		if autoInterfaces {
-			host, _, members = hostCollector(interfaceNames, collectors)
 			hostState.update(host, members)
-			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit)}
+			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope)}
 		} else {
 			for _, name := range interfaceNames {
-				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit))
+				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope))
 			}
 		}
-		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit)
+		snapshot.Filter = filter.String()
+		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit, processes, scope)
+		snapshot.Services = servicesJSON(host, processes, scope)
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(snapshot)
 	} else {
+		scope := newProcessScope(processes, filter)
+		if filter.active() {
+			fmt.Printf("\nOnly processes matching %s, with their descendants for pid, and the flows and socket I/O they take part in.\n", filter)
+		}
+		host, _, members = hostCollector(interfaceNames, collectors)
 		if autoInterfaces {
-			host, _, members = hostCollector(interfaceNames, collectors)
 			hostState.update(host, members)
-			printReport(*host, "OVERVIEW", *limit, probeStats)
+			printReport(*host, "OVERVIEW", *limit, probeStats, scope)
 		} else {
 			for _, name := range interfaceNames {
-				printReport(*collectors[name], name, *limit, probeStats)
+				printReport(*collectors[name], name, *limit, probeStats, scope)
 			}
 		}
-		printPIDIO(collectors[interfaceNames[0]], *limit)
+		printPIDIO(collectors[interfaceNames[0]], *limit, processes, scope)
+		printServices(host, *limit, processes, scope)
 	}
 	return nil
 }
 
-// reportFlows returns a snapshot's flows, most bytes first.
-func reportFlows(c *collector) []*flow {
-	flows := c.allFlows()
+// reportFlows returns a snapshot's flows in scope, most bytes first.
+func reportFlows(c *collector, scope *processScope) []*flow {
+	flows := slices.DeleteFunc(c.allFlows(), func(f *flow) bool { return !scope.flow(f, c) })
 	slices.SortFunc(flows, func(a, b *flow) int { return cmp.Compare(b.RX+b.TX, a.RX+a.TX) })
 	return flows
 }
@@ -1495,8 +1528,8 @@ func parseFailures(flows []*flow) int {
 	return failures
 }
 
-func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics) {
-	flows := reportFlows(&c)
+func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics, scope *processScope) {
+	flows := reportFlows(&c, scope)
 	if interfaceName == "OVERVIEW" {
 		fmt.Printf("\nOVERVIEW: %d observed flows; IP bytes below use one capture point per flow, not an exact whole-host total; a NAT's two tuples are one flow once conntrack links them\n", len(flows))
 	} else {
@@ -1514,7 +1547,7 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 	if c.loopback {
 		fmt.Println("lo: duplicate receive copies omitted; TX/RX columns reflect capture direction, not two local sockets")
 	}
-	fmt.Println("PROTO APP            STATE       DIR              SOURCE                  TARGET                  RX B      TX B      SYN RTT    RETX    ORIGIN ENDPOINT PID  TARGET ENDPOINT PID  DETAIL")
+	fmt.Println("PROTO APP            STATE       DIR              SOURCE                  TARGET                  RX B      TX B      RTT        RETX    ORIGIN ENDPOINT PID  TARGET ENDPOINT PID  DETAIL")
 	for _, f := range flows[:min(limit, len(flows))] {
 		proto := flowProtocol(f)
 		src, dst := displayedEndpoints(f)
@@ -1536,14 +1569,18 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		if f.NAT != nil {
 			detail += " [" + f.NAT.String() + "]"
 		}
+		if tcp := kernelDetail(f); tcp != "" {
+			detail += " [tcp " + tcp + "]"
+		}
 		retx, _ := retransmits(f)
-		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(f.Health.SynRTT), retx, formatPID(f.Client), formatPID(f.Server), detail)
+		rtt, _ := flowRTT(f)
+		fmt.Printf("%-6s %-14s %-11s %-16s %-23s %-23s %-9d %-9d %-10s %-7d %-20s %-20s %s\n", proto, f.AppProtocol, flowState(f), f.Direction, src, dst, f.RX, f.TX, formatSYNRTT(rtt), retx, formatPID(f.Client), formatPID(f.Server), detail)
 	}
-	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host. RETX is the kernel's count for a local socket, otherwise overlapping captured segments.")
+	fmt.Println("PID identity = PID@process-start-ns; TCP endpoints are initiator/acceptor, UDP endpoints follow the first datagram. First-packet direction is inferred. ? means unknown TCP initiator. ICMP PIDs cover echo requests sent from this host. RTT and RETX are the kernel's for a local socket, otherwise the SYN handshake sample and overlapping captured segments.")
 	if interfaceName == "OVERVIEW" {
 		fmt.Println("Domain IP bytes are single-point observations; NAT-transformed paths may still appear as separate connections.")
 	}
-	if sources := attemptSources(c.attempts); len(sources) > 0 {
+	if sources := attemptSources(c.attempts); len(sources) > 0 && scope == nil { // Attempts have no process.
 		fmt.Println("Inbound attempts without a connection (refused or unanswered), most ports first:")
 		for _, source := range sources[:min(len(sources), 10)] {
 			fmt.Printf("  %-39s %s\n", source, c.attempts[source])
@@ -1562,17 +1599,34 @@ func pidIOOrder(totals map[processID]processIO) []processID {
 	})
 }
 
-func printPIDIO(c *collector, limit int) {
+func printPIDIO(c *collector, limit int, processes *processTable, scope *processScope) {
 	totals := c.pidIO
-	ids := pidIOOrder(totals)
+	ids := slices.DeleteFunc(pidIOOrder(totals), func(id processID) bool { return !scope.process(id, totals[id].Name) })
 	fmt.Println("\nPID socket I/O (application bytes, independent of IP packet totals):")
 	if c.expiredPIDCount > 0 || c.ioUnindexed.RX+c.ioUnindexed.TX > 0 {
 		fmt.Printf("expired PID detail: %d identities, RX=%d TX=%d; unindexed RX=%d TX=%d\n", c.expiredPIDCount, c.expiredPIDIO.RX, c.expiredPIDIO.TX, c.ioUnindexed.RX, c.ioUnindexed.TX)
 	}
-	fmt.Println("PID@START                    PROCESS          RX B       TX B")
+	fmt.Println("PID@START                    PROCESS          PPID     SERVICE                          RX B       TX B")
 	for _, id := range ids[:min(limit, len(ids))] {
 		v := totals[id]
-		fmt.Printf("%-28s %-16s %-10d %d\n", fmt.Sprintf("%d@%d", id.PID, id.StartNS), v.Name, v.RX, v.TX)
+		parent, service := "-", "unknown cgroup"
+		if m := processes.meta(id); m != nil {
+			if m.Parent.PID > 0 {
+				parent = strconv.Itoa(m.Parent.PID)
+			}
+			_, service = serviceOf(processes.cgroupOf(m))
+		}
+		fmt.Printf("%-28s %-16s %-8s %-32s %-10d %d\n", fmt.Sprintf("%d@%d", id.PID, id.StartNS), v.Name, parent, service, v.RX, v.TX)
+	}
+}
+
+// printServices sums the socket I/O by systemd unit or container.
+func printServices(c *collector, limit int, processes *processTable, scope *processScope) {
+	services := serviceTotals(c, processes, scope)
+	fmt.Println("\nService socket I/O (processes grouped by systemd unit or container through their cgroup):")
+	fmt.Println("SERVICE                          PROCS  CONNS  RX B       TX B       CGROUP")
+	for _, s := range services[:min(limit, len(services))] {
+		fmt.Printf("%-32s %-6d %-6d %-10d %-10d %s\n", s.Label, len(s.Processes), s.Connections, s.RX, s.TX, s.Cgroup)
 	}
 }
 

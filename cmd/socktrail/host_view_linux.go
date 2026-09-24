@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"slices"
 	"time"
+
+	"github.com/jimyag/socktrail/internal/probe"
 )
 
 type observedFlow struct {
@@ -296,8 +298,10 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			merged.Health.SynRTT = f.Health.SynRTT
 		}
 		merged.Health.Retransmits = max(merged.Health.Retransmits, f.Health.Retransmits)
-		for side, count := range f.Health.KernelRetransmits {
-			merged.Health.KernelRetransmits[side] = max(merged.Health.KernelRetransmits[side], count)
+		for side, info := range f.Health.Kernel {
+			if info != (probe.TCPInfo{}) {
+				merged.Health.observeKernel(side, info)
+			}
 		}
 		if !f.First.IsZero() && (merged.First.IsZero() || f.First.Before(merged.First)) {
 			merged.First = f.First

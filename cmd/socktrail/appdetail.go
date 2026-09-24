@@ -111,8 +111,11 @@ func (f *flow) sshBanner(p capture.Packet) {
 	if p.Source == f.Initiator {
 		side = 0
 	}
-	if f.SSH[side] != "" || !f.Initiator.IsValid() || !bytes.HasPrefix(p.Payload, []byte("SSH-")) {
+	if f.SSH != nil && f.SSH[side] != "" || !f.Initiator.IsValid() || !bytes.HasPrefix(p.Payload, []byte("SSH-")) {
 		return
+	}
+	if f.SSH == nil {
+		f.SSH = new([2]string)
 	}
 	line, _, _ := bytes.Cut(p.Payload[:min(len(p.Payload), 255)], []byte("\n")) // RFC 4253 caps it at 255 bytes.
 	f.SSH[side] = strings.Map(func(r rune) rune {
@@ -146,7 +149,9 @@ func appDetail(f *flow) string {
 			return f.DNS.String()
 		}
 	case "SSH":
-		return sshDescription(f.SSH)
+		if f.SSH != nil {
+			return sshDescription(*f.SSH)
+		}
 	case "TLS":
 		if f.WireDomain != nil {
 			return f.WireDomain.Evidence().Alert // A failed handshake shows in the list.

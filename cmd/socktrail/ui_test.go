@@ -168,7 +168,7 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.Contains(got, host) {
 		t.Fatalf("narrow layout discarded the domain before scrolling: %q", got)
 	}
-	detail := connectionLayout(row.flows, viewPID, 79)
+	detail := connectionLayout(row, viewPID)
 	line := connectionLine(detail, f, row, viewPID, "▸")
 	if !strings.Contains(line, source.String()) || !strings.Contains(line, target.String()) || !strings.Contains(line, host) {
 		t.Fatalf("connection layout truncated IPv6 endpoints or Host: %q", line)
@@ -330,7 +330,7 @@ func TestPIDReuseHasSeparateRows(t *testing.T) {
 	}
 	processes := []participant{first.Client, second.Client}
 	distinguishProcessNames(processes)
-	if processes[0].Name != "client #1" || processes[1].Name != "client #2" || strings.Contains(processLayout(processes, 80).header(), "START NS") {
+	if processes[0].Name != "client #1" || processes[1].Name != "client #2" || strings.Contains(processLayout(processes, nil).header(), "START NS") {
 		t.Fatalf("process table did not simplify reused PID display: %+v", processes)
 	}
 }
@@ -543,5 +543,24 @@ func TestUDPReplyDoesNotReplaceInitialEndpointPID(t *testing.T) {
 	f := c.flows[keyFor(client, server, 17)]
 	if f.Client.PID != 101 || f.Server.PID != 202 || c.pidIO[processID{101, 101}].RX != 5 || c.pidIO[processID{202, 202}].TX != 5 {
 		t.Fatalf("UDP response reassigned request endpoint: client=%+v server=%+v io=%+v", f.Client, f.Server, c.pidIO)
+	}
+}
+
+// PID events trail their packets by up to the ring's drain interval, so a
+// short connection can close before its connect, accept and I/O events
+// arrive. They still belong to it.
+func TestLateEventsReachAJustClosedFlow(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:40100"), netip.MustParseAddrPort("127.0.0.1:8080")
+	c := &collector{flows: make(map[flowKey]*flow), roles: make(map[flowKey]roles), roleSeen: make(map[flowKey]time.Time), maxFlows: 10}
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, SYN: true, TCPSeq: 1, IPBytes: 60, Outgoing: true})
+	c.packet(capture.Packet{Source: server, Destination: client, Protocol: 6, HasPorts: true, SYN: true, ACK: true, TCPSeq: 500, IPBytes: 60})
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, ACK: true, FIN: true, TCPSeq: 2, IPBytes: 52})
+	c.packet(capture.Packet{Source: server, Destination: client, Protocol: 6, HasPorts: true, ACK: true, FIN: true, TCPSeq: 501, IPBytes: 52})
+	c.event(probe.Event{Protocol: 6, Operation: "connect", Role: "out", PID: 101, StartNS: 1, Process: "curl", Local: client, Remote: server})
+	c.event(probe.Event{Protocol: 6, Operation: "accept", Role: "in", PID: 202, StartNS: 2, Process: "server", Local: server, Remote: client})
+	c.event(probe.Event{Protocol: 6, Operation: "send", Role: "out", AppBytes: 20, PID: 101, StartNS: 1, Process: "curl", Local: client, Remote: server})
+	f := c.flows[keyFor(client, server, 6)]
+	if !f.Closed || f.Client.PID != 101 || f.Server.PID != 202 || f.IO[processID{101, 1}].TX != 20 {
+		t.Fatalf("late events lost: closed=%v client=%+v server=%+v io=%+v", f.Closed, f.Client, f.Server, f.IO)
 	}
 }

@@ -132,6 +132,8 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
 	slices.SortFunc(flows, func(a, b *flow) int {
 		var order int
 		switch spec.key {
+		case "I/O PID":
+			order = strings.Compare(groupIO(a, row.members), groupIO(b, row.members))
 		case "DIR":
 			order = strings.Compare(a.Direction, b.Direction)
 		case "SOURCE":
@@ -150,8 +152,10 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
 			order = cmp.Compare(a.RX, b.RX)
 		case "IP TX":
 			order = cmp.Compare(a.TX, b.TX)
-		case "SYN RTT":
-			order = cmp.Compare(a.Health.SynRTT, b.Health.SynRTT)
+		case "RTT":
+			ra, _ := flowRTT(a)
+			rb, _ := flowRTT(b)
+			order = cmp.Compare(ra, rb)
 		case "RETX":
 			ra, _ := retransmits(a)
 			rb, _ := retransmits(b)
@@ -178,12 +182,14 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec) {
 	})
 }
 
-func sortProcesses(processes []participant, c *collector, spec sortSpec) {
+func sortProcesses(processes []participant, c *collector, spec sortSpec, parent func(processID) int) {
 	slices.SortFunc(processes, func(a, b participant) int {
 		var order int
 		switch spec.key {
 		case "PROCESS":
 			order = strings.Compare(a.Name, b.Name)
+		case "PPID":
+			order = cmp.Compare(parent(a.id()), parent(b.id()))
 		case "SOCKET RX B":
 			order = cmp.Compare(c.pidIO[a.id()].RX, c.pidIO[b.id()].RX)
 		case "SOCKET TX B":

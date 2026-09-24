@@ -4,7 +4,7 @@
 
 ## 协议识别
 
-连接详情有 `APP`、`SYN RTT`、`RETX` 列。
+连接详情有 `APP`、`RTT`、`RETX` 列。
 
 `APP` 可识别 HTTP、HTTP/2（h2c；请求带 gRPC 内容类型时标 gRPC）、TLS、DNS（含 TCP 上的 DNS）、SSH、FTP、SMTP、Redis、PostgreSQL、MySQL、MongoDB、SQL Server、Oracle TNS、Cassandra、Kafka、AMQP、NATS、ZooKeeper、Memcached、LDAP、Kerberos、NFS 及其 RPC 辅助服务（portmapper、mount、lock）、SMB、RDP、VNC、Telnet、SIP、RTSP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、IKE、IPsec ESP（NAT 穿越）、VXLAN、GENEVE、STUN、NTP、mDNS、LLMNR、DHCP、DHCPv6、SNMP、SSDP、Syslog、TFTP、RADIUS、NetBIOS NS。
 

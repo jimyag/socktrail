@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -39,6 +40,30 @@ func startProbe(t *testing.T, netNS uint64) <-chan Event {
 		}
 	}()
 	return events
+}
+
+// ownCgroupID returns the ID of this process's cgroup v2: the inode of its
+// directory. It is 0 where cgroup v2 is not mounted at /sys/fs/cgroup, as in
+// the test VMs.
+func ownCgroupID(t *testing.T) uint64 {
+	var fs unix.Statfs_t
+	if unix.Statfs("/sys/fs/cgroup", &fs) != nil || fs.Type != unix.CGROUP2_SUPER_MAGIC {
+		return 0
+	}
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			info, err := os.Stat(filepath.Join("/sys/fs/cgroup", path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return info.Sys().(*syscall.Stat_t).Ino
+		}
+	}
+	return 0
 }
 
 // The tests read the network namespace from /proc/thread-self: a test that
@@ -100,11 +125,19 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 	defer raw.Close()
 	raw.WriteTo([]byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}, &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)})
 
+	cgroup := ownCgroupID(t)
 	want := map[string]func(Event) bool{
 		"connect": func(e Event) bool { return e.Operation == "connect" && e.Local == client && e.Remote == server },
 		"accept":  func(e Event) bool { return e.Operation == "accept" && e.Local == server && e.Remote == client },
 		"tcp recv": func(e Event) bool {
 			return e.Protocol == 6 && e.Operation == "recv" && e.Local == server && e.AppBytes == 5
+		},
+		"tcp state": func(e Event) bool {
+			return e.Protocol == 6 && e.Operation == "send" && e.Local == client && e.TCP.RTT > 0 && e.TCP.Cwnd > 0 && e.TCP.SegsOut > 0
+		},
+		"process": func(e Event) bool {
+			return e.Operation == "connect" && e.PID == os.Getpid() && e.ParentPID == os.Getppid() && e.ParentStartNS > 0 &&
+				e.CgroupID != 0 && (cgroup == 0 || e.CgroupID == cgroup)
 		},
 		"udp send": func(e Event) bool {
 			return e.Protocol == 17 && e.Operation == "send" && e.Local.Port() == datagramPort && e.AppBytes == 8
@@ -274,7 +307,7 @@ func TestProbeReportsKernelRetransmits(t *testing.T) {
 		select {
 		case e := <-events:
 			if e.Operation == "retransmit" && e.Local == local {
-				reported = max(reported, e.Retransmits)
+				reported = max(reported, e.TCP.Retransmits)
 				quiet.Reset(time.Second)
 			}
 		case <-quiet.C:
@@ -364,7 +397,7 @@ func TestProbeReportsSYNRetransmits(t *testing.T) {
 		select {
 		case e := <-events:
 			if e.Operation == "retransmit" && e.Local == local {
-				reported = max(reported, e.Retransmits)
+				reported = max(reported, e.TCP.Retransmits)
 			}
 		case <-time.After(100 * time.Millisecond):
 		case <-deadline:

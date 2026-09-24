@@ -213,10 +213,6 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 	if operation == "" {
 		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
 	}
-	appBytes, retransmits := raw.AppBytes, uint32(0)
-	if operation == "retransmit" {
-		appBytes, retransmits = 0, uint32(raw.AppBytes)
-	}
 	name := make([]byte, 0, len(raw.Comm))
 	for _, c := range raw.Comm {
 		if c == 0 {
@@ -225,17 +221,23 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		name = append(name, byte(c))
 	}
 	return Event{
-		Protocol:    raw.Protocol,
-		Family:      int(raw.Family),
-		Role:        role,
-		Operation:   operation,
-		AppBytes:    appBytes,
-		Retransmits: retransmits,
-		PID:         int(raw.Pid),
-		StartNS:     raw.StartNs,
-		Process:     procname.Clean(name),
-		NetNS:       raw.Netns,
-		Local:       netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
-		Remote:      netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
+		Protocol:      raw.Protocol,
+		Family:        int(raw.Family),
+		Role:          role,
+		Operation:     operation,
+		AppBytes:      raw.AppBytes,
+		PID:           int(raw.Pid),
+		StartNS:       raw.StartNs,
+		Process:       procname.Clean(name),
+		ParentPID:     int(raw.Ppid),
+		ParentStartNS: raw.ParentStartNs,
+		CgroupID:      raw.CgroupId,
+		NetNS:         raw.Netns,
+		Local:         netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
+		Remote:        netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
+		TCP: TCPInfo{
+			RTT: time.Duration(raw.SrttUs) * time.Microsecond, RTTVar: time.Duration(raw.RttvarUs) * time.Microsecond,
+			Cwnd: raw.SndCwnd, SegsOut: raw.DataSegsOut, Retransmits: raw.TotalRetrans,
+		},
 	}, nil
 }

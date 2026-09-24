@@ -14,7 +14,8 @@
 | VXLAN、GENEVE、Syslog、TFTP、RADIUS | 端口加头部字段校验 | 不解开隧道内层的帧 |
 | ICMPv4/v6 | type/code 名称；Echo 按 identifier 成流，给出请求/应答数与 RTT；错误报文解出引用的原始报文并标到对应流；邻居发现目标、分片需要的 MTU；本机发出的 Echo 请求关联发送进程 | 内核应答的 Echo 和内核生成的错误没有进程 |
 | ARP 与其他链路层帧 | ARP 请求/应答与 IP→MAC 对应；按 EtherType 计入 LLDP、LACP、PPPoE、MPLS 等帧，802.3 长度帧归为 LLC；PPPoE 会话内的 IP 按普通流统计；tun 类接口按 IP 报文解析 | 不维护设备清单或 MAC 厂商信息 |
-| TCP 健康 | 出站 SYN→SYN-ACK 时差样本；本机 socket 的重传取内核累计值（与 `ss -ti` 一致），转发流量用有界序号重叠推断 | 无 fast retransmit、乱序分类或丢包率 |
+| TCP 健康 | 本机 socket 取内核的平滑 RTT、拥塞窗口、已发送段数和重传（与 `ss -ti` 一致）；转发流量用出站 SYN→SYN-ACK 时差样本和有界序号重叠推断 | 无 fast retransmit 或乱序分类 |
+| 进程分组 | 按 systemd 服务或容器、cgroup 路径、进程树分组；`--process`、`--pid`（含子孙）、`--cgroup` 只看指定进程 | 只覆盖当前网络命名空间内的进程 |
 | PCAPNG | 按活动连接或 PID 主动录制 15 秒、最多 64 MiB，含接口和尽力而为的进程/域名注释 | 非全局连续录制；PID 迟到时不回填；多接口 PID 文件可能含重复报文 |
 | NAT | 每条新 TCP/UDP 流向 conntrack 查一次改写前后的元组：网关两侧合为一条 `forwarded` 连接，本机进程的 socket 对上 DNAT/SNAT 之后的报文，详情列出改写 | 需要内核已加载 `nf_nat` 与 `nf_conntrack_netlink`；conntrack zone 非 0 的条目查不到 |
 | 扫描 | 被拒和无应答的入站尝试按来源汇总端口数与次数；流表满时先淘汰这类一次性流 | 只统计到达所选接口的尝试，不做告警 |

@@ -18,8 +18,9 @@ func TestEveryTableHeaderIsClickableAfterHorizontalScroll(t *testing.T) {
 		main   bool
 	}{
 		{"groups", groupLayout(nil, viewPID, 80), 0, true},
-		{"connections", connectionLayout(nil, viewPID, 80), 0, false},
-		{"processes", processLayout(nil, 80), 1, false},
+		{"connections", connectionLayout(&uiRow{}, viewPID), 0, false},
+		{"service connections", connectionLayout(&uiRow{}, viewService), 0, false},
+		{"processes", processLayout(nil, nil), 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			virtualX := 1
@@ -109,12 +110,17 @@ func TestGroupAndProcessColumnsSortIndependently(t *testing.T) {
 	}
 	processes := []participant{{PID: 101, StartNS: 1000, Name: "z"}, {PID: 202, StartNS: 2000, Name: "a"}}
 	c := &collector{pidIO: map[processID]processIO{processes[0].id(): {ioBytes: ioBytes{RX: 2}}, processes[1].id(): {ioBytes: ioBytes{RX: 9}}}}
-	sortProcesses(processes, c, sortSpec{key: "PROCESS"})
+	parents := func(id processID) int { return map[int]int{101: 7, 202: 9}[id.PID] }
+	sortProcesses(processes, c, sortSpec{key: "PROCESS"}, parents)
 	if processes[0].PID != 202 {
 		t.Fatal("process name sort failed")
 	}
-	sortProcesses(processes, c, sortSpec{key: "SOCKET RX B", desc: true})
+	sortProcesses(processes, c, sortSpec{key: "SOCKET RX B", desc: true}, parents)
 	if processes[0].PID != 202 || !slices.Contains(processes, participant{PID: 101, StartNS: 1000, Name: "z"}) {
 		t.Fatal("process socket-byte sort failed")
+	}
+	sortProcesses(processes, c, sortSpec{key: "PPID"}, parents)
+	if processes[0].PID != 101 {
+		t.Fatal("parent PID sort failed")
 	}
 }

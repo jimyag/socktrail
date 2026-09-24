@@ -47,7 +47,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 ## PID 探针
 
-[pid.bpf.c](../internal/probe/pid.bpf.c) 挂在 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求上，每个事件带协议、端点、PID、进程启动时间、角色和应用字节数。
+[pid.bpf.c](../internal/probe/pid.bpf.c) 挂在 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求上，每个事件带协议、端点、PID、进程启动时间、角色和应用字节数，还有父进程（PID 和启动时间）和 cgroup v2 ID：在事件发生时读取，进程随后退出也不丢。TCP 事件另带 socket 此刻的平滑 RTT 及偏差、拥塞窗口、已发送数据段和累计重传，与 `ss -ti` 同源。
 
 - `sendfile` 和写往 socket 的 splice 在 6.5 起都经过 `tcp_sendmsg`；之前的内核里 splice 写 socket 走 `generic_splice_sendpage`，另挂它的 fexit。读 socket 的 splice 走 `tcp_splice_read`，各内核都有。
 - socket 开启内核 TLS 后，协议操作换成 tls 模块的实现，读写不再经过 `tcp_sendmsg`/`tcp_recvmsg`。程序另挂 `tls_sw_sendmsg`、`tls_device_sendmsg`、`tls_sw_recvmsg` 和 `tls_sw_splice_read` 的 fexit；cilium/ebpf 能挂到已加载模块里的函数。`tls_*_sendpage` 不挂，它们的字节已由 `generic_splice_sendpage` 计入。
@@ -81,7 +81,15 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 [collector.event](../cmd/socktrail/main_linux.go) 先按 PID 和启动标识累计 socket I/O，再尝试用端点关联已观测的流。暂时没有流的 I/O 最多等待 2 秒；仍无法匹配的字节计入未关联统计。TCP 的 connect/accept 角色与实际执行 send/recv 的 PID 分开记录，避免把共享 socket 的 I/O 算给连接建立者；fd 传给别的进程后，各进程写的字节分别计入各自的 PID。
 
-抓包和 eBPF 两个通道没有固定的处理顺序。accept 事件先于入站 SYN 被处理时，没有旧流、且角色是 2 秒内记录的就采用；否则按旧连接的角色丢掉。
+抓包和 eBPF 两个通道没有固定的处理顺序：抓包环的块最多攒 100 ms，事件最多晚 100 ms。accept 事件先于入站 SYN 被处理时，没有旧流、且角色是 2 秒内记录的就采用；否则按旧连接的角色丢掉。事件晚于报文时，一条短连接可能已经关闭，关闭后 2 秒内它仍接收自己的 connect、accept 和 I/O 事件；同一元组上的新连接要在这 2 秒内带着新 SYN 出现才会混淆。
+
+## 进程树与服务
+
+[processes_linux.go](../cmd/socktrail/processes_linux.go) 按 PID 加启动时间记录每个出现过的进程的父进程和 cgroup，所有接口共用。父进程和 cgroup ID 来自事件；cgroup 路径在进程第一次出现时从 `/proc/<pid>/cgroup` 读取，并按 cgroup ID 记下，同一 cgroup 里之后的进程即使已经退出也能取到路径。进程的祖先大多不碰网络（shell、脚本），第一次见到一个进程时，趁它们还在，从 `/proc` 把祖先补齐。进程 10 分钟没有事件后删除，但保留仍在使用的进程的祖先。
+
+服务取 cgroup 路径里最内层的 `.service` 或 `.scope` 目录：systemd 服务、`docker-<id>.scope` 这样的容器、会话和终端的 scope；没有这类目录时整个路径就是服务。进程树以一个进程在同一服务里最远的祖先为根，所以 nginx 的 worker 归到主进程下，终端里的命令归到 shell 下，而不会一直追到 systemd。只有 cgroup v1 的主机取 systemd 层级的路径。
+
+`--process`、`--pid`、`--cgroup` 只影响显示：报文要先和进程对上才知道属于谁，所以抓包和事件照常全量处理，界面、快照和 JSON 在输出时按进程过滤，每次输出缓存每个进程的判断结果。
 
 ## 内核 socket 表补全进程
 

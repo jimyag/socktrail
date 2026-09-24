@@ -14,9 +14,22 @@ type jsonSnapshot struct {
 	Version    int             `json:"version"`
 	Netns      uint64          `json:"netns"`
 	Interfaces []string        `json:"interfaces"`
+	Filter     string          `json:"filter,omitempty"` // The --process, --pid and --cgroup selection, when given.
 	Probes     jsonProbes      `json:"probes"`
 	Reports    []jsonReport    `json:"reports"`
 	Processes  []jsonProcessIO `json:"processes"`
+	Services   []jsonService   `json:"services"`
+}
+
+// jsonService is one systemd unit or container: the socket I/O of its
+// processes and the connections they take part in.
+type jsonService struct {
+	Service     string `json:"service"`
+	Cgroup      string `json:"cgroup,omitempty"`
+	Processes   int    `json:"processes"`
+	Connections int    `json:"connections"`
+	RXBytes     uint64 `json:"rx_bytes"`
+	TXBytes     uint64 `json:"tx_bytes"`
 }
 
 type jsonProbes struct {
@@ -78,8 +91,11 @@ type jsonFlow struct {
 	FirstSeen        time.Time        `json:"first_seen"`
 	LastSeen         time.Time        `json:"last_seen"`
 	SYNRTTMicros     int64            `json:"syn_rtt_us,omitempty"`
+	RTTMicros        int64            `json:"rtt_us,omitempty"`
+	RTTSource        string           `json:"rtt_source,omitempty"`
 	Retransmits      uint64           `json:"retransmits"`
 	RetransmitSource string           `json:"retransmit_source,omitempty"`
+	KernelTCP        []jsonKernelTCP  `json:"kernel_tcp,omitempty"`
 	Client           *jsonProcess     `json:"client,omitempty"`
 	Server           *jsonProcess     `json:"server,omitempty"`
 	Name             string           `json:"name,omitempty"`
@@ -90,12 +106,25 @@ type jsonFlow struct {
 	NAT              string           `json:"nat,omitempty"`
 }
 
+// jsonKernelTCP is a local end's socket as the kernel last reported it.
+type jsonKernelTCP struct {
+	Local        string `json:"local"`
+	RTTMicros    int64  `json:"rtt_us"`
+	RTTVarMicros int64  `json:"rttvar_us"`
+	Cwnd         uint32 `json:"cwnd"`
+	DataSegsOut  uint32 `json:"data_segs_out"`
+	Retransmits  uint32 `json:"retransmits"`
+}
+
 // jsonProcess identifies a process; PID -1 means several processes share
 // the socket.
 type jsonProcess struct {
 	PID     int    `json:"pid"`
 	StartNS uint64 `json:"start_ns,omitempty"`
 	Name    string `json:"name,omitempty"`
+	PPID    int    `json:"ppid,omitempty"`
+	Cgroup  string `json:"cgroup,omitempty"`
+	Service string `json:"service,omitempty"`
 }
 
 type jsonProcessIO struct {
@@ -120,22 +149,29 @@ type jsonAttempt struct {
 	Unanswered uint64 `json:"unanswered"`
 }
 
-func processJSON(p participant) *jsonProcess {
+func processJSON(p participant, processes *processTable) *jsonProcess {
 	switch {
 	case p.PID == 0:
 		return nil
 	case p.PID < 0:
 		return &jsonProcess{PID: -1}
 	}
-	return &jsonProcess{PID: p.PID, StartNS: p.StartNS, Name: p.Name}
+	j := &jsonProcess{PID: p.PID, StartNS: p.StartNS, Name: p.Name}
+	if m := processes.meta(p.id()); m != nil {
+		j.PPID, j.Cgroup = m.Parent.PID, processes.cgroupOf(m)
+		if j.Cgroup != "" {
+			_, j.Service = serviceOf(j.Cgroup)
+		}
+	}
+	return j
 }
 
 // reportJSON holds the same rows as printReport, the first limit flows by
 // bytes.
-func reportJSON(c *collector, scope string, limit int) jsonReport {
-	flows := reportFlows(c)
+func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope) jsonReport {
+	flows := reportFlows(c, scope)
 	r := jsonReport{
-		Scope: scope, IPPackets: c.packets, IPBytes: c.bytes,
+		Scope: name, IPPackets: c.packets, IPBytes: c.bytes,
 		CaptureDelivered: c.kernelReceived, CaptureDropped: c.kernelDropped, TruncatedPackets: c.truncated,
 		ExpiredFlows: c.expiredFlows, PacketsWithoutFlow: c.droppedFlow, PIDIndexDropped: c.droppedRole,
 		ParseFailures: parseFailures(flows), HTTPSCoverage: httpsCoverage(flows),
@@ -148,11 +184,20 @@ func reportJSON(c *collector, scope string, limit int) jsonReport {
 			Source: strings.TrimPrefix(source, "?"), Target: strings.TrimPrefix(target, "?"), InitiatorUnknown: strings.HasPrefix(source, "?"),
 			RXBytes: f.RX, TXBytes: f.TX, Packets: f.Packets, FirstSeen: f.First, LastSeen: f.Last,
 			SYNRTTMicros: f.Health.SynRTT.Microseconds(),
-			Client:       processJSON(f.Client), Server: processJSON(f.Server),
+			Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
 			Name: flowName(f), DomainConflict: f.DomainConflict,
 		}
 		if f.Key.EtherType == 0 && f.Key.Protocol == 6 {
 			row.Retransmits, row.RetransmitSource = retransmits(f)
+			rtt, source := flowRTT(f)
+			row.RTTMicros, row.RTTSource = rtt.Microseconds(), source
+			for _, side := range kernelSides(f) {
+				k, local := f.Health.Kernel[side], f.Key.A
+				if side == 1 {
+					local = f.Key.B
+				}
+				row.KernelTCP = append(row.KernelTCP, jsonKernelTCP{local.String(), k.RTT.Microseconds(), k.RTTVar.Microseconds(), k.Cwnd, k.SegsOut, k.Retransmits})
+			}
 		}
 		if f.Domain != nil {
 			e := f.Domain.Evidence()
@@ -173,6 +218,9 @@ func reportJSON(c *collector, scope string, limit int) jsonReport {
 		r.Domains = append(r.Domains, jsonDomain{label, t.Connections, t.RX, t.TX, t.Requests, t.UnknownPID})
 	}
 	for _, source := range attemptSources(c.attempts) {
+		if scope != nil {
+			break // Attempts have no process.
+		}
 		a := c.attempts[source]
 		r.InboundAttempts = append(r.InboundAttempts, jsonAttempt{source.String(), len(a.Ports), a.Refused, a.Unanswered})
 	}
@@ -180,11 +228,21 @@ func reportJSON(c *collector, scope string, limit int) jsonReport {
 }
 
 // processesJSON lists PID socket I/O like printPIDIO.
-func processesJSON(c *collector, limit int) []jsonProcessIO {
+func processesJSON(c *collector, limit int, processes *processTable, scope *processScope) []jsonProcessIO {
 	rows := []jsonProcessIO{}
-	for _, id := range pidIOOrder(c.pidIO)[:min(limit, len(c.pidIO))] {
-		v := c.pidIO[id]
-		rows = append(rows, jsonProcessIO{jsonProcess{id.PID, id.StartNS, v.Name}, v.RX, v.TX})
+	for _, id := range pidIOOrder(c.pidIO) {
+		if v := c.pidIO[id]; scope.process(id, v.Name) && len(rows) < limit {
+			rows = append(rows, jsonProcessIO{*processJSON(participant{PID: id.PID, StartNS: id.StartNS, Name: v.Name}, processes), v.RX, v.TX})
+		}
+	}
+	return rows
+}
+
+// servicesJSON lists socket I/O by service like printServices, all of them.
+func servicesJSON(c *collector, processes *processTable, scope *processScope) []jsonService {
+	rows := []jsonService{}
+	for _, s := range serviceTotals(c, processes, scope) {
+		rows = append(rows, jsonService{s.Label, s.Cgroup, len(s.Processes), s.Connections, s.RX, s.TX})
 	}
 	return rows
 }

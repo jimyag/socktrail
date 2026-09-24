@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -27,9 +28,10 @@ const (
 	viewProtocol
 	viewDomain
 	viewInterfaces
+	viewService
 )
 
-var viewNames = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES"}
+var viewNames = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES"}
 var tabNames = [...]string{"conns", "process"}
 
 type rate struct{ rx, tx uint64 }
@@ -41,6 +43,7 @@ type uiRow struct {
 	label                string
 	iface                string
 	pidID                processID
+	members              map[processID]string // A service page row's processes with socket I/O, by name.
 	flows                []*flow
 	rx, tx               uint64
 	rxRate, txRate       uint64
@@ -74,9 +77,9 @@ func formatPIDBrief(p participant) string {
 		return "unknown"
 	}
 	if p.Name == "" {
-		return fmt.Sprint(p.PID)
+		return strconv.Itoa(p.PID)
 	}
-	return fmt.Sprintf("%d(%s)", p.PID, p.Name)
+	return strconv.Itoa(p.PID) + "(" + p.Name + ")" // Not fmt: the connection table formats every row.
 }
 
 func (r *uiRow) add(f *flow, speed rate, ownBytes bool) {
@@ -142,6 +145,10 @@ type terminalUI struct {
 	streamStats       *sockstream.Statistics
 	natStatus         string
 	nat               *natTable
+	processes         *processTable
+	scopeFilter       processFilter   // From --process, --pid and --cgroup: fixed for the session.
+	grouping          processGrouping // How the service page groups processes; g cycles it.
+	scope             *processScope   // scopeFilter's answers for the current render.
 	lastSample        time.Time
 	previous          map[*flow]counters
 	rates             map[*flow]rate
@@ -279,13 +286,22 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5":
 		if u.mode == viewInterfaces {
 			u.hostScope = true
 		}
 		u.mode = viewMode(key[0] - '1')
+		if key == "5" {
+			u.mode = viewService
+		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+	case "g":
+		if u.mode == viewService {
+			u.grouping = (u.grouping + 1) % processGrouping(len(groupingNames))
+			u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
+			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		}
 	case "d":
 		if u.mode == viewInterfaces {
 			u.hostScope = true
@@ -493,7 +509,7 @@ func (u *terminalUI) handleMouse(m mouseInput, c *collector) {
 	u.help, u.status, u.filtering = false, false, false
 	if m.y == 0 {
 		for _, item := range [...]struct{ label, key string }{
-			{"a OVERVIEW", "a"}, {"0 IFACES", "0"}, {"1 PID", "1"}, {"2 SRC", "2"}, {"3 DST", "3"}, {"4 PROTO", "4"}, {"d DOMAINS", "d"}, {"i NEXT", "i"},
+			{"a OVERVIEW", "a"}, {"0 IFACES", "0"}, {"1 PID", "1"}, {"2 SRC", "2"}, {"3 DST", "3"}, {"4 PROTO", "4"}, {"5 SVC", "5"}, {"d DOMAINS", "d"}, {"i NEXT", "i"},
 		} {
 			start := strings.Index(u.topLine, item.label)
 			if start >= 0 && m.x >= start && m.x < start+len(item.label) {
@@ -598,6 +614,11 @@ func (u *terminalUI) sampleAll(collectors map[string]*collector, now time.Time) 
 }
 
 func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
+	if u.processes == nil {
+		u.processes = newProcessTable("/proc")
+	}
+	scope := newProcessScope(u.processes, u.scopeFilter)
+	u.scope = scope
 	rows := make(map[string]*uiRow)
 	namedPID := func(p participant) participant {
 		if observed, ok := c.pidIO[p.id()]; ok && observed.Name != "" {
@@ -629,13 +650,32 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 				rxRate: u.interfaceRates[name].rx, txRate: u.interfaceRates[name].tx,
 			}
 			for _, f := range ifaceCollector.allFlows() {
-				row.add(f, u.rates[f], false)
+				if scope.flow(f, ifaceCollector) {
+					row.add(f, u.rates[f], false)
+				}
 			}
 			rows[row.key] = row
 		}
 	} else {
 		for _, f := range c.allFlows() {
+			if !scope.flow(f, c) {
+				continue
+			}
 			switch mode {
+			case viewService:
+				groups := make(map[string]string)
+				for _, p := range flowProcesses(f, c) {
+					if scope.process(p.id(), p.Name) {
+						key, label := u.processes.group(p.id(), p.Name, u.grouping)
+						groups[key] = label
+					}
+				}
+				if len(groups) == 0 {
+					add("unknown process", f, false)
+				}
+				for key, label := range groups {
+					addWithKey(key, label, f, false)
+				}
 			case viewPID:
 				participants := make(map[processID]participant)
 				if f.Client.PID > 0 {
@@ -657,8 +697,9 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 					add("unknown PID", f, false)
 				default:
 					for _, p := range participants {
-						p = namedPID(p)
-						addWithKey(pidGroupKey(p.id()), pidGroupLabel(p), f, false).pidID = p.id()
+						if p = namedPID(p); scope.process(p.id(), p.Name) {
+							addWithKey(pidGroupKey(p.id()), pidGroupLabel(p), f, false).pidID = p.id()
+						}
 					}
 				}
 			case viewSource:
@@ -678,7 +719,7 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 			}
 		}
 	}
-	if mode == viewSource {
+	if mode == viewSource && scope == nil {
 		// A scanning source stays visible after its flows are evicted.
 		for source, a := range c.attempts {
 			key := source.String()
@@ -690,8 +731,31 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 			r.label = key + "  " + a.String()
 		}
 	}
+	if mode == viewService {
+		// A group's socket bytes and rates are its processes'.
+		for id, io := range c.pidIO {
+			if !scope.process(id, io.Name) {
+				continue
+			}
+			key, label := u.processes.group(id, io.Name, u.grouping)
+			r := rows[key]
+			if r == nil {
+				r = &uiRow{key: key, label: label}
+				rows[key] = r
+			}
+			r.rx, r.tx = r.rx+io.RX, r.tx+io.TX
+			r.rxRate, r.txRate = r.rxRate+u.pidRates[id].rx, r.txRate+u.pidRates[id].tx
+			if r.members == nil {
+				r.members = make(map[processID]string)
+			}
+			r.members[id] = io.Name
+		}
+	}
 	if mode == viewPID {
 		for id, io := range c.pidIO {
+			if !scope.process(id, io.Name) {
+				continue
+			}
 			key := pidGroupKey(id)
 			label := pidGroupLabel(participant{PID: id.PID, StartNS: id.StartNS, Name: io.Name})
 			r := rows[key]
@@ -722,7 +786,7 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		}
 	}
 	addSummary := func(label string, rx, tx uint64) {
-		if rx+tx == 0 {
+		if rx+tx == 0 || scope != nil { // These bytes belong to no known process.
 			return
 		}
 		r := rows[label]
@@ -1034,17 +1098,22 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	if strings.Contains(u.streamStatus, "unavailable") || strings.Contains(u.streamStatus, "stopped") {
 		mark += " SOCKET-SNIFF-UNAVAILABLE"
 	}
-	u.topLine = fmt.Sprintf("socktrail %s (%d/%d) IP RX %sB/s TX %sB/s%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), human(u.globalRate.rx), human(u.globalRate.tx), mark)
+	if u.scopeFilter.active() {
+		mark += " ONLY " + u.scopeFilter.String()
+	}
+	u.topLine = fmt.Sprintf("socktrail %s (%d/%d) IP RX %sB/s TX %sB/s%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), human(u.globalRate.rx), human(u.globalRate.tx), mark)
 	if u.mode == viewInterfaces {
-		u.topLine = fmt.Sprintf("socktrail IFACES (%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO d DOMAINS 0 IFACES i NEXT", len(u.interfaces), mark)
+		u.topLine = fmt.Sprintf("socktrail IFACES (%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", len(u.interfaces), mark)
 	} else if u.hostScope {
-		u.topLine = fmt.Sprintf("socktrail OVERVIEW (%d ifaces)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO d DOMAINS 0 IFACES", len(u.interfaces), mark)
+		u.topLine = fmt.Sprintf("socktrail OVERVIEW (%d ifaces)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES", len(u.interfaces), mark)
 	} else if width < 125 {
-		u.topLine = fmt.Sprintf("socktrail %s (%d/%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), mark)
+		u.topLine = fmt.Sprintf("socktrail %s (%d/%d)%s  a OVERVIEW 1 PID 2 SRC 3 DST 4 PROTO 5 SVC d DOMAINS 0 IFACES i NEXT", u.interfaceName, slices.Index(u.interfaces, u.interfaceName)+1, len(u.interfaces), mark)
 	}
 	lines = append(lines, u.topLine)
 	if u.mode == viewInterfaces {
 		lines = append(lines, fmt.Sprintf("%d interfaces; IP bytes/rates are per interface, not a host total. Enter opens selected interface; i cycles.", len(rows)))
+	} else if u.mode == viewService {
+		lines = append(lines, fmt.Sprintf("SERVICES by %s (g: service, cgroup, process tree) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
 	} else if u.hostScope && u.mode == viewPID {
 		lines = append(lines, fmt.Sprintf("PID: whole-netns socket bytes | IP detail: one capture copy/flow | Host/SNI %d", namedDomainFlows))
 	} else if u.hostScope && u.mode == viewDomain {
@@ -1085,7 +1154,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	}
 	lines = append(lines, "─ drag to resize ─"+strings.Repeat("─", max(0, width-18)))
 	if u.help {
-		lines = append(lines, "HELP  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  d domains  i next interface")
+		lines = append(lines, "HELP  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 services (g groups by service, cgroup or process tree)  d domains  i next interface")
 		lines = append(lines, "↑↓/jk select  Enter focus details  Tab conns/process  PgUp/PgDn page  c capture  ←→ columns")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
@@ -1221,12 +1290,12 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.selectedFlow = min(u.selectedFlow, len(row.flows)-1)
 		u.selectedFlowRef = row.flows[u.selectedFlow]
 		u.flowOrder = slices.Clone(row.flows)
-		layout := connectionLayout(row.flows, u.mode, u.screenWidth)
+		layout := connectionLayout(row, u.mode)
 		u.detailLayout = layout
 		u.detailCanvas = layout.width
 		u.detailX = min(u.detailX, max(0, layout.width-u.screenWidth))
 		*lines = append(*lines, scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth))
-		visible := max(1, u.bottomHeight-6) // Rows plus tabs, header, APP, name and EVIDENCE lines.
+		visible := max(1, u.bottomHeight-7) // Rows plus tabs, header, APP, TCP, name and EVIDENCE lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
 		if u.selectedFlow < start {
 			start = u.selectedFlow
@@ -1249,7 +1318,12 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			app, source = "unknown", "no observed signature"
 		}
 		retx, retxSource := retransmits(selected)
-		appLine := fmt.Sprintf("APP %s (%s)  SYN RTT %s  RETX %d (%s)", app, source, formatSYNRTT(selected.Health.SynRTT), retx, retxSource)
+		rtt, rttSource := flowRTT(selected)
+		appLine := fmt.Sprintf("APP %s (%s)  RTT %s", app, source, formatSYNRTT(rtt))
+		if rttSource != "" {
+			appLine += " (" + rttSource + ")"
+		}
+		appLine += fmt.Sprintf("  RETX %d (%s)", retx, retxSource)
 		if selected.DomainConflict {
 			appLine += "  DOMAIN CONFLICT"
 		}
@@ -1257,6 +1331,11 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			appLine += fmt.Sprintf("  OpenSSL PID %d", slices.SortedFunc(maps.Keys(selected.TLSActors), func(a, b processID) int { return a.PID - b.PID })[0].PID)
 		}
 		*lines = append(*lines, appLine)
+		tcpLine := "TCP -"
+		if detail := kernelDetail(selected); detail != "" {
+			tcpLine = "TCP " + detail
+		}
+		*lines = append(*lines, tcpLine)
 		*lines = append(*lines, fmt.Sprintf("%s  origin PID %s  target PID %s  first %s  last %s", flowName(selected), formatPIDBrief(selected.Client), formatPIDBrief(selected.Server), displayTime(selected.First), displayTime(selected.Last)))
 		*lines = append(*lines, evidenceLine(selected, c))
 		if u.mode == viewPID && row.pidID.PID > 0 {
@@ -1271,8 +1350,10 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			}
 			return
 		}
-		for id, io := range selected.IO {
-			*lines = append(*lines, fmt.Sprintf("socket I/O PID %d RX %sB TX %sB", id.PID, human(io.RX), human(io.TX)))
+		for _, id := range slices.SortedFunc(maps.Keys(selected.IO), func(a, b processID) int { return a.PID - b.PID }) {
+			io := selected.IO[id]
+			p := participant{PID: id.PID, StartNS: id.StartNS, Name: c.pidIO[id].Name}
+			*lines = append(*lines, fmt.Sprintf("socket I/O PID %s RX %sB TX %sB", formatPIDBrief(p), human(io.RX), human(io.TX)))
 			if len(*lines) >= 9 {
 				break
 			}
@@ -1296,13 +1377,31 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 				seen[id] = actor
 			}
 		}
+		for id, p := range seen {
+			// A service row lists its own processes, not their peers.
+			if key, _ := u.processes.group(id, p.Name, u.grouping); u.mode == viewService && key != row.key || !u.scope.process(id, p.Name) {
+				delete(seen, id)
+			}
+		}
+		for id, name := range row.members {
+			seen[id] = participant{PID: id.PID, StartNS: id.StartNS, Name: name}
+		}
 		if len(seen) == 0 {
 			*lines = append(*lines, "PID unknown: no matching local socket event")
 			return
 		}
 		processes := slices.Collect(maps.Values(seen))
 		distinguishProcessNames(processes)
-		sortProcesses(processes, c, u.processSort)
+		sortProcesses(processes, c, u.processSort, func(id processID) int {
+			if m := u.processes.meta(id); m != nil {
+				return m.Parent.PID
+			}
+			return 0
+		})
+		var depths map[processID]int
+		if u.mode == viewService && u.processSort.key == "" {
+			processes, depths = u.processes.treeOrder(processes)
+		}
 		if u.selectedProcessID.PID > 0 {
 			if index := slices.IndexFunc(processes, func(p participant) bool { return p.id() == u.selectedProcessID }); index >= 0 {
 				u.selectedProcess = index
@@ -1314,7 +1413,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		visible := min(len(processes), max(1, min(4, u.bottomHeight/4)))
 		start := max(0, u.selectedProcess-visible+1)
 		u.processListStart, u.processListCount, u.processTotal = start, visible, len(processes)
-		layout := processLayout(processes, u.screenWidth)
+		layout := processLayout(processes, depths)
 		u.detailLayout = layout
 		processLines := []string{layout.sortedHeader(u.processSort)}
 		for i := start; i < start+visible; i++ {
@@ -1324,7 +1423,11 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			if u.focusBottom && i == u.selectedProcess {
 				cursor = "▸"
 			}
-			processLines = append(processLines, processLine(layout, p, io, observed, cursor))
+			var parent processID
+			if m := u.processes.meta(p.id()); m != nil {
+				parent = m.Parent
+			}
+			processLines = append(processLines, processLine(layout, p, parent, depths[p.id()], io, observed, cursor))
 		}
 		p := processes[u.selectedProcess]
 		if u.processInfoID != p.id() || time.Since(u.processInfoAt) >= 2*time.Second {
@@ -1338,11 +1441,14 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		if info.errorText != "" {
 			detailLines = append(detailLines, "PROCESS DETAILS: "+info.errorText)
 		} else {
+			cgroup := u.processes.cgroupOf(u.processes.meta(p.id()))
+			_, service := serviceOf(cgroup)
 			detailLines = append(detailLines,
 				fmt.Sprintf("STARTED %s   PARENT PID %d", info.started, info.parentPID),
 				"EXECUTABLE "+info.executable,
 				"WORKDIR    "+info.workingDir,
 				"COMMAND    "+info.command,
+				"CGROUP     "+cgroup+"  ("+service+")",
 			)
 			detailLines = append(detailLines, "") // Filled after the visible environment range is known.
 		}
@@ -1388,13 +1494,13 @@ func fit(line string, width int) string {
 func human(n uint64) string {
 	switch {
 	case n >= 1<<30:
-		return fmt.Sprintf("%.1fG", float64(n)/float64(1<<30))
+		return strconv.FormatFloat(float64(n)/float64(1<<30), 'f', 1, 64) + "G"
 	case n >= 1<<20:
-		return fmt.Sprintf("%.1fM", float64(n)/float64(1<<20))
+		return strconv.FormatFloat(float64(n)/float64(1<<20), 'f', 1, 64) + "M"
 	case n >= 1<<10:
-		return fmt.Sprintf("%.1fK", float64(n)/float64(1<<10))
+		return strconv.FormatFloat(float64(n)/float64(1<<10), 'f', 1, 64) + "K"
 	default:
-		return fmt.Sprintf("%d", n)
+		return strconv.FormatUint(n, 10)
 	}
 }
 

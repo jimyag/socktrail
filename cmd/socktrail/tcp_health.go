@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
+	"github.com/jimyag/socktrail/internal/probe"
 )
 
 const maxTrackedTCPSegments = 128
@@ -16,26 +19,85 @@ func (r sequenceRange) overlaps(other sequenceRange) bool {
 }
 
 type tcpHealth struct {
-	SynRTT            time.Duration
-	Retransmits       uint64    // Overlapping captured segments: a guess from the capture point.
-	KernelRetransmits [2]uint32 // Each local end's socket total, as ss shows it; indexed like the key's A and B.
-	synAt             time.Time
-	synFrom           netip.AddrPort
-	synSeq            uint32
-	synSeen           [2]bool
-	synSeqByDir       [2]uint32
-	seen              [2][]sequenceRange
+	SynRTT      time.Duration
+	Retransmits uint64 // Overlapping captured segments: a guess from the capture point.
+	// Each local end's socket as the kernel last reported it, indexed like
+	// the key's A and B; zero for an end that is not a local socket.
+	Kernel      [2]probe.TCPInfo
+	synAt       time.Time
+	synFrom     netip.AddrPort
+	synSeq      uint32
+	synSeen     [2]bool
+	synSeqByDir [2]uint32
+	seen        [2][]sequenceRange
+}
+
+// observeKernel records a local end's socket state from a TCP event. The
+// counters only grow; events from different CPUs may arrive out of order.
+func (h *tcpHealth) observeKernel(side int, info probe.TCPInfo) {
+	k := &h.Kernel[side]
+	retransmits, segments := max(k.Retransmits, info.Retransmits), max(k.SegsOut, info.SegsOut)
+	*k = info
+	k.Retransmits, k.SegsOut = retransmits, segments
+}
+
+// kernelSides returns the flow's ends with kernel state, the initiator's
+// first: its round trip is the one a client sees.
+func kernelSides(f *flow) []int {
+	first := 0
+	if f.Initiator.IsValid() && f.Initiator == f.Key.B {
+		first = 1
+	}
+	var sides []int
+	for _, side := range []int{first, 1 - first} {
+		if f.Health.Kernel[side] != (probe.TCPInfo{}) {
+			sides = append(sides, side)
+		}
+	}
+	return sides
 }
 
 // retransmits returns the retransmissions to show and their source. A flow
 // with a local socket has the kernel's own count, zero until the kernel
 // reports one; a flow only passing through has the capture's guess.
 func retransmits(f *flow) (uint64, string) {
-	kernel := f.Health.KernelRetransmits
-	if kernel != [2]uint32{} || f.Client.PID > 0 || f.Server.PID > 0 {
-		return uint64(kernel[0]) + uint64(kernel[1]), "kernel"
+	kernel := f.Health.Kernel
+	if len(kernelSides(f)) > 0 || f.Client.PID > 0 || f.Server.PID > 0 {
+		return uint64(kernel[0].Retransmits) + uint64(kernel[1].Retransmits), "kernel"
 	}
 	return f.Health.Retransmits, "capture"
+}
+
+// flowRTT returns the round-trip time to show and its source: a local
+// socket's smoothed RTT from the kernel, which follows the whole connection,
+// or else the capture's one handshake sample.
+func flowRTT(f *flow) (time.Duration, string) {
+	for _, side := range kernelSides(f) {
+		if rtt := f.Health.Kernel[side].RTT; rtt > 0 {
+			return rtt, "kernel"
+		}
+	}
+	if f.Health.SynRTT > 0 {
+		return f.Health.SynRTT, "SYN"
+	}
+	return 0, ""
+}
+
+// kernelDetail describes each local end's socket as ss -ti would.
+func kernelDetail(f *flow) string {
+	var parts []string
+	for _, side := range kernelSides(f) {
+		k, end := f.Health.Kernel[side], f.Key.A
+		if side == 1 {
+			end = f.Key.B
+		}
+		part := fmt.Sprintf("%s rtt %s±%s cwnd %d sent %d retrans %d", end, formatSYNRTT(k.RTT), formatSYNRTT(k.RTTVar), k.Cwnd, k.SegsOut, k.Retransmits)
+		if k.SegsOut > 0 {
+			part += fmt.Sprintf(" (%.2f%%)", float64(k.Retransmits)*100/float64(k.SegsOut))
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func formatSYNRTT(value time.Duration) string {

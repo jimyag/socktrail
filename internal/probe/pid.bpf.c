@@ -71,7 +71,13 @@ struct sock {
     struct sock_common __sk_common;
     __u16 sk_protocol; // A plain field from Linux 5.6.
 } __attribute__((preserve_access_index));
-struct tcp_sock { __u32 total_retrans; } __attribute__((preserve_access_index));
+struct tcp_sock {
+    __u32 srtt_us; // Smoothed RTT, shifted left by 3.
+    __u32 mdev_us; // Mean deviation, shifted left by 2.
+    __u32 snd_cwnd;
+    __u32 total_retrans;
+    __u32 data_segs_out;
+} __attribute__((preserve_access_index));
 struct socket { struct sock *sk; } __attribute__((preserve_access_index));
 struct file { void *private_data; } __attribute__((preserve_access_index));
 struct pipe_inode_info;
@@ -79,7 +85,9 @@ struct ns_common { unsigned int inum; } __attribute__((preserve_access_index));
 struct net { struct ns_common ns; } __attribute__((preserve_access_index));
 struct nsproxy { struct net *net_ns; } __attribute__((preserve_access_index));
 struct task_struct {
+    int tgid;
     struct task_struct *group_leader;
+    struct task_struct *real_parent;
     __u64 start_boottime;
     struct nsproxy *nsproxy;
 } __attribute__((preserve_access_index));
@@ -103,7 +111,16 @@ struct event {
     __u64 start_ns;
     __u64 netns;
     __u64 app_bytes;
+    __u64 cgroup_id;       // The cgroup v2 ID: the inode of the process's cgroup directory.
+    __u64 parent_start_ns;
     __u32 pid;
+    __u32 ppid;
+    // TCP only: the socket's state after the call, as ss -ti shows it.
+    __u32 srtt_us;
+    __u32 rttvar_us;
+    __u32 snd_cwnd;
+    __u32 data_segs_out;
+    __u32 total_retrans;
     __u16 local_port;
     __u16 remote_port;
     __u8 protocol;
@@ -183,6 +200,20 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
         e->pid = bpf_get_current_pid_tgid() >> 32;
         e->start_ns = process_start(task);
         bpf_get_current_comm(&e->comm, sizeof(e->comm));
+        // The parent and cgroup group processes into trees and services;
+        // read here, they survive a process that exits right after.
+        struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+        e->ppid = BPF_CORE_READ(parent, tgid);
+        e->parent_start_ns = process_start(parent);
+        e->cgroup_id = bpf_get_current_cgroup_id();
+    }
+    if (protocol == 6) {
+        struct tcp_sock *tp = (void *)sk;
+        e->srtt_us = BPF_CORE_READ(tp, srtt_us) >> 3;
+        e->rttvar_us = BPF_CORE_READ(tp, mdev_us) >> 2;
+        e->snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
+        e->data_segs_out = BPF_CORE_READ(tp, data_segs_out);
+        e->total_retrans = BPF_CORE_READ(tp, total_retrans);
     }
     e->netns = netns;
     e->app_bytes = app_bytes;
@@ -309,23 +340,22 @@ int BPF_PROG(splice_recv_exit, struct socket *sock, long long *ppos, struct pipe
     return 0;
 }
 
-// Retransmissions of local sockets. The event carries the socket's running
-// total, the figure ss reports as retrans, so a lost event costs nothing:
-// the next one brings the count up to date. A tail loss probe retransmits
-// without tcp_retransmit_skb, so it has its own hook. Both functions are
-// called from other files and cannot be inlined away.
+// Retransmissions of local sockets. Like every TCP event, the event carries
+// the socket's running total, the figure ss reports as retrans, so a lost
+// event costs nothing: the next one brings the count up to date. A tail
+// loss probe retransmits without tcp_retransmit_skb, so it has its own
+// hook. Both functions are called from other files and cannot be inlined.
 SEC("fexit/tcp_retransmit_skb")
 int BPF_PROG(tcp_retransmit_exit, struct sock *sk, void *skb, int segs, int ret)
 {
-    if (ret == 0)
-        output(sk, 6, ROLE_SEND, OP_RETRANSMIT, BPF_CORE_READ((struct tcp_sock *)sk, total_retrans), 0, 0, -1);
+    if (ret == 0) output(sk, 6, ROLE_SEND, OP_RETRANSMIT, 0, 0, 0, -1);
     return 0;
 }
 
 SEC("fexit/tcp_send_loss_probe")
 int BPF_PROG(tcp_loss_probe_exit, struct sock *sk)
 {
-    output(sk, 6, ROLE_SEND, OP_RETRANSMIT, BPF_CORE_READ((struct tcp_sock *)sk, total_retrans), 0, 0, -1);
+    output(sk, 6, ROLE_SEND, OP_RETRANSMIT, 0, 0, 0, -1);
     return 0;
 }
 

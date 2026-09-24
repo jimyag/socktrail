@@ -18,7 +18,8 @@ func TestReportJSON(t *testing.T) {
 	c.flows[keyFor(client, server, 6)].Client = participant{PID: 42, StartNS: 7, Name: "curl"}
 	c.pidIO = map[processID]processIO{{42, 7}: {"curl", ioBytes{RX: 10, TX: 20}}}
 
-	out, err := json.Marshal(jsonSnapshot{Version: 1, Reports: []jsonReport{reportJSON(c, "eth0", 10)}, Processes: processesJSON(c, 10)})
+	processes := newProcessTable(t.TempDir())
+	out, err := json.Marshal(jsonSnapshot{Version: 1, Reports: []jsonReport{reportJSON(c, "eth0", 10, processes, nil)}, Processes: processesJSON(c, 10, processes, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}

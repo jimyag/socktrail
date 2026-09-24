@@ -334,6 +334,47 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 
 推送本轮提交后的第一次运行全部通过：Check 的格式与测试、BPF 对象一致性，以及 `ubuntu-24.04` 和 `ubuntu-24.04-arm` 两种 runner 上的 root 测试和冒烟快照（arm64 runner 是实机，这是 socktrail 第一次在 arm64 实机上运行）；Kernels 的 amd64 作业用 KVM 约 5 分钟跑完 9 个内核，arm64 作业在模拟器里约 6 分钟跑完 2 个内核，都含下载和打包 initramfs 的时间。
 
+## 2026-09-25 进程过滤、服务分组与内核 TCP 状态
+
+本轮新增 `--process`、`--pid`、`--cgroup` 过滤，服务页（按服务、cgroup、进程树分组），以及每条本机 TCP 连接的内核 RTT、拥塞窗口和重传。`go vet ./...`、`go test ./...` 通过；本机 6.8 上 probe 包的 5 项 root 测试通过，其中 socket 事件测试新增两项检查：TCP 收发事件带非零的 RTT、拥塞窗口和已发送段数；connect 事件的父进程等于测试进程的父进程，cgroup ID 等于测试进程所在 cgroup 目录的 inode（没有挂载 cgroup v2 的虚拟机里只要求非零）。
+
+单元测试用临时目录伪造 `/proc`，覆盖：
+- 进程表从 `/proc` 补齐不碰网络的祖先（bash、脚本）。
+- 中间的脚本退出后，`--pid <bash>` 仍然选中 curl。
+- 同一 cgroup 里已退出的进程按 cgroup ID 取到路径。
+- 按服务、cgroup、进程树分组，以及进程树的排序和缩进。
+- 进程名的 15 字节截断、通配符，cgroup 的路径前缀与目录名通配。
+- 服务名推导（容器 ID 缩到 12 位），cgroup 文件的 v2、混合模式和仅 v1 三种格式。
+- 服务页的分组和字节汇总，以及过滤后的 PID 页和快照。
+
+本机验证：
+- `--process curl --output json`：同时有 curl 和一个 Python 客户端访问本机 HTTP 服务，结果只有 curl 这条连接（client 为 curl，server 为 python3，RTT 38 µs，来源 kernel）、curl 进程（带父进程和所在的会话 scope）和这个 scope 的服务汇总，Python 客户端不出现。
+- `--pid <bash>`：bash 延时后启动 curl，结果只有这个子进程的连接，连接的 client 为 curl，其父进程是这个 bash。
+- 在 PTY 里按 `5`、连按三次 `g`、再按 `Enter` 和 `Tab`，界面依次显示按服务、cgroup、进程树分组，最后回到服务分组，进程标签页有 `PPID` 列和 `CGROUP` 行，退出码为 0。
+- 本机的服务页列出 zerotier-one.service、tailscaled.service、dae.service、会话 scope、`docker-e5ed6df559c6.scope` 等；进程树页以 sshd、dockerd、nginx 主进程、zellij 等为根。
+
+发现并修正了一个回归：上一轮把 PID 事件改为批量唤醒后，事件最多晚 100 ms 到达。像 curl 这样的短连接，报文（握手到双方 FIN）常在同一个抓包块里处理完，connect 和收发事件到达时连接已经关闭，而此前关闭的连接不再接收事件，于是这类连接两端都没有进程。上一轮的冒烟测试只查了 OpenSSL 的 PID 和 Host，PID 复用和 fd 传递实验里的连接又都活了半秒以上，所以没有发现。现在关闭后 2 秒内的连接仍接收自己的事件；新增的单元测试让事件在连接关闭之后到达，修正后本机的 curl 连接两端进程都在。
+
+查看 dockerd 的进程树时又发现一处统计错误：快照和文本报告里服务汇总的连接数只统计第一个抓包接口（本机为 br0）上的连接，界面的服务页不受影响。docker-proxy 的连接走 `lo`，所以 docker.service 有 socket 字节，连接数却是 0。现在按合并了所有接口的整机连接计数。修正后 `--pid <dockerd>` 的快照里，docker.service 为 4 个进程、4 条连接，与以 docker-proxy 为一端的 4 条连接一致。同样的过滤下，界面的进程树页只剩 dockerd 一行，`process` 标签页以 dockerd 为根，下面缩进列出有流量的 docker-proxy 子进程。
+
+底栏的连接表和进程表随后改为按内容定宽。服务页的连接表新增第一列 `I/O PID`，连接详情里各进程的 socket 收发行也带上进程名。在 200 列的 PTY 里：
+- SSH 会话那棵进程树的连接行宽 168 列，`ORIGIN PID` 和 `TARGET PID` 不用横向滚动就能看到。
+- 这条连接的 `TARGET PID` 是接受连接的父进程 3027445(sshd)，`I/O PID` 是实际收发的子进程 3027544(sshd)。
+- dockerd 那棵树里，dockerd 自己发出的 DNS 查询和各个 docker-proxy 的连接各自标明了进程。
+
+单元测试确认这一列只列出组内的进程，不包括另一个服务里的对端。
+
+按内容定宽要在每次重绘时格式化所选分组的每条连接。基准测试用 2 万条连接的分组：
+- 最初的实现在服务页每次重绘约 25 ms，分配 16 MB。原来固定最小宽度的布局约 5 ms。
+- 改为复用单元格切片，字节数和 `PID(进程名)` 改用 strconv 拼接（输出不变）之后，服务页约 14 ms、2 MB，PID 页约 10 ms。
+- 同样 2 万条连接时，主表按 PID 分组约 9 ms。
+
+2 千条连接以内的分组，列宽计算约 1 ms。
+
+内存：连接记录两端的内核 TCP 状态多了 64 B，ARP 和 SSH 两端版本改为按需分配后，每条完成握手的 TLS 流仍是 1,541 B 存活堆。
+
+新的事件字段要读 `task_struct` 的 `real_parent`、`tgid`，调用 `bpf_get_current_cgroup_id`，并读 `tcp_sock` 的 `srtt_us`、`mdev_us`、`snd_cwnd`、`data_segs_out`。内核矩阵的 11 个内核（amd64 的 5.10 到 7.0 及 CentOS Stream 9、10，arm64 的 6.4 和 6.8）全部通过，各 16 项测试通过、3 项按预期跳过。
+
 ## 尚未完成的验收
 
 后续要做的事项和做法见 [后续计划](roadmap.md)。

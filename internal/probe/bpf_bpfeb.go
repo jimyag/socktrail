@@ -21,21 +21,29 @@ type BpfConfig struct {
 }
 
 type BpfEvent struct {
-	_          structs.HostLayout
-	StartNs    uint64
-	Netns      uint64
-	AppBytes   uint64
-	Pid        uint32
-	LocalPort  uint16
-	RemotePort uint16
-	Protocol   uint8
-	Role       uint8
-	Family     uint8
-	Operation  uint8
-	LocalIp    [16]uint8
-	RemoteIp   [16]uint8
-	Comm       [16]int8
-	_          [4]byte
+	_             structs.HostLayout
+	StartNs       uint64
+	Netns         uint64
+	AppBytes      uint64
+	CgroupId      uint64
+	ParentStartNs uint64
+	Pid           uint32
+	Ppid          uint32
+	SrttUs        uint32
+	RttvarUs      uint32
+	SndCwnd       uint32
+	DataSegsOut   uint32
+	TotalRetrans  uint32
+	LocalPort     uint16
+	RemotePort    uint16
+	Protocol      uint8
+	Role          uint8
+	Family        uint8
+	Operation     uint8
+	LocalIp       [16]uint8
+	RemoteIp      [16]uint8
+	Comm          [16]int8
+	_             [4]byte
 }
 
 // Names of all BPF objects in the ELF.

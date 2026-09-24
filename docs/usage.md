@@ -53,15 +53,33 @@ sudo ./socktrail --interface eth0 --record-before 10s
 
 这些历史帧按平时的长度截断（前 16 KiB 多一点），归属按帧到达时所在的流判断；PID 录制时按按下 `c` 那一刻的进程关联挑选。开启后每个帧都要复制一份，高负载下会多占 CPU 和最多 32 MiB 内存，所以默认关闭；它只用于交互界面，不能和 `--duration` 一起使用。
 
+## 按进程、服务过滤
+
+只关心某些进程时，启动时指定，界面、文本快照和 JSON 都只显示它们、它们参与的连接和它们的 socket 字节：
+
+```sh
+sudo ./socktrail --process nginx            # 按进程名，可用通配符，如 'python*'
+sudo ./socktrail --pid 1234                 # 这个进程和它所有的子孙进程
+sudo ./socktrail --cgroup nginx.service     # cgroup 路径里某一级的名字，可用通配符，如 'docker-*'
+sudo ./socktrail --cgroup /system.slice     # cgroup 路径前缀：所有系统服务
+sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
+```
+
+- 几个条件可以同时给，满足任意一个就算选中；同一参数可用逗号分隔多个值，也可重复指定。
+- 进程名是内核里的任务名，最多 15 字节：超过 15 字节的名字（如 `systemd-resolved`）按前 15 字节比较。任务名可以被进程自己修改，需要可靠地限定时用 `--cgroup` 或 `--pid`。
+- `--pid` 按父子关系判断：子孙进程在进程开始收发网络数据时，从内核事件取得它的父进程，再从 `/proc` 补齐中间没有网络活动的祖先。中间某个进程在这之前就已退出时，链条会断开。
+- `--cgroup` 带 `/` 时是路径前缀，按目录边界比较（`/system.slice/nginx` 不匹配 `nginx.service`）；不带 `/` 时和路径里任意一级目录名比较。
+- 过滤只影响显示：抓包和事件照常全量处理，因为报文要先和进程对上才知道属于谁。没有进程的连接（转发流量、还没从 socket 表补上进程的连接）和入站扫描汇总因此不显示。顶部标出 `ONLY process=…`。
+
 ## 页面与接口选择
 
-默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。顶部的 `a OVERVIEW` 表示按 `a` 回到多网卡合并视图；`OVERVIEW` 是界面范围，和 HTTP `Host` 域名无关。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览；选中网卡按 `Enter` 进入该网卡详情。需要排查采集路径时可按 `i` 逐张切换。
+默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开服务页：按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `g` 在三种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）。服务页连接表的第一列 `I/O PID` 是组内在这条连接上有收发的进程；父进程接受连接后交给子进程收发时（如 sshd），连接两端的 PID 仍是父进程，这一列显示实际收发的子进程。服务页的 `process` 标签列出组内的进程，按父子关系缩进；各页的进程表都有 `PPID` 列，进程详情有 `CGROUP` 行。顶部的 `a OVERVIEW` 表示按 `a` 回到多网卡合并视图；`OVERVIEW` 是界面范围，和 HTTP `Host` 域名无关。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览；选中网卡按 `Enter` 进入该网卡详情。需要排查采集路径时可按 `i` 逐张切换。
 
 不指定 `--interface` 时，程序自动选择当前网络命名空间内最多 8 个处于 UP 且 RUNNING 状态的宿主接口，包括 loopback、物理接口和隧道接口；跳过名称以 `veth`、`br-`、`docker`、`vnet`、`ovs-` 开头的常见容器/虚拟机子接口。超过 8 个候选时会报错，要求显式选择，不会悄悄漏抓。自动选择只决定从哪里采集报文，不要求在主页面选网卡。相同五元组和 TCP 代次的跨接口观测在整机页合为一条连接，只取一个采集点的 IP 字节，优先保留已识别的 Host/SNI。
 
 NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接口进、另一个接口出的连接方向标为 `forwarded`；conntrack 结果回来之前（通常不到一秒）两侧会各显示一行。代理、隧道改写的地址仍可能留下多个观测流，所以整机页的 IP 字节是观测值，不能作为精确整机总量。`--interface` 可重复指定最多 8 个接口，也可用逗号分隔；显式指定可选择自动模式跳过的接口。用 `ip -br link` 查看名称。交互界面按 `1` PID、`2` 来源 IP、`3` 目标 IP、`4` 协议、`d` 域名切换；多接口时按 `i` 切换接口。
 
-详情区默认约占半屏，提供 `conns` 和 `process` 两个标签。窗口变宽时表格会展开，变窄时保留完整列数据；用 `←/→` 或 `h/l` 横向滚动当前焦点的表格。可以用鼠标点击顶部视图、主表行、底部标签及连接；点击主表、连接表或进程表的任意列标题按该列排序，再点同一列切换升降序，当前方向标在标题旁。滚轮滚动当前列表，Shift+滚轮或水平滚轮横向滚动鼠标所在表格，拖动横向分隔线调整详情区高度。`Enter` 切换主表和底栏焦点，`Tab` 切换底栏标签，`/` 过滤，`s` 恢复主表总字节/总速率排序并切换两者，`?` 帮助，`!` 状态，`q` 退出。输入过滤词时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；`Ctrl-C` 任何时候都退出。终端断开时程序会正常退出，并关闭进行中的录制；用 `nohup` 运行快照时挂断信号仍被忽略。
+详情区默认约占半屏，提供 `conns` 和 `process` 两个标签。窗口变宽时主表会展开，底栏的连接表和进程表按内容定宽；窗口变窄时保留完整列数据；用 `←/→` 或 `h/l` 横向滚动当前焦点的表格。可以用鼠标点击顶部视图、主表行、底部标签及连接；点击主表、连接表或进程表的任意列标题按该列排序，再点同一列切换升降序，当前方向标在标题旁。滚轮滚动当前列表，Shift+滚轮或水平滚轮横向滚动鼠标所在表格，拖动横向分隔线调整详情区高度。`Enter` 切换主表和底栏焦点，`Tab` 切换底栏标签，`/` 过滤，`s` 恢复主表总字节/总速率排序并切换两者，`?` 帮助，`!` 状态，`q` 退出。输入过滤词时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；`Ctrl-C` 任何时候都退出。终端断开时程序会正常退出，并关闭进行中的录制；用 `nohup` 运行快照时挂断信号仍被忽略。
 
 终端需支持 SGR 鼠标报告；退出时程序关闭鼠标报告并恢复终端。
 
@@ -99,6 +117,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | 字段 | 内容 |
 | --- | --- |
 | `version`、`netns`、`interfaces` | 格式版本（目前为 1）、网络命名空间 inode、采集的接口 |
+| `filter` | 给了 `--process`、`--pid` 或 `--cgroup` 时的过滤条件；有过滤时下面各项只含选中的进程 |
 | `probes.pid` | PID 探针的 `received`、`kernel_lost`、`dropped`、`invalid` |
 | `probes.openssl`、`probes.socket_stream` | 各自的 `status` 行和同样的计数；OpenSSL 探针不统计 `kernel_lost`，恒为 0 |
 | `probes.nat` | `status`、`lookups`、`translated`、`queue_full`、`failed`、`last_error` |
@@ -107,7 +126,8 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `reports[].flows[]` | 按字节排序的前 `--limit` 条连接，字段见下表 |
 | `reports[].domains[]` | 域名页的行：`label`、`connections`、`rx_bytes`、`tx_bytes`、`http_requests`、`unknown_pid` |
 | `reports[].inbound_attempts[]` | 被拒或无应答的入站尝试：`source`、`ports`、`refused`、`unanswered` |
-| `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
+| `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
+| `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
 
 `flows[]` 的字段：
 
@@ -116,8 +136,10 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `protocol`、`app`、`state`、`direction` | 与文本表格的 PROTO、APP、STATE、DIR 相同 |
 | `source`、`target`、`initiator_unknown` | 发起方与接收方；TCP 的发起方不确定时 `initiator_unknown` 为 true，两端为观测到的原始顺序 |
 | `rx_bytes`、`tx_bytes`、`packets`、`first_seen`、`last_seen` | 采集点的 IP 字节与报文数 |
-| `syn_rtt_us`、`retransmits`、`retransmit_source` | 握手时延（微秒）和重传；后两者只对 TCP 给出，来源为 `kernel` 或 `capture` |
-| `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`；`pid` 为 -1 表示多个进程有歧义 |
+| `syn_rtt_us`、`rtt_us`、`rtt_source` | 抓到的握手时延，以及界面上显示的 RTT 和来源（`kernel` 或 `SYN`），单位微秒 |
+| `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
+| `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`（本端地址）、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits` |
+| `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`；`pid` 为 -1 表示多个进程有歧义 |
 | `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |
 | `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
 | `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |

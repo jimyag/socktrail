@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
+	"github.com/jimyag/socktrail/internal/probe"
 )
 
 func TestTCPHealthHandshakeAndSequenceOverlap(t *testing.T) {
@@ -36,6 +37,31 @@ func TestTCPHealthUnknownWhenHandshakeNotSeen(t *testing.T) {
 	health.observe(capture.Packet{Protocol: 6, SYN: true, ACK: true, TCPAck: 1001}, false)
 	if health.SynRTT != 0 || formatSYNRTT(health.SynRTT) != "-" {
 		t.Fatalf("unobserved handshake produced RTT: %+v", health)
+	}
+}
+
+// A local socket's TCP events carry the kernel's view of it: its RTT
+// replaces the handshake sample, and its counters never go back when events
+// from different CPUs arrive out of order.
+func TestKernelTCPStateOfLocalEnds(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:40000"), netip.MustParseAddrPort("127.0.0.1:8080")
+	c := newTestCollector()
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, SYN: true, TCPSeq: 1, IPBytes: 60, Outgoing: true})
+	f := c.flows[keyFor(client, server, 6)]
+	send := func(local, remote netip.AddrPort, info probe.TCPInfo) {
+		c.event(probe.Event{Protocol: 6, Role: "out", Operation: "send", AppBytes: 10, PID: 7, StartNS: 1, Local: local, Remote: remote, TCP: info})
+	}
+	send(client, server, probe.TCPInfo{RTT: 2 * time.Millisecond, RTTVar: time.Millisecond, Cwnd: 10, SegsOut: 200, Retransmits: 4})
+	send(client, server, probe.TCPInfo{RTT: 3 * time.Millisecond, RTTVar: time.Millisecond, Cwnd: 12, SegsOut: 150, Retransmits: 3})
+	send(server, client, probe.TCPInfo{RTT: 5 * time.Millisecond, Cwnd: 10, SegsOut: 10, Retransmits: 1})
+	if rtt, source := flowRTT(f); rtt != 3*time.Millisecond || source != "kernel" {
+		t.Fatalf("RTT %s from %q, want the client's latest 3ms from the kernel", rtt, source)
+	}
+	if retx, source := retransmits(f); retx != 5 || source != "kernel" {
+		t.Fatalf("retransmits %d from %q, want both ends' 4+1", retx, source)
+	}
+	if got := kernelDetail(f); got != "127.0.0.1:40000 rtt 3ms±1ms cwnd 12 sent 200 retrans 4 (2.00%); 127.0.0.1:8080 rtt 5ms±- cwnd 10 sent 10 retrans 1 (10.00%)" {
+		t.Fatalf("kernel detail %q", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -191,59 +192,48 @@ func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) str
 	)
 }
 
-func connectionLayout(flows []*flow, mode viewMode, viewport int) tableLayout {
-	sourceWidth, targetWidth, nameWidth := 42, 42, 40
-	directionWidth, protocolWidth, appWidth, stateWidth := 10, 7, 12, 12
-	ownerWidth, targetPIDWidth := 20, 20
-	for _, f := range flows {
-		source, target := displayedEndpoints(f)
-		directionWidth = max(directionWidth, utf8.RuneCountInString(f.Direction))
-		sourceWidth = max(sourceWidth, utf8.RuneCountInString(source))
-		targetWidth = max(targetWidth, utf8.RuneCountInString(target))
-		protocolWidth = max(protocolWidth, utf8.RuneCountInString(flowProtocol(f)))
-		appWidth = max(appWidth, utf8.RuneCountInString(f.AppProtocol))
-		stateWidth = max(stateWidth, utf8.RuneCountInString(flowState(f)))
-		nameWidth = max(nameWidth, utf8.RuneCountInString(flowName(f)))
-		ownerWidth = max(ownerWidth, utf8.RuneCountInString(formatPIDBrief(f.Client)))
-		targetPIDWidth = max(targetPIDWidth, utf8.RuneCountInString(formatPIDBrief(f.Server)))
+// connectionLayout sizes each column to its title or its widest value over
+// all the row's connections, so scrolling keeps the columns in place and
+// short addresses leave room for the columns after them.
+func connectionLayout(row *uiRow, mode viewMode) tableLayout {
+	var columns []tableColumn
+	if mode == viewService {
+		columns = append(columns, tableColumn{title: "I/O PID"})
 	}
-	columns := []tableColumn{
-		{title: "DIR", width: directionWidth},
-		{title: "SOURCE", width: sourceWidth},
-		{title: "TARGET", width: targetWidth},
-		{title: "PROTO", width: protocolWidth},
-		{title: "APP", width: appWidth},
-		{title: "STATE", width: stateWidth},
-		{title: "DOMAIN / ICMP", width: nameWidth},
-		{title: "IP RX", width: 10, right: true},
-		{title: "IP TX", width: 10, right: true},
-		{title: "SYN RTT", width: 10, right: true},
-		{title: "RETX", width: 6, right: true},
-	}
+	columns = append(columns,
+		tableColumn{title: "DIR"}, tableColumn{title: "SOURCE"}, tableColumn{title: "TARGET"}, tableColumn{title: "PROTO"},
+		tableColumn{title: "APP"}, tableColumn{title: "STATE"}, tableColumn{title: "DOMAIN / ICMP"},
+		tableColumn{title: "IP RX", right: true}, tableColumn{title: "IP TX", right: true},
+		tableColumn{title: "RTT", right: true}, tableColumn{title: "RETX", right: true},
+	)
 	if mode == viewPID {
-		columns = append(columns,
-			tableColumn{title: "PID RX", width: 10, right: true},
-			tableColumn{title: "PID TX", width: 10, right: true},
-		)
+		columns = append(columns, tableColumn{title: "PID RX", right: true}, tableColumn{title: "PID TX", right: true})
 	}
-	columns = append(columns,
-		tableColumn{title: "ORIGIN PID", width: ownerWidth},
-		tableColumn{title: "TARGET PID", width: targetPIDWidth},
-	)
-	columns = append(columns,
-		tableColumn{title: "FIRST", width: 8},
-		tableColumn{title: "LAST", width: 8},
-	)
-	return newTableLayout(columns, viewport, 1, 2, 6)
+	columns = append(columns, tableColumn{title: "ORIGIN PID"}, tableColumn{title: "TARGET PID"}, tableColumn{title: "FIRST"}, tableColumn{title: "LAST"})
+	var values []string // Reused: a group can hold thousands of connections.
+	for _, f := range row.flows {
+		values = connectionValues(values[:0], f, row, mode)
+		for i, value := range values {
+			columns[i].width = max(columns[i].width, utf8.RuneCountInString(value))
+		}
+	}
+	return newTableLayout(columns, 0)
 }
 
-func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, cursor string) string {
+// connectionValues appends a connection's cells in connectionLayout's order.
+// The PID page shows the selected process's socket I/O on it; the service
+// page leads with the group's processes that did I/O on it.
+func connectionValues(values []string, f *flow, row *uiRow, mode viewMode) []string {
+	if mode == viewService {
+		values = append(values, groupIO(f, row.members))
+	}
 	source, target := displayedEndpoints(f)
 	retx, _ := retransmits(f)
-	values := []string{
+	rtt, _ := flowRTT(f)
+	values = append(values,
 		f.Direction, source, target, flowProtocol(f), f.AppProtocol, flowState(f), flowName(f),
-		human(f.RX), human(f.TX), formatSYNRTT(f.Health.SynRTT), strconv.FormatUint(retx, 10),
-	}
+		human(f.RX), human(f.TX), formatSYNRTT(rtt), strconv.FormatUint(retx, 10),
+	)
 	if mode == viewPID {
 		rx, tx := "-", "-"
 		if io, ok := f.IO[row.pidID]; ok && row.pidID.PID > 0 {
@@ -251,30 +241,61 @@ func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, curs
 		}
 		values = append(values, rx, tx)
 	}
-	values = append(values, formatPIDBrief(f.Client), formatPIDBrief(f.Server))
-	values = append(values, displayTime(f.First), displayTime(f.Last))
-	return layout.line(cursor, values...)
+	return append(values, formatPIDBrief(f.Client), formatPIDBrief(f.Server), displayTime(f.First), displayTime(f.Last))
 }
 
-func processLayout(processes []participant, viewport int) tableLayout {
-	pidWidth, nameWidth := 10, 20
-	for _, p := range processes {
-		pidWidth = max(pidWidth, len(strconv.Itoa(p.PID)))
-		nameWidth = max(nameWidth, utf8.RuneCountInString(p.Name))
+// groupIO names the group's processes that read or wrote f's sockets, in a
+// stable order. Unlike the ends' PIDs, it shows the child a parent handed an
+// accepted connection to.
+func groupIO(f *flow, members map[processID]string) string {
+	var names []string
+	for id := range f.IO {
+		if name, ok := members[id]; ok {
+			names = append(names, formatPIDBrief(participant{PID: id.PID, StartNS: id.StartNS, Name: name}))
+		}
 	}
+	if len(names) == 0 {
+		return "-"
+	}
+	slices.Sort(names)
+	return strings.Join(names, ",")
+}
+
+func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, cursor string) string {
+	return layout.line(cursor, connectionValues(nil, f, row, mode)...)
+}
+
+// processLayout lays out a process list; depths indents a process tree.
+// Like the connection table, its columns fit their contents.
+func processLayout(processes []participant, depths map[processID]int) tableLayout {
 	columns := []tableColumn{
-		{title: "PID", width: pidWidth},
-		{title: "PROCESS", width: nameWidth},
-		{title: "SOCKET RX B", width: 12, right: true},
-		{title: "SOCKET TX B", width: 12, right: true},
+		{title: "PID"},
+		{title: "PROCESS"},
+		{title: "PPID", width: 7}, // pid_max is at most 2^22: seven digits.
+		{title: "SOCKET RX B", right: true},
+		{title: "SOCKET TX B", right: true},
 	}
-	return newTableLayout(columns, viewport, 1)
+	for _, p := range processes {
+		columns[0].width = max(columns[0].width, len(strconv.Itoa(p.PID)))
+		columns[1].width = max(columns[1].width, utf8.RuneCountInString(treeName(p, depths[p.id()])))
+	}
+	return newTableLayout(columns, 0)
 }
 
-func processLine(layout tableLayout, p participant, io processIO, observed bool, cursor string) string {
-	rx, tx := "-", "-"
+func treeName(p participant, depth int) string {
+	if depth == 0 {
+		return p.Name
+	}
+	return strings.Repeat("  ", depth-1) + "└ " + p.Name
+}
+
+func processLine(layout tableLayout, p participant, parent processID, depth int, io processIO, observed bool, cursor string) string {
+	rx, tx, ppid := "-", "-", "-"
 	if observed {
 		rx, tx = human(io.RX), human(io.TX)
 	}
-	return layout.line(cursor, strconv.Itoa(p.PID), p.Name, rx, tx)
+	if parent.PID > 0 {
+		ppid = strconv.Itoa(parent.PID)
+	}
+	return layout.line(cursor, strconv.Itoa(p.PID), treeName(p, depth), ppid, rx, tx)
 }

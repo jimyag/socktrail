@@ -60,7 +60,7 @@ func flowProtocol(f *flow) string {
 
 // l2Description names a flow of frames without an IP header.
 func l2Description(f *flow) string {
-	if f.Key.EtherType != 0x0806 {
+	if f.Key.EtherType != 0x0806 || f.ARP == nil {
 		return fmt.Sprintf("%d frames", f.Packets)
 	}
 	text := fmt.Sprintf("requests=%d replies=%d", f.ARP.Requests, f.ARP.Replies)

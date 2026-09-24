@@ -27,6 +27,10 @@ jq '{flows: (.reports[0].flows | length), dropped: .reports[0].capture_dropped, 
 jq -e '.reports[0].capture_dropped == 0' "$work/snapshot.json" >/dev/null
 jq -e 'any(.reports[0].flows[]; (.evidence.hosts["smoke.test"] // 0) > 0)' "$work/snapshot.json" >/dev/null ||
 	{ echo "no HTTP flow with Host smoke.test" >&2; exit 1; }
+# curl's connection closes within milliseconds, before its socket events
+# arrive: the process and the kernel's RTT must still reach it.
+jq -e 'any(.reports[0].flows[]; (.evidence.hosts["smoke.test"] // 0) > 0 and .client.name == "curl" and .rtt_source == "kernel")' "$work/snapshot.json" >/dev/null ||
+	{ echo "the HTTP flow lacks curl as its client or the kernel's RTT" >&2; exit 1; }
 jq -e 'any(.reports[0].flows[]; .evidence.sni == "smoke.test" and (.openssl_pids | length) > 0)' "$work/snapshot.json" >/dev/null ||
 	{ echo "no TLS flow named smoke.test with an OpenSSL process" >&2; exit 1; }
 echo "smoke test passed"
