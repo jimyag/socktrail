@@ -136,8 +136,11 @@ func portedTCP(payload []byte, source, destination uint16) string {
 }
 
 func memcachedCommand(payload []byte) bool {
-	command, _, _ := bytes.Cut(payload[:min(len(payload), 16)], []byte(" "))
-	switch string(bytes.TrimRight(command, "\r\n")) {
+	command := payload[:min(len(payload), 16)]
+	if end := bytes.IndexAny(command, " \r\n"); end >= 0 {
+		command = command[:end] // stats and version take no arguments.
+	}
+	switch string(command) {
 	case "get", "gets", "gat", "gats", "set", "add", "replace", "append", "prepend", "cas", "delete",
 		"incr", "decr", "touch", "stats", "version", "flush_all", "mg", "ms", "md", "ma", "mn":
 		return true
