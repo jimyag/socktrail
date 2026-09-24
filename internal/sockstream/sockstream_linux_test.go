@@ -33,10 +33,11 @@ func captureBothDirections(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	chunks, _, _, err := Start(ctx, info.Sys().(*syscall.Stat_t).Ino, 0)
+	chunks, _, stats, err := Start(ctx, info.Sys().(*syscall.Stat_t).Ino, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cookies := haveCookies() // A feature probe: it loads a program, which takes most of a second under emulation.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -71,13 +72,13 @@ func captureBothDirections(t *testing.T) {
 			if c.Sent && c.Local.String() != client || !c.Sent && c.Remote.String() != client {
 				continue // Another socket in this netns.
 			}
-			if (c.Cookie >= 0xffff800000000000) == haveCookies() { // Kernel addresses sit in the top half.
-				t.Fatalf("socket key %#x does not match cookie support %t", c.Cookie, haveCookies())
+			if (c.Cookie >= 1<<63) == cookies { // Kernel addresses have the top bit set; cookies count up from 1.
+				t.Fatalf("socket key %#x does not match cookie support %t", c.Cookie, cookies)
 			}
 			copy(streams[c.Sent][c.Offset:], c.Data)
 			got[c.Sent] += len(c.Data)
 		case <-deadline:
-			t.Fatalf("captured sent=%d received=%d of 16384 bytes", got[true], got[false])
+			t.Fatalf("captured sent=%d received=%d of 16384 bytes; ring lost %d, queue dropped %d", got[true], got[false], stats.KernelLost.Load(), stats.Dropped.Load())
 		}
 	}
 	for sent, stream := range streams {

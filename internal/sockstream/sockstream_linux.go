@@ -8,13 +8,13 @@ package sockstream
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -118,8 +118,9 @@ func Start(ctx context.Context, netNS uint64, port uint16) (<-chan Chunk, <-chan
 		defer close(chunks)
 		defer cleanup()
 		var readErr error
+		var record ringbuf.Record // Reused: decode copies the data out.
 		for {
-			record, err := reader.Read()
+			err := reader.ReadInto(&record)
 			if errors.Is(err, ringbuf.ErrClosed) && ctx.Err() != nil {
 				break
 			}
@@ -164,14 +165,13 @@ func haveSocketCookie() bool {
 }
 
 func decode(raw []byte) (Chunk, error) {
-	var header SockstreamChunkHeader
-	size := binary.Size(header)
+	// The program wrote the header in the generated layout, and the data
+	// right after it, at the C struct's size.
+	size := int(unsafe.Sizeof(SockstreamChunkHeader{}))
 	if len(raw) < size {
 		return Chunk{}, fmt.Errorf("short socket stream record")
 	}
-	if err := binary.Read(bytes.NewReader(raw[:size]), binary.NativeEndian, &header); err != nil {
-		return Chunk{}, err
-	}
+	header := *(*SockstreamChunkHeader)(unsafe.Pointer(&raw[0]))
 	if int(header.Len) > len(raw)-size || header.Direction < 1 || header.Direction > 2 || header.Protocol != 6 && header.Protocol != 17 {
 		return Chunk{}, fmt.Errorf("invalid socket stream record")
 	}
