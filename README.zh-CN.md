@@ -4,11 +4,11 @@
 
 `socktrail` 是 Linux 终端实时流量观察程序。它从所选接口采集报文，并结合 eBPF 事件和内核 socket 表，在同一界面显示连接、进程、IP 流量、应用协议和可见的域名证据。IP 报文字节与进程 socket I/O 分开统计。
 
-目前是原型：本机 Linux 6.8 上做过实机验证；其他几个 5.10 到 7.0 的内核只在虚拟机中验证了探针加载和回环流量。NAT 在本机网络命名空间网关中验收过；容器网络和 arm64 尚未验收。具体范围见 [验证记录](docs/validation.md)。
+目前是原型：本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9、10）和 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量。NAT 在本机网络命名空间网关中验收过，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过；容器网络尚未验收。具体范围见 [验证记录](docs/validation.md)。
 
 ## 构建与运行
 
-运行需要 Linux，以及支持 BTF、fentry/fexit 和 BPF ring buffer 的内核。从源码构建需要 Go 1.27。仓库包含生成的 eBPF 对象，普通构建不需要 clang。建议用 `CGO_ENABLED=0` 构建静态二进制。
+运行需要 Linux，以及支持 BTF、fentry/fexit 和 BPF ring buffer 的内核：x86-64 需 5.10 及以上，arm64 需 6.4 及以上（arm64 的 fentry 依赖 6.4 才有的 ftrace 直接调用）。从源码构建需要 Go 1.27。仓库包含生成的 eBPF 对象，普通构建不需要 clang。建议用 `CGO_ENABLED=0` 构建静态二进制。
 
 也可以从 [GitHub Releases](https://github.com/jimyag/socktrail/releases) 直接下载未压缩的 Linux amd64、arm64 二进制。以下命令按当前架构下载最新版本、核对 SHA-256，并安装到 `/usr/local/bin`：
 
@@ -16,17 +16,18 @@
 curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
 ```
 
-目标目录不可写时会请求 `sudo`；安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
+目标目录不可写时会请求 `sudo`。v0.0.1 之后的版本带构建来源证明，装有 2.49 及以上版本并已登录的 GitHub CLI 时，安装脚本还会用 `gh attestation verify` 确认二进制出自本仓库的发布流程；否则只核对 SHA-256。安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
 sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface br0
+sudo ./socktrail --interface br0 --duration 30s --output json
 ./socktrail --version
 ```
 
-默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG；文件可能包含明文应用数据。其他参数、交互和录制边界见 [使用指南](docs/usage.md)。
+默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/usage.md)。
 
 不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)。
 
@@ -41,8 +42,18 @@ sudo ./socktrail --interface lo --interface br0
 | [验证记录](docs/validation.md) | 已验证的内核与场景、性能和剩余缺口 |
 | [后续计划](docs/roadmap.md) | 待做的发布、CI、功能、资源与验收事项及做法 |
 
-设计和实现约定见 [开发说明](docs/development.md)，页面布局见 [界面说明](docs/ui-design.md)。
+页面布局见 [界面说明](docs/ui-design.md)，与 RustNet 的功能对照见 [协议与功能对照](docs/rustnet-comparison.md)。
+
+## 开发与 CI
+
+```sh
+go vet ./...
+go test -race ./...
+CGO_ENABLED=0 go build ./cmd/socktrail
+```
+
+GitHub Actions 在推送到 `main` 和 PR 时检查格式、vet 和测试；在 amd64、arm64 两种 runner 上以 root 运行探针、socket 层读取、抓包环和 conntrack 的测试，再用 [test/smoke.sh](test/smoke.sh) 对测试流量做一次 JSON 快照核对；另检查提交的 eBPF 对象与源码一致（按 `go generate ./internal/...` 重新生成后逐字节比较）。[内核矩阵](.github/workflows/kernels.yaml)每周以及探针源码变化时，用 [test/vm/run.sh](test/vm/run.sh) 在 QEMU 里启动 [kernels.txt](test/vm/kernels.txt) 列出的发行版内核跑一遍；本地可直接运行 `test/vm/run.sh amd64` 或 `test/vm/run.sh arm64`。
 
 ## 发布
 
-推送 `v*` tag 后，GitHub Actions 先执行检查，再使用 GoReleaser 发布 Linux amd64、arm64 静态二进制和 `checksums.txt` 到 [GitHub Releases](https://github.com/jimyag/socktrail/releases)。`socktrail --version` 输出 tag、构建时间和 Go 版本。发布前可运行 `goreleaser release --snapshot --clean` 验证构建；arm64 目前仅完成编译，尚未做运行验收。
+推送 `v*` tag 后，GitHub Actions 先执行检查，再使用 GoReleaser 发布 Linux amd64、arm64 静态二进制和 `checksums.txt` 到 [GitHub Releases](https://github.com/jimyag/socktrail/releases)，并为它们生成构建来源证明，可用 `gh attestation verify socktrail_linux_amd64 --repo jimyag/socktrail` 核对。`socktrail --version` 输出 tag、构建时间和 Go 版本。发布前可运行 `goreleaser release --snapshot --clean` 验证构建。

@@ -241,21 +241,110 @@ conntrack 查询 14 次，全部查到改写。长稳负载下另跑的 20 秒�
 - 过滤：单元测试确认过滤框可以输入 `quic`，`Ctrl-C` 仍然退出；主表、帮助、状态页按 `q` 仍是一次退出。
 - 挂断：在 PTY 里运行界面，探针就绪后关闭 PTY 主端，程序 2.3 秒后退出，没有残留进程。此前一次长稳测试里，PTY 关闭后程序一直运行，那次是用 `nohup` 启动的，子进程继承了被忽略的 SIGHUP，不代表正常挂断时的行为。现在挂断信号会走正常退出流程，输入读到 EOF 或出错也会退出；SIGHUP 在启动时就被忽略的（`nohup`）保持忽略。
 
+## 2026-09-24 路线图补充
+
+本轮实现了路线图里的内核重传计数、kTLS 字节、DNS 时延、`INCOMPLETE` 分项、h2c 升级、TLS 服务端乱序、JSON 快照、预触发录制、每条流的内存、arm64、CI 和发布来源证明。`go vet ./...`、`go test -race ./...` 通过；本机 6.8 上 probe、sockstream、capture、conntrack 的测试以 root 全部通过，其中 probe 包 5 项、sockstream 包 2 项。
+
+### 内核矩阵
+
+虚拟机工具已放进仓库的 `test/vm/`：`run.sh` 按 [kernels.txt](../test/vm/kernels.txt) 下载发行版内核（Debian/Ubuntu 取 Packages 索引里最新的包，CentOS Stream 在对应镜像里用 dnf 下载），把 socktrail、四个包的 root 测试、Debian 12 的 openssl 客户端和一个 Go init 打进 initramfs，在 QEMU 里启动，按 init 打印的 `VM-RESULT` 行判定。amd64 有 KVM 时每个内核约 20 秒；arm64 在 x86 宿主上用 TCG 模拟，每个内核约 8 分钟。
+
+| 内核 | 结果 |
+| --- | --- |
+| amd64：Debian 11 5.10，Ubuntu 5.11、5.13、5.15、6.8、6.17、7.0，CentOS Stream 9 5.14、10 6.12 | 各 16 项通过、3 项跳过；回环快照 8 条流，AF_PACKET 丢包 0，OpenSSL SNI 事件 2 个 |
+| arm64：mainline 6.4、Ubuntu 6.8 | 同上，OpenSSL 探针按 arm64 寄存器读参数，PID 与 SNI 都对 |
+| arm64：Debian 12 6.1、Ubuntu 6.2、mainline 6.3 | 挂载 fentry/fexit 报 `create raw tracepoint: not supported`；arm64 的 ftrace 直接调用在 6.4 合入，所以 6.4 是 arm64 的最低版本，程序报错时提示这一点 |
+
+跳过的 3 项是重传与 DNAT 测试（镜像里没有 nft）和 kTLS 测试（镜像里没有 tls 模块），这三项在本机和 CI runner 上运行。
+
+arm64 上 sockstream 的测试起初失败两项，查下来都是测试本身的问题。一是它按“内核地址高于 `0xffff800000000000`”区分地址和 cookie，arm64 的内核地址从 `0xffff000000000000` 开始，改为看最高位。二是接收方向总差几个数据块：带时间戳复测，全部读调用 56 ms 内完成，数据块却每 0.5 秒才被消费一个，原因是测试对每个块都调用一次 cookie 支持探测，它要加载一个 BPF 程序，在 TCG 下将近一秒；产品代码只在启动时探测一次。改为只探测一次后两项通过。排查中用单线程 TCG 排除了多线程 TCG 内存序的影响。
+
+### 重传、kTLS 与 DNS 时延
+
+- 重传：root 测试在私有网络命名空间里用 nft 按比例丢包，传 1 MiB，探针报告的最大值与 `TCP_INFO` 的 `total_retrans` 相等；另一项让 SYN 连不上的端口重传两次以上，数值同样相等。起初少计一次，原因是尾部丢失探测直接调用 `__tcp_retransmit_skb`，补挂 `tcp_send_loss_probe` 后一致。端到端：veth 上加 `netem delay 20ms loss 3%`，从主机向实验命名空间发 6 MiB 后保持连接，`ss -ti` 显示 `retrans:0/127`，socktrail 的 JSON 快照为 `retransmits=127`、来源 `kernel`。
+- kTLS：root 测试给回环连接设 `TCP_ULP tls` 和 AES-GCM 密钥（发送端 TLS_TX，接收端 TLS_RX），两个方向各 64 KiB，探针计到的字节与写入的一致。本机 openssl 3.0.13 没有启用 kTLS，没有用 `s_server` 做端到端验证。
+- DNS 时延：实验命名空间里的应答程序出口加 `netem delay 50ms`，主机用 dig 查询 3 次，dig 显示 49 ms，socktrail 显示 `rtt=50.1ms`。时延加在主机一侧出口时 socktrail 显示约 100 µs：AF_PACKET 在报文经过本机 qdisc 之后才抓到它，本机排队不在测量范围内，文档已写明。
+
+### 真实服务的协议标签
+
+用 docker `--network host` 在本机运行各服务，流量走 lo，用各自的客户端发请求，socktrail 抓 lo 做 JSON 快照：
+
+| 服务与客户端 | APP | 进程 |
+| --- | --- | --- |
+| apache/kafka，kafka-topics.sh | Kafka | kafka-admin-cli → data-plane-kafka |
+| rabbitmq:3，Python pika | AMQP | python3 → erts_sched |
+| nats，nc 和 Python nats-py | NATS | nc、python3 → nats-server |
+| zookeeper:3.9，zkCli.sh | ZooKeeper | main-SendThread → NIOServerCxnFactory |
+| memcached，nc 和 pymemcache | Memcached | nc、python3 → memcached |
+| mssql/server:2022，sqlcmd | SQL Server | sqlcmd → sqlservr |
+| cassandra:5，cqlsh | Cassandra | python3 → epollEventLoopGroup |
+| osixia/openldap，ldapsearch | LDAP | ldapsearch → slapd |
+| MIT krb5 KDC，kinit 走 TCP 和 UDP | Kerberos | kinit → krb5kdc |
+| grpc-go helloworld，同一连接 5 次调用 | gRPC，`HTTP/2 localhost`，请求数 5 | grpc-client → grpc-server |
+
+第一次运行发现并修正了四个问题：
+
+- NATS 客户端先发 `CONNECT {...}`，被当成 HTTP CONNECT，标签是 HTTP 且记为解析失败。现在 HTTP 请求行要求目标像路径、URI 或 authority。
+- memcached 的 `stats\r\n` 没被识别：命令按空格切分，不带参数的命令后面没有空格。
+- sqlcmd 的连接显示成 `PROXY 0.0.1.0`：socket 层把服务端 TDS pre-login 应答（`04 01 00 30 …`，结构上是一个 SOCKS4 CONNECT 请求）当成了客户端字节。现在发起方已知时只采用来自客户端的字节。
+- nc 发的 13 字节 memcached 命令和 Cassandra 9 字节的 OPTIONS 帧不足以分辨协议，30 秒后被记成解析超时。现在归为其他协议。
+
+修正后复测，全部标签正确，解析失败 0。Oracle TNS 和 NFS 没有用真实服务验证。
+
+### 抓包与事件的开销
+
+在主机和实验命名空间之间的 veth 上用 iperf3 加压，socktrail 只抓主机一侧，CPU 为 socktrail 进程的平均占用（1.00 为一个核），6 核 Ryzen 5 6600H：
+
+| 负载 | 报文率 | 原实现 | PID 事件直接读取 | 事件批量唤醒 |
+| --- | --- | --- | --- | --- |
+| TCP 单流 | 约 19 万/s | 0.72 | 0.65 | 0.29 |
+| TCP 4 流 | 约 60 万/s | 1.38，丢包 0.6% | 1.20，丢包 0.4% | 0.92，丢包 1.2% |
+| UDP 64 B 单流 | 约 15 万/s | 1.46 | 1.45 | 0.32 |
+| UDP 64 B 4 流 | 约 48 万/s | 1.88 | 1.57 | 1.05 |
+
+perf 显示原实现的 CPU 大半花在调度上：PID 探针每个事件都唤醒一次 ring buffer 的读取协程，再经 channel 唤醒主循环，futex、epoll 和 Go 调度器占了六成，事件处理本身只有一成；另有一成是 `encoding/binary` 反射解码。改为 ring 积压 512 KiB 才唤醒、读取方每 100 ms 兜底读一次，事件按块交给主循环后，四档负载的 CPU 降到原来的 22% 到 67%。中途一版仍逐个事件送主循环，批量到达的事件把 2,048 个槽位的 channel 撑满，丢了四成事件，所以改成按块传递；最终各档负载下 PID 事件丢失都是 0。
+
+TCP 4 流的丢包不是主循环跟不上：此时 socktrail 用了不到一个核。每个 GSO 帧截到 16 KiB 后占环里 16.6 KB，4 MiB 的环只放得下约 240 帧，60 万帧/秒下缓冲不到 0.5 ms。临时把环改成 16 MiB，两轮丢包分别是 2,168 和 1。现在各接口的环共分 16 MiB、每个至少 4 MiB，单接口复测丢包 0.13%。多队列的 `PACKET_FANOUT` 因此没有实现。
+
+### 内存与 GC
+
+基准测试构造 1 万条完成 TLS 握手的流，GC 后的存活堆从每条 2,149 B 降到 1,541 B：流结构里只有 DNS、ICMP 流用到的状态改为指针（流结构从 1,152 B 的分配规格降到 768 B），流解析器的 HTTP/2 状态和两个 map 改为按需分配，整机视图每秒重建时不再给每条流新建空 map。
+
+GC 目标用最耗内存的场景评估：界面在 PTY 里运行 3 分钟，只抓一个 veth，每秒 300 条短连接，流表常驻约 1.8 万条已关闭的流。
+
+| 设置 | RSS 峰值 | RSS 平均 | CPU |
+| --- | --- | --- | --- |
+| 默认（GOGC=100） | 257 MiB | 213 MiB | 0.21 |
+| GOGC=50 | 204 MiB | 174 MiB | 0.25 |
+| GOMEMLIMIT=64MiB | 152 MiB | 137 MiB | 6.68 |
+
+GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时可自行设置环境变量；内存上限低于存活堆时 GC 不停运行，占满了 Go 允许 GC 使用的一半 CPU，不能固定写进程序。
+
+### 其他场景
+
+- PID 复用：一个进程发 1,000 B 后退出，写 `ns_last_pid` 让下一个 fork 拿到同一个 PID，它再发 2,000 B。快照里两个身份分开：同一 PID、启动时间相差 0.51 秒，各自的连接和字节正确。
+- fd 传递：建立连接的进程写 1,000 B 后用 `SCM_RIGHTS` 把 socket 传给另一个进程，后者写 2,000 B。两个进程的 socket TX 分别是 1,000 B 和 2,000 B，服务端 RX 3,000 B；连接的发起方仍是建立连接的进程。
+- 网桥：两个命名空间接在主机网桥的两个端口上，互相访问。网桥设备本身看不到这些桥接流量（socktrail 不开混杂模式）；端口上能看到 HTTP（Host 正确）、ICMP 和 ARP，没有进程，方向按该端口的收发显示为 inbound。
+- 预触发录制：`--record-before 10s` 下，一个进程每 200 ms 在一条连接上写一行，约 9 秒后在界面里过滤出它的 PID 并按 `c`，3 秒后停止。文件共 131 个包，按键前的 101 个从这条连接的 SYN 开始，tcpdump 能读。
+- JSON 快照：与文本快照同一份数据，单元测试核对字段名；本机、真实服务和实验网络的验证都用它取数。
+- h2c 升级和 TLS 服务端乱序：单元测试覆盖升级成功与被拒两种情况，以及服务端第 2、3 个报文交换顺序后仍取到证书名。
+- 安装脚本：从固定的 release tag 下载，v0.0.1 路径实测可用；来源证明要到下一个版本才有，`gh attestation verify` 分支尚未实际运行。
+
 ## 尚未完成的验收
 
 后续要做的事项和做法见 [后续计划](roadmap.md)。
 
-- 真正的操作系统 PID 数值复用仍未在实机强制复现；目前 PID 身份包含进程启动时间，且有同 PID、不同启动时间的代次单元测试。共享 socket 的 `accept`/读写由不同进程执行已实测，但 fd 传递、多个写者和更复杂的 socket 交接仍需验证。
-- 桥接转发、容器网络、非当前网络命名空间的 PID/方向验证。NAT 只在本机网络命名空间搭的网关上验收了 SNAT、DNAT 和本机 OUTPUT DNAT；conntrack zone 非 0 的条目（部分 OVS、CNI 场景）查不到，未验证。多接口已能分别观察，整机页按同五元组、同 TCP 代次或 conntrack 元组合并观测，“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
-- `sendfile` 与 splice（写 socket、读 socket）的计数已在 5.10 至 7.0 的虚拟机和本机 6.8 上由 root 测试核对；内核 TLS 及其他零拷贝路径仍未验证。目前 PID 应用字节只承诺已挂探针的返回值，其他路径可能少计。
+- 容器网络，以及非当前网络命名空间的 PID 与方向：探针只统计当前网络命名空间的 socket，其他命名空间的流量只有报文。桥接只验证了抓网桥端口的情况，同时抓两个端口时整机页按规则会合成一条 `forwarded` 连接，没有实测。NAT 只在本机网络命名空间搭的网关上验收了 SNAT、DNAT 和本机 OUTPUT DNAT；conntrack zone 非 0 的条目（部分 OVS、CNI 场景）查不到。“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
+- `sendfile`、splice 和内核 TLS 的计数由 root 测试核对；io_uring 的零拷贝发送等其他路径没有验证，PID 应用字节只承诺已挂探针的返回值。
 - 探针挂载前已经进入阻塞 `recvfrom` 的 UDP 服务，首次返回可能少计；服务进程在探针之后启动的对照场景两端各为 RX/TX 5 B。启动时抓取的中途连接和调用不能补历史数据。Linux 6.8 以前的内核没有 `__inet_accept`，回退到 `inet_csk_accept` 的 fexit 已在 5.10 至 5.15 上加载并收到 accept 事件，但挂载前就阻塞着的第一次 accept 仍会漏掉，只能靠 socket 表补上仍存在的连接。
 - 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
-- 旧内核只在虚拟机里验证了回环流量；arm64（fentry 要到 6.0 才支持）、RHEL 这类大量回移特性的内核都没有测。
-- socket 层读取在高并发短连接和大吞吐下的开销未测；UDP 只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。
-- 抓包性能只在两张 veth 之间测过（20 Gbps TCP、每秒约 10 万个 64 B UDP 报文），物理网卡、多队列 RSS、百万级 pps 没有测；长稳运行只做了 1 小时。另外还缺物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
+- 其他内核只在虚拟机里验证了回环流量；arm64 只在 x86 宿主的模拟器里跑过，没有在 arm64 实机上运行；RHEL 系只测了 CentOS Stream 9、10。
+- UDP 的 socket 层读取只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。
+- 抓包性能只在 veth 上测过（每秒约 60 万个 TCP 帧、48 万个 64 B UDP 报文），物理网卡、多队列 RSS、百万级 pps 没有测；长稳运行只做了 1 小时。另外还缺物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
 - ICMP 只有 Echo 请求能归属进程：带 `IP_HDRINCL` 的原始 socket 自己拼 IP 头，其中的 ICMP 不识别；Echo 以外的 ICMP 与其他协议的原始 socket 流量没有进程。tun 接口帧的录制只在单元测试里经 tcpdump 解码，没有在真实 tun 接口上经 TUI 录制并用 Wireshark 核对；跨接口非对称路径的 PCAPNG 导出也没有核对。
-- QUIC v2 目前只有 RFC 官方加密向量，没有本机真实 v2 客户端；QUIC v1 已完成本机真实握手样本。QUIC 长连接同五元组重用、极限乱序/丢包、真实 ECH 和 HTTP/3 加密的 `:authority` 尚未验收或实现。明文 HTTP/2 只用 curl 的 prior knowledge 请求和单元测试构造的 gRPC 帧验证过，没有真实 gRPC 服务的长连接样本；经 HTTP/1.1 `Upgrade: h2c` 升级的连接不解析。
+- QUIC v2 目前只有 RFC 官方加密向量，没有本机真实 v2 客户端；QUIC v1 已完成本机真实握手样本。QUIC 长连接同五元组重用、极限乱序/丢包、真实 ECH 和 HTTP/3 加密的 `:authority` 尚未验收或实现。经 HTTP/1.1 `Upgrade: h2c` 升级的连接只有单元测试，没有真实客户端样本。
 - OpenSSL 进程探针目前仅覆盖系统动态库及已验证的 fd 或同线程 `SSL_connect`/TCP 发送关联路径；其他自定义 BIO 路径、Go TLS、静态链接 TLS、其他 TLS 库与解密后 HTTP/2/3 请求域名未覆盖。正常抓到 ClientHello 时，进程 SNI 通常与报文 SNI 重合，不能保证“所有 HTTPS 域名”。
-- TLS 服务端解析只接受按序报文，服务端首批报文乱序或缺段时不给出版本和证书名；证书名只用 openssl 自签名证书和 Go 生成的证书验证过，没有覆盖多值 RDN、超长证书链或非 DNS 形式的 SAN。Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos、Cassandra、AMQP、NFS/RPC 的识别只有构造报文的单元测试，没有真实服务样本。
+- TLS 服务端首批报文的乱序只有单元测试；证书名只用 openssl 自签名证书和 Go 生成的证书验证过，没有覆盖多值 RDN、超长证书链或非 DNS 形式的 SAN。Oracle TNS 和 NFS/RPC 的识别只有构造报文的单元测试。
+- 发布来源证明要到 v0.0.1 之后的第一个版本才会生成，安装脚本里 `gh attestation verify` 的分支还没有实际运行过。
 
 IP、协议、域名界面及连接报告的字节取捕获 IP 报文长度；整机页对每条逻辑流只选一个采集点，不能当作精确整机 IP 总量。PID 页和报告末尾的 PID 汇总取 eBPF socket 事件的应用读写字节，两者不相加。`AF_PACKET delivered` 是内核交付给抓包 socket 的数量，包含后来因 `lo` 去重、非 IP 或解析条件而未计入的报文，不能直接与 `IP packets` 相减来当作丢包数。测试用服务为临时进程，不作为程序的一部分。

@@ -45,6 +45,14 @@ sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' 
 
 文件保存**实际捕获到的原始帧**，录制期间抓包环保留完整帧（最长 64 KiB；平时每帧只留前 16 KiB 多一点，按 `c` 时已在环里的少数帧仍是这个长度，文件记下了它们的原始长度，Wireshark 会显示为截断），明文应用数据可能包含在内；只有按 `c` 后才创建。单连接录制选择一个采集接口，可能漏掉走另一接口的反向报文；PID 录制覆盖所有已选接口，同一报文跨接口可在文件内重复出现。PID 和域名注释来自录制时已关联的证据，晚到事件不会回填。录制期间仍需关注状态页的采集丢包。
 
+问题出现时再按 `c` 往往已经错过。用 `--record-before 10s` 启动时，程序一直在内存里保留最近 10 秒的帧（总量最多 32 MiB，超出时先丢最旧的），按 `c` 后文件先写入其中属于所选连接或 PID 的帧，再接着录后续 15 秒：
+
+```sh
+sudo ./socktrail --interface eth0 --record-before 10s
+```
+
+这些历史帧按平时的长度截断（前 16 KiB 多一点），归属按帧到达时所在的流判断；PID 录制时按按下 `c` 那一刻的进程关联挑选。开启后每个帧都要复制一份，高负载下会多占 CPU 和最多 32 MiB 内存，所以默认关闭；它只用于交互界面，不能和 `--duration` 一起使用。
+
 ## 页面与接口选择
 
 默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。顶部的 `a OVERVIEW` 表示按 `a` 回到多网卡合并视图；`OVERVIEW` 是界面范围，和 HTTP `Host` 域名无关。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览；选中网卡按 `Enter` 进入该网卡详情。需要排查采集路径时可按 `i` 逐张切换。
@@ -74,3 +82,42 @@ sudo ./socktrail --interface lo --duration 15s
 sudo ./socktrail --duration 15s
 sudo ./socktrail --interface lo --duration 15s --port 443
 ```
+
+时长从探针加载完、开始抓包时算起。快照按字节列出前 `--limit` 条连接（默认 30），已关闭的连接保留 1 分钟、其余 5 分钟没有报文后过期，不再列出，只计入过期数。
+
+## JSON 快照
+
+`--output json` 把同一份快照写成 JSON，只能和 `--duration` 一起用；标准输出只有这一个文档，便于 `jq` 处理或前后对比：
+
+```sh
+sudo ./socktrail --interface eth0 --duration 30s --output json > snapshot.json
+jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.sni, .client.name] | @tsv' -r snapshot.json
+```
+
+字段名是接口的一部分：以后只会增加字段；删改已有字段时 `version` 加一。时间用 RFC 3339，字节都是整数，没有值的字段省略。
+
+| 字段 | 内容 |
+| --- | --- |
+| `version`、`netns`、`interfaces` | 格式版本（目前为 1）、网络命名空间 inode、采集的接口 |
+| `probes.pid` | PID 探针的 `received`、`kernel_lost`、`dropped`、`invalid` |
+| `probes.openssl`、`probes.socket_stream` | 各自的 `status` 行和同样的计数；OpenSSL 探针不统计 `kernel_lost`，恒为 0 |
+| `probes.nat` | `status`、`lookups`、`translated`、`queue_full`、`failed`、`last_error` |
+| `reports[]` | 自动选接口时一份 `scope` 为 `OVERVIEW` 的整机报告，否则每个接口一份 |
+| `reports[].*` | `ip_packets`、`ip_bytes`、`capture_delivered`、`capture_dropped`、`truncated_packets`、`expired_flows`（只有单接口报告统计）、`packets_without_flow`、`pid_index_dropped`、`parse_failures`、`https_coverage` |
+| `reports[].flows[]` | 按字节排序的前 `--limit` 条连接，字段见下表 |
+| `reports[].domains[]` | 域名页的行：`label`、`connections`、`rx_bytes`、`tx_bytes`、`http_requests`、`unknown_pid` |
+| `reports[].inbound_attempts[]` | 被拒或无应答的入站尝试：`source`、`ports`、`refused`、`unanswered` |
+| `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
+
+`flows[]` 的字段：
+
+| 字段 | 内容 |
+| --- | --- |
+| `protocol`、`app`、`state`、`direction` | 与文本表格的 PROTO、APP、STATE、DIR 相同 |
+| `source`、`target`、`initiator_unknown` | 发起方与接收方；TCP 的发起方不确定时 `initiator_unknown` 为 true，两端为观测到的原始顺序 |
+| `rx_bytes`、`tx_bytes`、`packets`、`first_seen`、`last_seen` | 采集点的 IP 字节与报文数 |
+| `syn_rtt_us`、`retransmits`、`retransmit_source` | 握手时延（微秒）和重传；后两者只对 TCP 给出，来源为 `kernel` 或 `capture` |
+| `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`；`pid` 为 -1 表示多个进程有歧义 |
+| `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |
+| `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
+| `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |
