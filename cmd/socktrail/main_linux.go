@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/jimmicro/version"
+
 	"github.com/jimyag/socktrail/internal/appproto"
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/conntrack"
