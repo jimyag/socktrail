@@ -10,7 +10,13 @@
 
 运行需要 Linux，以及支持 BTF、fentry/fexit 和 BPF ring buffer 的内核。从源码构建需要 Go 1.27。仓库包含生成的 eBPF 对象，普通构建不需要 clang。建议用 `CGO_ENABLED=0` 构建静态二进制。
 
-首次发布后，也可以从 [GitHub Releases](https://github.com/jimyag/socktrail/releases) 下载 Linux 预编译二进制。
+也可以从 [GitHub Releases](https://github.com/jimyag/socktrail/releases) 直接下载未压缩的 Linux amd64、arm64 二进制。以下命令按当前架构下载最新版本、核对 SHA-256，并安装到 `/usr/local/bin`：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
+```
+
+目标目录不可写时会请求 `sudo`；安装后运行仍需 `sudo`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail

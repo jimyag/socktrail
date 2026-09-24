@@ -44,7 +44,13 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 
 Running socktrail requires Linux and a kernel with BTF, fentry, and BPF ring buffer support. Building from source requires Go 1.27. The eBPF object files are included, so a normal build does not require clang. Run with privileges sufficient for packet capture and eBPF loading; `sudo` is the simplest option.
 
-After the first release, prebuilt Linux binaries will be available from [GitHub Releases](https://github.com/jimyag/socktrail/releases).
+Prebuilt Linux amd64 and arm64 binaries are available as uncompressed files on [GitHub Releases](https://github.com/jimyag/socktrail/releases). To download, verify, and install the latest release to `/usr/local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
+```
+
+The installer asks for `sudo` if the destination is not writable. Run the installed binary with `sudo`, or follow the [file capability setup](docs/usage.md#不使用-sudo-运行).
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
