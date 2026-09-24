@@ -10,7 +10,7 @@
 # arm64 on an x86 host runs under TCG, much more slowly. Downloads are
 # cached in $VM_CACHE (default ~/.cache/socktrail-vm) and logs are written
 # to $VM_OUT (default $TMPDIR/socktrail-vm). Exits non-zero if any kernel
-# fails or cannot be downloaded.
+# fails or cannot be downloaded, or if a named kernel is not in the list.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
@@ -125,7 +125,7 @@ done
 rm -rf "${root:?}/usr/share"
 (cd "$root" && find . | cpio -o -H newc --quiet | gzip -1) >"$out/initramfs-$arch.gz"
 
-failed=0
+failed=0 booted=0
 # The list comes on fd 3: QEMU's serial console would read stdin.
 while read -r name kernel_arch source <&3; do
 	if [ -z "$name" ] || [ "${name:0:1}" = "#" ] || [ "$kernel_arch" != "$arch" ]; then
@@ -134,6 +134,7 @@ while read -r name kernel_arch source <&3; do
 	if [ $# -gt 0 ] && ! printf '%s\n' "$@" | grep -qxF "$name"; then
 		continue
 	fi
+	booted=$((booted + 1))
 	log="$out/$arch-$name.log"
 	# shellcheck disable=SC2086 # The source is several words.
 	if ! image=$(kernel "$name" $source); then
@@ -152,4 +153,9 @@ while read -r name kernel_arch source <&3; do
 		failed=1
 	fi
 done 3<"$repo/test/vm/kernels.txt"
+# A misspelt name must not look like a kernel that passed.
+if [ "$booted" -eq 0 ] || { [ $# -gt 0 ] && [ "$booted" -ne $# ]; }; then
+	echo "kernels.txt lists $booted of the $arch kernels asked for: ${*:-any}" >&2
+	exit 1
+fi
 exit $failed

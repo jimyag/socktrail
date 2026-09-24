@@ -52,7 +52,7 @@ go test -race ./...
 CGO_ENABLED=0 go build ./cmd/socktrail
 ```
 
-GitHub Actions 在推送到 `main` 和 PR 时检查格式、vet 和测试；在 amd64、arm64 两种 runner 上以 root 运行探针、socket 层读取、抓包环和 conntrack 的测试，再用 [test/smoke.sh](test/smoke.sh) 对测试流量做一次 JSON 快照核对；另检查提交的 eBPF 对象与源码一致（按 `go generate ./internal/...` 重新生成后逐字节比较）。[内核矩阵](.github/workflows/kernels.yaml)每周以及探针源码变化时，用 [test/vm/run.sh](test/vm/run.sh) 在 QEMU 里启动 [kernels.txt](test/vm/kernels.txt) 列出的发行版内核跑一遍；本地可直接运行 `test/vm/run.sh amd64` 或 `test/vm/run.sh arm64`。
+GitHub Actions 在推送到 `main` 和 PR 时检查格式、vet 和测试；在 amd64、arm64 两种 runner 上以 root 运行探针、socket 层读取、抓包环和 conntrack 的测试，再用 [test/smoke.sh](test/smoke.sh) 对测试流量做一次 JSON 快照核对；另检查提交的 eBPF 对象与源码一致（按 `go generate ./internal/...` 重新生成后逐字节比较）。[内核矩阵](.github/workflows/kernels.yaml)每周以及探针源码变化时，用 [test/vm/run.sh](test/vm/run.sh) 在 QEMU 里启动 [kernels.txt](test/vm/kernels.txt) 列出的发行版内核，每个内核一个作业、并行运行；本地可直接运行 `test/vm/run.sh amd64` 或 `test/vm/run.sh arm64`，后面可跟内核名只跑其中几个。
 
 ## 发布
 
