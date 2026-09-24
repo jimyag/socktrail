@@ -1,0 +1,184 @@
+package probe
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
+	"github.com/cilium/ebpf/rlimit"
+
+	"github.com/jimyag/socktrail/internal/kernelbtf"
+)
+
+// StartEmbedded attaches the compiled eBPF probes. The executable contains
+// their bytecode and does not invoke a separate tracing process at runtime.
+func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan Event, <-chan error, *Statistics, error) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return nil, nil, nil, fmt.Errorf("remove eBPF memlock limit: %w", err)
+	}
+	spec, err := LoadBpf()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read embedded eBPF programs: %w", err)
+	}
+	// Only one accept probe loads: __inet_accept exists from Linux 6.8, and
+	// inet_csk_accept took a different signature in 6.10.
+	if kernelbtf.Params("__inet_accept") >= 0 {
+		delete(spec.Programs, "tcp_accept_exit")
+	} else {
+		delete(spec.Programs, "inet_accept_entry")
+	}
+	kernelbtf.KeepRecvmsgVariants(spec, "tcp_recv_exit", "udp_recv_exit", "udpv6_recv_exit")
+	objects, err := ebpf.NewCollection(spec)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load embedded eBPF programs (need BTF and CAP_BPF/CAP_PERFMON): %w", err)
+	}
+	key := uint32(0)
+	if err := objects.Maps["settings"].Update(key, BpfConfig{Netns: netNS, Port: port}, ebpf.UpdateAny); err != nil {
+		objects.Close()
+		return nil, nil, nil, fmt.Errorf("configure eBPF network namespace: %w", err)
+	}
+	var links []link.Link
+	for name, program := range objects.Programs {
+		attached, err := link.AttachTracing(link.TracingOptions{Program: program})
+		if err != nil {
+			for _, previous := range links {
+				previous.Close()
+			}
+			objects.Close()
+			return nil, nil, nil, fmt.Errorf("attach eBPF probe %s: %w", name, err)
+		}
+		links = append(links, attached)
+	}
+	reader, err := ringbuf.NewReader(objects.Maps["events"])
+	if err != nil {
+		for _, attached := range links {
+			attached.Close()
+		}
+		objects.Close()
+		return nil, nil, nil, fmt.Errorf("open eBPF event ring: %w", err)
+	}
+	events := make(chan Event, 2048)
+	done := make(chan error, 1)
+	stats := new(Statistics)
+	pollCtx, stopPoll := context.WithCancel(ctx)
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var lost uint64
+				if err := objects.Maps["lost"].Lookup(key, &lost); err == nil {
+					stats.KernelLost.Store(lost)
+				}
+			case <-pollCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		reader.Close()
+	}()
+	go func() {
+		defer close(events)
+		defer objects.Close()
+		defer func() {
+			for _, attached := range links {
+				attached.Close()
+			}
+		}()
+		var readErr error
+		for {
+			record, err := reader.Read()
+			if errors.Is(err, ringbuf.ErrClosed) && ctx.Err() != nil {
+				break
+			}
+			if err != nil {
+				readErr = fmt.Errorf("read eBPF event ring: %w", err)
+				break
+			}
+			var raw BpfEvent
+			if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &raw); err != nil {
+				stats.Invalid.Add(1)
+				continue
+			}
+			event, err := decodeEvent(raw)
+			if err != nil {
+				stats.Invalid.Add(1)
+				continue
+			}
+			stats.Received.Add(1)
+			select {
+			case events <- event:
+			default:
+				stats.Dropped.Add(1)
+			}
+		}
+		var lost uint64
+		stopPoll()
+		<-pollDone
+		if err := objects.Maps["lost"].Lookup(key, &lost); err == nil {
+			stats.KernelLost.Store(lost)
+		}
+		done <- readErr
+	}()
+	return events, done, stats, nil
+}
+
+func decodeEvent(raw BpfEvent) (Event, error) {
+	var local, remote netip.Addr
+	switch raw.Family {
+	case 4:
+		local = netip.AddrFrom4([4]byte(raw.LocalIp[:4]))
+		remote = netip.AddrFrom4([4]byte(raw.RemoteIp[:4]))
+	case 6:
+		local = netip.AddrFrom16(raw.LocalIp)
+		remote = netip.AddrFrom16(raw.RemoteIp)
+	default:
+		return Event{}, fmt.Errorf("invalid eBPF address family %d", raw.Family)
+	}
+	role := "out"
+	if raw.Role == 2 {
+		role = "in"
+	} else if raw.Role != 1 {
+		return Event{}, fmt.Errorf("invalid eBPF socket role %d", raw.Role)
+	}
+	if raw.Protocol != 6 && raw.Protocol != 17 && raw.Protocol != 1 && raw.Protocol != 58 {
+		return Event{}, fmt.Errorf("invalid eBPF protocol %d", raw.Protocol)
+	}
+	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv"}[raw.Operation]
+	if operation == "" {
+		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
+	}
+	name := make([]byte, 0, len(raw.Comm))
+	for _, c := range raw.Comm {
+		if c == 0 {
+			break
+		}
+		name = append(name, byte(c))
+	}
+	return Event{
+		Protocol:  raw.Protocol,
+		Family:    int(raw.Family),
+		Role:      role,
+		Operation: operation,
+		AppBytes:  raw.AppBytes,
+		PID:       int(raw.Pid),
+		StartNS:   raw.StartNs,
+		Process:   strings.TrimSpace(string(name)),
+		NetNS:     raw.Netns,
+		Local:     netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
+		Remote:    netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
+	}, nil
+}
