@@ -16,6 +16,11 @@ type failureGroup struct {
 	Flows       []*flow
 }
 
+type failureItem struct {
+	id   uint64
+	flow *flow
+}
+
 func (s *hostViewState) failureGroups(scope *processScope, host *collector) []failureGroup {
 	type key struct {
 		reason  string
@@ -53,7 +58,15 @@ func (s *hostViewState) failureGroups(scope *processScope, host *collector) []fa
 	}
 	result := make([]failureGroup, 0, len(groups))
 	for _, group := range groups {
-		slices.Sort(group.IDs)
+		// Keep IDs paired with their flows for consumers that select a subset.
+		items := make([]failureItem, len(group.IDs))
+		for i, id := range group.IDs {
+			items[i].id, items[i].flow = id, group.Flows[i]
+		}
+		slices.SortFunc(items, func(a, b failureItem) int { return cmp.Compare(a.id, b.id) })
+		for i, item := range items {
+			group.IDs[i], group.Flows[i] = item.id, item.flow
+		}
 		result = append(result, *group)
 	}
 	slices.SortFunc(result, func(a, b failureGroup) int {

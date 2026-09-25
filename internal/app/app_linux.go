@@ -1149,6 +1149,7 @@ func Run() error {
 	flag.Var(&interfaceNames, "interface", "network interfaces to observe (repeat or comma-separate names or glob patterns; default: up to 8, physical first)")
 	duration := flag.Duration("duration", 0, "stop after this duration (default: until Ctrl-C)")
 	limit := flag.Int("limit", 30, "number of flows to print")
+	filterExpression := flag.String("filter", "", "filter displayed flows (for example 'port:443 dir:outbound proc:curl')")
 	port := flag.Uint("port", 0, "only index wire flows containing this port; PID socket I/O remains netns-wide")
 	debugPID := flag.Bool("debug-pid-events", false, "print raw PID association events to stderr")
 	showEnvSecrets := flag.Bool("show-env-secrets", false, "show credential-like environment values in process details (default: hidden)")
@@ -1170,6 +1171,10 @@ func Run() error {
 	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
 	flag.Var(&filter.containers, "container", "show only containers by name, Compose service, Pod, or 12+ character ID prefix (repeat or comma-separate)")
 	flag.Parse()
+	compiledFilter, err := parseFilter(*filterExpression)
+	if err != nil {
+		return fmt.Errorf("--filter: %w", err)
+	}
 	extraDoHNames = nil
 	for name := range strings.SplitSeq(*dohList, ",") {
 		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
@@ -1206,7 +1211,6 @@ func Run() error {
 	if *recordBefore > 0 && (*duration > 0 || *output == "ndjson") {
 		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
 	}
-	var err error
 	interfaceNames, err = resolveInterfaces(interfaceNames)
 	if err != nil {
 		return err
@@ -1356,6 +1360,7 @@ func Run() error {
 			ui.geoMessage = "GeoIP unavailable; g to download"
 		}
 		ui.processes, ui.scopeFilter = processes, filter
+		ui.filter = *filterExpression
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
 		if autoInterfaces {
@@ -1478,7 +1483,7 @@ func Run() error {
 				if streamEncoder != nil {
 					scope := newProcessScope(processes, filter)
 					for _, change := range hostState.lastChanges {
-						if !scope.flow(change.Flow, host) {
+						if !scope.flow(change.Flow, host) || !matchesFilter(compiledFilter, change.Flow, host, processes, geo, "") {
 							continue
 						}
 						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
@@ -1489,7 +1494,7 @@ func Run() error {
 						lastOutput[change.ID] = time.Now()
 					}
 					for id, f := range hostState.displayed {
-						if last := lastOutput[id]; f.End != flowOngoing || last.IsZero() || time.Since(last) < *refresh || !scope.flow(f, host) {
+						if last := lastOutput[id]; f.End != flowOngoing || last.IsZero() || time.Since(last) < *refresh || !scope.flow(f, host) || !matchesFilter(compiledFilter, f, host, processes, geo, "") {
 							continue
 						}
 						row := jsonFlowFor(f, id, processes, geo)
@@ -1735,19 +1740,35 @@ func Run() error {
 		correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 		hostState.update(host, members)
 		if autoInterfaces {
-			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo, hostState.displayedIDs())}
+			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo, hostState.displayedIDs(), compiledFilter)}
 		} else {
 			for _, name := range interfaceNames {
-				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope, geo, nil))
+				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope, geo, nil, compiledFilter))
 			}
 		}
-		snapshot.Filter = filter.String()
+		snapshot.Filter = strings.TrimSpace(filter.String() + " " + *filterExpression)
 		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit, processes, scope)
 		snapshot.Services = servicesJSON(host, processes, scope)
 		for _, group := range hostState.failureGroups(scope, host) {
+			var ids []uint64
+			var first, last time.Time
+			for i, f := range group.Flows {
+				if matchesFilter(compiledFilter, f, host, processes, geo, "") {
+					ids = append(ids, group.IDs[i])
+					if first.IsZero() || f.Last.Before(first) {
+						first = f.Last
+					}
+					if f.Last.After(last) {
+						last = f.Last
+					}
+				}
+			}
+			if len(ids) == 0 {
+				continue
+			}
 			snapshot.Failures = append(snapshot.Failures, jsonFailure{
 				Reason: group.Reason, Process: group.Process.Name, PID: group.Process.PID,
-				Target: group.Target.String(), Count: len(group.IDs), First: group.First, Last: group.Last, IDs: group.IDs,
+				Target: group.Target.String(), Count: len(ids), First: first, Last: last, IDs: ids,
 			})
 		}
 		encoder := json.NewEncoder(os.Stdout)
@@ -1764,10 +1785,10 @@ func Run() error {
 		correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 		if autoInterfaces {
 			hostState.update(host, members)
-			printReport(*host, "OVERVIEW", *limit, probeStats, scope)
+			printReport(*host, "OVERVIEW", *limit, probeStats, scope, flowFilter{compiledFilter, processes, geo})
 		} else {
 			for _, name := range interfaceNames {
-				printReport(*collectors[name], name, *limit, probeStats, scope)
+				printReport(*collectors[name], name, *limit, probeStats, scope, flowFilter{compiledFilter, processes, geo})
 			}
 		}
 		printPIDIO(collectors[interfaceNames[0]], *limit, processes, scope)
@@ -1783,6 +1804,21 @@ func reportFlows(c *collector, scope *processScope) []*flow {
 	return flows
 }
 
+type flowFilter struct {
+	conditions []condition
+	processes  *processTable
+	geo        *geoip.DB
+}
+
+func (selection flowFilter) apply(flows []*flow, c *collector) []*flow {
+	if len(selection.conditions) == 0 {
+		return flows
+	}
+	return slices.DeleteFunc(flows, func(f *flow) bool {
+		return !matchesFilter(selection.conditions, f, c, selection.processes, selection.geo, "")
+	})
+}
+
 func parseFailures(flows []*flow) int {
 	var failures int
 	for _, f := range flows {
@@ -1793,8 +1829,11 @@ func parseFailures(flows []*flow) int {
 	return failures
 }
 
-func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics, scope *processScope) {
+func printReport(c collector, interfaceName string, limit int, probeStats *probe.Statistics, scope *processScope, selection ...flowFilter) {
 	flows := reportFlows(&c, scope)
+	if len(selection) > 0 {
+		flows = selection[0].apply(flows, &c)
+	}
 	if interfaceName == "OVERVIEW" {
 		fmt.Printf("\nOVERVIEW: %d observed flows; IP bytes below use one capture point per flow, not an exact whole-host total; a NAT's two tuples are one flow once conntrack links them\n", len(flows))
 	} else {

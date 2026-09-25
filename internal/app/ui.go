@@ -145,6 +145,9 @@ type terminalUI struct {
 	focusBottom       bool
 	filtering         bool
 	filter            string
+	filterApplied     string
+	filterConditions  []condition
+	filterError       string
 	sortRate          bool
 	help              bool
 	status            bool
@@ -258,7 +261,11 @@ func (u *terminalUI) handleKey(key string) bool {
 	if u.filtering {
 		switch key {
 		case "enter":
-			u.filtering = false
+			if _, err := parseFilter(u.filter); err != nil {
+				u.filterError = err.Error()
+			} else {
+				u.filtering = false
+			}
 		case "esc":
 			u.filtering, u.filter = false, ""
 		case "backspace":
@@ -266,7 +273,7 @@ func (u *terminalUI) handleKey(key string) bool {
 				u.filter = u.filter[:len(u.filter)-1]
 			}
 		default:
-			if len(key) == 1 && len(u.filter) < 64 {
+			if len(key) == 1 && len(u.filter) < 256 {
 				u.filter += key
 			}
 		}
@@ -988,9 +995,30 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		addSummary("unindexed packets", c.unindexedRX, c.unindexedTX)
 	}
 	result := make([]*uiRow, 0, len(rows))
+	if u.filter != u.filterApplied || u.filterError != "" {
+		conditions, err := parseFilter(u.filter)
+		if err != nil {
+			u.filterError = err.Error()
+		} else {
+			u.filterConditions, u.filterApplied, u.filterError = conditions, u.filter, ""
+		}
+	}
 	numericPIDFilter := mode == viewPID && u.filter != "" && strings.IndexFunc(u.filter, func(r rune) bool { return r < '0' || r > '9' }) == -1
 	for _, row := range rows {
-		if u.filter == "" || numericPIDFilter && strings.HasPrefix(row.label, u.filter) || !numericPIDFilter && rowMatches(row, u.filter) {
+		if numericPIDFilter {
+			if strings.HasPrefix(row.label, u.filter) {
+				result = append(result, row)
+			}
+			continue
+		}
+		if len(u.filterConditions) == 0 {
+			result = append(result, row)
+			continue
+		}
+		row.flows = slices.DeleteFunc(row.flows, func(f *flow) bool {
+			return !matchesFilter(u.filterConditions, f, c, u.processes, u.geo, row.label)
+		})
+		if len(row.flows) > 0 || !strings.Contains(u.filterApplied, ":") && matchesFilter(u.filterConditions, nil, c, u.processes, u.geo, row.label) {
 			result = append(result, row)
 		}
 	}
@@ -1159,27 +1187,6 @@ func observedDomainHints(row *uiRow) []string {
 		return []string{"TLS/QUIC unknown"}
 	}
 	return []string{"-"}
-}
-
-func rowMatches(row *uiRow, filter string) bool {
-	filter = strings.ToLower(filter)
-	if strings.Contains(strings.ToLower(row.label), filter) {
-		return true
-	}
-	for _, f := range row.flows {
-		search := fmt.Sprintf("%s %s %s %s %d %s %d %s %s", f.Key.A, f.Key.B, f.Initiator, f.Target, f.Client.PID, f.Client.Name, f.Server.PID, f.Server.Name, f.AppProtocol)
-		if f.Domain != nil {
-			e := f.Domain.Evidence()
-			search += " " + e.Label() + " " + e.SNI + " " + e.Proxy + " " + e.DNS
-		}
-		if f.NAT != nil {
-			search += " " + f.NAT.String()
-		}
-		if strings.Contains(strings.ToLower(search), filter) {
-			return true
-		}
-	}
-	return false
 }
 
 func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped uint64) {
@@ -1446,7 +1453,11 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, "")
 	}
 	if u.filtering {
-		lines = append(lines, styleAccent.paint("/")+u.filter+styleFaint.paint("_"))
+		prompt := styleAccent.paint("/") + u.filter + styleFaint.paint("_")
+		if u.filterError != "" {
+			prompt += "  " + styleAlert.paint(u.filterError)
+		}
+		lines = append(lines, prompt)
 	} else {
 		mainOrder := sortName(u.sortRate)
 		if u.mainSort.key != "" {

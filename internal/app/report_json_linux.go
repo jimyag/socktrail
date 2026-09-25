@@ -219,8 +219,11 @@ func processJSON(p participant, processes *processTable) *jsonProcess {
 
 // reportJSON holds the same rows as printReport, the first limit flows by
 // bytes.
-func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope, geo *geoip.DB, ids map[*flow]uint64) jsonReport {
+func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope, geo *geoip.DB, ids map[*flow]uint64, conditions ...[]condition) jsonReport {
 	flows := reportFlows(c, scope)
+	if len(conditions) > 0 {
+		flows = (flowFilter{conditions[0], processes, geo}).apply(flows, c)
+	}
 	r := jsonReport{
 		Scope: name, IPPackets: c.packets, IPBytes: c.bytes,
 		CaptureDelivered: c.kernelReceived, CaptureDropped: c.kernelDropped, TruncatedPackets: c.truncated,
