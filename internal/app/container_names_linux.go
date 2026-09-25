@@ -56,24 +56,26 @@ func dockerDataRoot() string {
 }
 
 func containerIdentity(cgroup string) (string, string) {
+	var foundID, foundRuntime string
 	for part := range strings.SplitSeq(strings.Trim(cgroup, "/"), "/") {
 		for _, prefix := range []struct{ prefix, runtime string }{
 			{"docker-", "docker"}, {"cri-containerd-", "containerd"}, {"libpod-", "podman"},
 		} {
 			if id, ok := strings.CutPrefix(part, prefix.prefix); ok {
 				if id, ok = strings.CutSuffix(id, ".scope"); ok && len(id) == 64 && containerID.MatchString(id) {
-					return id, prefix.runtime
+					foundID, foundRuntime = id, prefix.runtime
 				}
 			}
 		}
 		if len(part) == 64 && containerID.MatchString(part) && (strings.Contains(cgroup, "/docker/") || strings.Contains(cgroup, "/kubepods/")) {
 			if strings.Contains(cgroup, "/docker/") {
-				return part, "docker"
+				foundID, foundRuntime = part, "docker"
+			} else {
+				foundID, foundRuntime = part, "containerd"
 			}
-			return part, "containerd"
 		}
 	}
-	return "", ""
+	return foundID, foundRuntime
 }
 
 func (r *containerNames) lookup(cgroup string) (*containerInfo, bool) {

@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；8 已通过单元测试和 root 冒烟测试）；3A 的 Docker bridge/host/veth 行为已实测，3B 未开始；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称有本地文件测试但未在真实 kubelet 主机验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；8 已通过单元测试和 root 冒烟测试）；3A 的 Docker bridge/host/veth 行为已实测，3B 未开始；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -260,6 +260,8 @@
 - 本机 Docker 上的容器显示为容器名。
 - 虚拟机里的 kind 集群显示 Pod 名和 namespace。
 - 数据目录不可读时显示短 ID，不报错。
+
+2026-09-25 实测：kind 节点内 CoreDNS 的 cgroup 同时含外层 Docker scope 与内层 `cri-containerd-…scope`。修正容器身份为最内层后，在 CoreDNS 网络命名空间采集的 JSON 显示 `container.name=coredns`、`pod=coredns-589f44dc88-4f8jn`、`namespace=kube-system`。kind 节点容器的 PID 命名空间和宿主不同；验收时从宿主进入 CoreDNS 网络命名空间，并临时暴露节点的 `/var/log/containers`，才能同时读取宿主 PID 与节点 kubelet 日志名。默认从宿主采集仍受第 3B 项的跨网络命名空间限制。
 
 ## 5. TCP 瓶颈判断
 

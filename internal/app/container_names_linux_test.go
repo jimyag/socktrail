@@ -39,6 +39,11 @@ func TestContainerNamesFromLocalMetadata(t *testing.T) {
 	if label != "sidecar (pod default/site)" || info == nil || info.Namespace != "default" || info.Runtime != "containerd" {
 		t.Fatalf("Pod service = %q, %+v", label, info)
 	}
+	nestedPath := dockerPath + podPath
+	_, label, info = table.serviceFor(nestedPath)
+	if label != "sidecar (pod default/site)" || info == nil || info.Runtime != "containerd" {
+		t.Fatalf("nested kind Pod service = %q, %+v", label, info)
+	}
 	missingID := strings.Repeat("c", 64)
 	missingPath := "/system.slice/docker-" + missingID + ".scope"
 	_, label, info = table.serviceFor(missingPath)
