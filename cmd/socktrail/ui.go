@@ -43,7 +43,7 @@ type uiRow struct {
 	iface                string
 	pidID                processID
 	members              map[processID]string // A service page row's processes with socket I/O, by name.
-	ifaces               uint8                // The capture interfaces of its flows.
+	ifaces               interfaceSet         // The capture interfaces of its flows.
 	flows                []*flow
 	rx, tx               uint64
 	rxRate, txRate       uint64
@@ -84,7 +84,7 @@ func formatPIDBrief(p participant) string {
 
 func (r *uiRow) add(f *flow, speed rate, ownBytes bool) {
 	r.flows = append(r.flows, f)
-	r.ifaces |= f.Interfaces
+	r.ifaces.union(f.Interfaces)
 	if ownBytes {
 		r.rx += f.RX
 		r.tx += f.TX

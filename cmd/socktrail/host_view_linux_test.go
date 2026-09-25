@@ -18,13 +18,13 @@ func TestHostViewKeepsOneCaptureCopyAndDomainEvidence(t *testing.T) {
 	captureInterfaces = []string{"br0", "eno1"}
 	first := &flow{
 		Key: key, SYNSeen: true, SYNSeq: 100, First: now, Last: now.Add(time.Second),
-		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: 1 << 0,
+		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: interfaceSet{first: 1 << 0},
 		Client: participant{PID: id.PID, StartNS: id.StartNS, Name: "curl"},
 		IO:     map[processID]ioBytes{id: {RX: 35, TX: 45}},
 	}
 	second := &flow{
 		Key: key, SYNSeen: true, SYNSeq: 100, First: now, Last: now.Add(time.Second),
-		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: 1 << 1,
+		Initiator: client, Target: server, RX: 80, TX: 120, Packets: 4, Interfaces: interfaceSet{first: 1 << 1},
 		Domain: domain.New(1),
 		IO:     map[processID]ioBytes{id: {RX: 35, TX: 45}},
 	}

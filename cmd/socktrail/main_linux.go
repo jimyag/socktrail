@@ -136,7 +136,7 @@ type flow struct {
 	WireDomain       *domain.Stream // TCP client stream: HTTP, TLS or proxy tunnel.
 	WireClient       netip.AddrPort // Endpoint whose bytes WireDomain parses.
 	Preexisting      bool           // Open before capture began, so its handshake was never visible.
-	Interfaces       uint8          // Bit i: captured on captureInterfaces[i]; fits the padding.
+	Interfaces       interfaceSet   // Capture interfaces that observed this flow.
 	SocketDomain     *domain.Stream // The same client bytes read at the socket layer.
 	QUICDomain       *domain.Stream
 	ProcessDomain    *domain.Stream
@@ -180,7 +180,7 @@ type collector struct {
 	maxFlows        int
 	filterPort      uint16
 	loopback        bool
-	interfaceBit    uint8 // Its interface's bit in flow.Interfaces.
+	interfaceIndex  int // Its position in captureInterfaces.
 	debugPID        bool
 	pidIO           map[processID]processIO
 	rxBytes         uint64
@@ -323,7 +323,8 @@ func (c *collector) packet(p capture.Packet) {
 			}
 			return
 		}
-		f = &flow{Key: key, Direction: "unknown", First: time.Now(), Interfaces: c.interfaceBit}
+		f = &flow{Key: key, Direction: "unknown", First: time.Now()}
+		f.Interfaces.add(c.interfaceIndex)
 		if p.Protocol == 6 {
 			f.TCPState = "midstream"
 		}
@@ -1029,7 +1030,7 @@ func (c *collector) reconcileWildcards() {
 
 func run() error {
 	var interfaceNames interfaceFlags
-	flag.Var(&interfaceNames, "interface", "network interface to observe (repeat or comma-separate, max 8; default: active host interfaces)")
+	flag.Var(&interfaceNames, "interface", "network interfaces to observe (repeat or comma-separate names or glob patterns; default: up to 8, physical first)")
 	duration := flag.Duration("duration", 0, "stop after this duration (default: until Ctrl-C)")
 	limit := flag.Int("limit", 30, "number of flows to print")
 	port := flag.Uint("port", 0, "only index wire flows containing this port; PID socket I/O remains netns-wide")
@@ -1173,7 +1174,7 @@ func run() error {
 	collectors := make(map[string]*collector, len(interfaceNames))
 	dnsHints := new(domain.DNSCache)
 	for i, name := range interfaceNames {
-		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", interfaceBit: 1 << i, debugPID: *debugPID && i == 0}
+		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", interfaceIndex: i, debugPID: *debugPID && i == 0}
 	}
 	host, _, members := hostCollector(interfaceNames, collectors)
 	var hostState hostViewState

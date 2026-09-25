@@ -269,6 +269,7 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		}
 	}
 	merged := *packetSource
+	merged.Interfaces = packetSource.Interfaces.clone()
 	// Rebuilt below from every observation, packetSource's too; the view is
 	// rebuilt each second, so maps come only with an entry.
 	merged.IO, merged.TLSActors = nil, nil
@@ -294,7 +295,7 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		}
 		merged.DomainConflict = merged.DomainConflict || f.DomainConflict
 		merged.Preexisting = merged.Preexisting || f.Preexisting
-		merged.Interfaces |= f.Interfaces
+		merged.Interfaces.union(f.Interfaces)
 		if merged.Health.SynRTT == 0 && f.Health.SynRTT > 0 {
 			merged.Health.SynRTT = f.Health.SynRTT
 		}

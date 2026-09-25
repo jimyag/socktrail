@@ -64,7 +64,7 @@ sudo ./socktrail --interface eth0 --duration 30s --output json
 ./socktrail --version
 ```
 
-Without `--interface`, socktrail selects up to eight active host interfaces. Use `ip -br link` to find interface names. `--interface` also accepts comma-separated names.
+Without `--interface`, socktrail selects up to eight active interfaces: physical interfaces first, then loopback, tunnels, and host bridges. Container veth links, Docker bridges, and VM tap links require an explicit `--interface`; it accepts repeated names, comma-separated names, and glob patterns such as `'veth*,br-*,vnet*'`. Explicit selection has no interface-count limit. Use `ip -br link` to find interface names.
 
 To run without `sudo`, install the binary with Linux file capabilities. Network capabilities alone do not cover the eBPF probes; see the [capability setup and limitations](docs/usage.md#不使用-sudo-运行).
 
