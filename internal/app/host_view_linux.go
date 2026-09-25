@@ -1,6 +1,7 @@
 package app
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -184,11 +185,42 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 	host.expiredPIDIO = base.expiredPIDIO
 	host.ioUnindexed = base.ioUnindexed
 	host.ioUnmatched = base.ioUnmatched
-	byKey := make(map[flowKey][]observedFlow)
+	seenNetNS := map[uint64]bool{base.netns: true}
+	byKey := make(map[struct {
+		key   flowKey
+		netns uint64
+	}][]observedFlow)
 	for _, name := range names {
 		c := collectors[name]
 		if c == nil {
 			continue
+		}
+		if !seenNetNS[c.netns] {
+			host.dns = nil // No address-only DNS lookup is safe across namespaces.
+			if len(seenNetNS) == 1 {
+				host.pidIO = maps.Clone(base.pidIO)
+				host.pidSeen = maps.Clone(base.pidSeen)
+				if host.pidIO == nil {
+					host.pidIO = make(map[processID]processIO)
+				}
+				if host.pidSeen == nil {
+					host.pidSeen = make(map[processID]time.Time)
+				}
+			}
+			seenNetNS[c.netns] = true
+			for id, io := range c.pidIO {
+				previous := host.pidIO[id]
+				previous.Name = io.Name
+				previous.RX += io.RX
+				previous.TX += io.TX
+				host.pidIO[id] = previous
+			}
+			maps.Copy(host.pidSeen, c.pidSeen)
+			host.expiredPIDIO.RX += c.expiredPIDIO.RX
+			host.expiredPIDIO.TX += c.expiredPIDIO.TX
+			host.ioUnindexed.RX += c.ioUnindexed.RX
+			host.ioUnindexed.TX += c.ioUnindexed.TX
+			host.ioUnmatched += c.ioUnmatched
 		}
 		host.kernelDropped += c.kernelDropped
 		host.kernelReceived += c.kernelReceived
@@ -209,7 +241,11 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 			if f.NAT != nil {
 				key = f.NAT.orig // A gateway's LAN and WAN tuples are one connection.
 			}
-			byKey[key] = append(byKey[key], observedFlow{flow: f, interfaceName: name})
+			groupKey := struct {
+				key   flowKey
+				netns uint64
+			}{key, c.netns}
+			byKey[groupKey] = append(byKey[groupKey], observedFlow{flow: f, interfaceName: name})
 		}
 	}
 	for _, candidates := range byKey {

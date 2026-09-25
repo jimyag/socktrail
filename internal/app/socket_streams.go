@@ -16,6 +16,7 @@ const (
 )
 
 type socketStreamKey struct {
+	netns  uint64
 	cookie uint64
 	sent   bool
 	remote netip.AddrPort // Set for UDP: an unconnected socket talks to many peers.
@@ -24,6 +25,7 @@ type socketStreamKey struct {
 // socketStream parses one direction of a socket's first bytes, or the QUIC
 // datagrams a UDP socket sends to one peer.
 type socketStream struct {
+	netns         uint64
 	parser        *domain.Stream
 	quic          *quicinitial.Tracker // UDP only.
 	local, remote netip.AddrPort
@@ -41,7 +43,7 @@ type socketStreams map[socketStreamKey]*socketStream
 
 // add feeds a chunk and returns its stream once it holds client evidence.
 func (s socketStreams) add(chunk sockstream.Chunk, now time.Time) *socketStream {
-	key := socketStreamKey{cookie: chunk.Cookie, sent: chunk.Sent}
+	key := socketStreamKey{netns: chunk.NetNS, cookie: chunk.Cookie, sent: chunk.Sent}
 	if chunk.Protocol == 17 {
 		key.remote = chunk.Remote
 	}
@@ -52,7 +54,7 @@ func (s socketStreams) add(chunk sockstream.Chunk, now time.Time) *socketStream 
 		if stream == nil && len(s) >= maxSocketStreams {
 			return nil
 		}
-		stream = &socketStream{local: chunk.Local, remote: chunk.Remote, sent: chunk.Sent}
+		stream = &socketStream{netns: chunk.NetNS, local: chunk.Local, remote: chunk.Remote, sent: chunk.Sent}
 		if chunk.Protocol == 17 {
 			stream.quic = new(quicinitial.Tracker)
 		} else {

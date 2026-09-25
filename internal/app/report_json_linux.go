@@ -29,6 +29,7 @@ type jsonSnapshot struct {
 }
 
 type jsonListener struct {
+	NetNS      string   `json:"netns,omitempty"`
 	Protocol   string   `json:"protocol"`
 	Bind       string   `json:"bind"`
 	Port       uint16   `json:"port"`

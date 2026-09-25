@@ -11,5 +11,9 @@ import (
 // architecture: uprobes read registers, and objects exist for amd64 and
 // arm64 only.
 func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Statistics, string, error) {
+	return StartNamespaces(ctx, []uint64{netNS})
+}
+
+func StartNamespaces(ctx context.Context, netNS []uint64) (<-chan Event, <-chan error, *Statistics, string, error) {
 	return nil, nil, nil, "", fmt.Errorf("OpenSSL probe supports amd64 and arm64 only")
 }

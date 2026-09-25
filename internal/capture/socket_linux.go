@@ -109,6 +109,16 @@ func Open(interfaceName string, ringSize int) (*Socket, error) {
 	return s, nil
 }
 
+// OpenAs names packets with a namespace-qualified label while resolving the
+// device and its ifindex inside the caller's current network namespace.
+func OpenAs(interfaceName, label string, ringSize int) (*Socket, error) {
+	s, err := Open(interfaceName, ringSize)
+	if err == nil {
+		s.name = label
+	}
+	return s, err
+}
+
 // SetFullFrames keeps whole frames, for a recording, or only SnapLength
 // bytes of each: copying less into the ring keeps its cost off the path
 // that forwards the packet. Whole means up to 64 KiB, the capture length a

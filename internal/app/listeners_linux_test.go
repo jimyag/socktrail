@@ -39,6 +39,27 @@ func TestListenerSocketSources(t *testing.T) {
 	}
 }
 
+func TestPortsPageKeepsSameBindInDifferentNamespaces(t *testing.T) {
+	tuple := socketTuple{protocol: 6, local: netip.MustParseAddrPort("172.17.0.2:18081")}
+	a := &networkNamespace{name: "one", inode: 1001}
+	b := &networkNamespace{name: "two", inode: 1002}
+	u := &terminalUI{
+		namespaces: []*networkNamespace{a, b},
+		collectors: map[string]*collector{
+			"one:lo": {netns: a.inode, flows: make(map[flowKey]*flow)},
+			"two:lo": {netns: b.inode, flows: make(map[flowKey]*flow)},
+		},
+		socketsByNS: map[uint64]*socketInventory{
+			a.inode: {listeners: map[socketTuple]listenerSocket{tuple: {tuple: tuple, inode: 1}}, pids: map[uint64]int{}},
+			b.inode: {listeners: map[socketTuple]listenerSocket{tuple: {tuple: tuple, inode: 2}}, pids: map[uint64]int{}},
+		},
+	}
+	rows := u.rows(&collector{}, viewPorts)
+	if len(rows) != 2 || rows[0].key == rows[1].key || rows[0].label == rows[1].label {
+		t.Fatalf("namespace listener rows merged: %+v", rows)
+	}
+}
+
 func TestReadListenDrops(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "net"), 0o700); err != nil {

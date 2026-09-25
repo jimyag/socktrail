@@ -29,6 +29,7 @@ import (
 // Chunk is part of the first 16 KiB one socket sent or received.
 type Chunk struct {
 	Cookie   uint64 // Unique per socket for its lifetime.
+	NetNS    uint64
 	PID      int
 	StartNS  uint64
 	Process  string
@@ -50,6 +51,10 @@ type Statistics struct {
 // Start attaches the capture for sockets in netNS. A non-zero port limits it
 // to connections using that port, like the wire flow filter.
 func Start(ctx context.Context, netNS uint64, port uint16) (<-chan Chunk, <-chan error, *Statistics, error) {
+	return StartNamespaces(ctx, []uint64{netNS}, port)
+}
+
+func StartNamespaces(ctx context.Context, netNS []uint64, port uint16) (<-chan Chunk, <-chan error, *Statistics, error) {
 	if err := rlimit.RemoveMemlock(); err != nil { // Kernels before 5.11 charge BPF maps to it.
 		return nil, nil, nil, fmt.Errorf("remove eBPF memlock limit: %w", err)
 	}
@@ -74,11 +79,13 @@ func Start(ctx context.Context, netNS uint64, port uint16) (<-chan Chunk, <-chan
 		}
 		objects.Close()
 	}
-	key := uint32(0)
-	if err := objects.Maps["settings"].Update(key, SockstreamConfig{Netns: netNS, Port: port}, ebpf.UpdateAny); err != nil {
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("configure socket stream probe: %w", err)
+	for _, key := range netNS {
+		if err := objects.Maps["settings"].Update(key, SockstreamConfig{Netns: key, Port: port}, ebpf.UpdateAny); err != nil {
+			cleanup()
+			return nil, nil, nil, fmt.Errorf("configure socket stream probe netns %d: %w", key, err)
+		}
 	}
+	key := uint32(0) // The lost counter remains a one-entry array.
 	for name, program := range objects.Programs {
 		attached, err := link.AttachTracing(link.TracingOptions{Program: program})
 		if err != nil {
@@ -194,7 +201,7 @@ func decode(raw []byte) (Chunk, error) {
 		name = append(name, byte(c))
 	}
 	return Chunk{
-		Cookie: header.Cookie, PID: int(header.Pid), StartNS: header.StartNs, Process: procname.Clean(name), Protocol: header.Protocol,
+		Cookie: header.Cookie, NetNS: header.Netns, PID: int(header.Pid), StartNS: header.StartNs, Process: procname.Clean(name), Protocol: header.Protocol,
 		Local:  netip.AddrPortFrom(local, header.LocalPort),
 		Remote: netip.AddrPortFrom(remote, header.RemotePort),
 		Sent:   header.Direction == 1, Offset: header.Offset,

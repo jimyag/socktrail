@@ -32,6 +32,10 @@ var libraryDirs = map[string][]string{
 // SSL_ctrl / SSL_get_servername strings and verifies a socket tuple from an
 // OpenSSL fd or a TCP send during SSL_connect. No TLS plaintext or key is copied.
 func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Statistics, string, error) {
+	return StartNamespaces(ctx, []uint64{netNS})
+}
+
+func StartNamespaces(ctx context.Context, netNS []uint64) (<-chan Event, <-chan error, *Statistics, string, error) {
 	if libraryDirs[runtime.GOARCH] == nil { // The x86 object reads 64-bit registers; 386 has others.
 		return nil, nil, nil, "", fmt.Errorf("OpenSSL probe supports amd64 and arm64 only")
 	}
@@ -46,10 +50,11 @@ func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Stat
 	if err := LoadTlsObjects(objects, nil); err != nil {
 		return nil, nil, nil, "", fmt.Errorf("load OpenSSL eBPF probe: %w", err)
 	}
-	key := uint32(0)
-	if err := objects.TargetNetns.Update(key, netNS, ebpf.UpdateAny); err != nil {
-		_ = objects.Close()
-		return nil, nil, nil, "", fmt.Errorf("configure OpenSSL probe netns: %w", err)
+	for _, key := range netNS {
+		if err := objects.TargetNetns.Update(key, key, ebpf.UpdateAny); err != nil {
+			_ = objects.Close()
+			return nil, nil, nil, "", fmt.Errorf("configure OpenSSL probe netns %d: %w", key, err)
+		}
 	}
 	executable, err := link.OpenExecutable(path)
 	if err != nil {

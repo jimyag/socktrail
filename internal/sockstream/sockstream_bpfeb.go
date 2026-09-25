@@ -44,6 +44,7 @@ type SockstreamChunkHeader struct {
 	_          structs.HostLayout
 	Cookie     uint64
 	StartNs    uint64
+	Netns      uint64
 	Pid        uint32
 	Offset     uint32
 	Len        uint16

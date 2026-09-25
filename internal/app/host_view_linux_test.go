@@ -68,6 +68,20 @@ func TestHostViewSeparatesReusedTCPGenerations(t *testing.T) {
 	}
 }
 
+func TestHostViewSeparatesIdenticalTuplesInDifferentNamespaces(t *testing.T) {
+	key := keyFor(netip.MustParseAddrPort("172.17.0.2:40000"), netip.MustParseAddrPort("172.17.0.1:443"), 6)
+	now := time.Now()
+	a := &flow{Key: key, First: now, Last: now, SYNSeen: true, SYNSeq: 100, TX: 10}
+	b := &flow{Key: key, First: now, Last: now, SYNSeen: true, SYNSeq: 100, TX: 20}
+	host, _, _ := hostCollector([]string{"one:eth0", "two:eth0"}, map[string]*collector{
+		"one:eth0": {netns: 1001, dns: new(domain.DNSCache), flows: map[flowKey]*flow{key: a}},
+		"two:eth0": {netns: 1002, dns: new(domain.DNSCache), flows: map[flowKey]*flow{key: b}},
+	})
+	if len(host.allFlows()) != 2 || host.bytes != 30 || host.dns != nil {
+		t.Fatalf("identical tuples merged across network namespaces: flows=%d bytes=%d", len(host.allFlows()), host.bytes)
+	}
+}
+
 func TestHostViewMergesMidstreamCopyOfKnownHandshake(t *testing.T) {
 	now := time.Now()
 	a := netip.MustParseAddrPort("192.0.2.10:51000")

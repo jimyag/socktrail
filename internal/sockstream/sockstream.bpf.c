@@ -119,6 +119,7 @@ struct call {
 struct chunk_header {
     __u64 cookie;
     __u64 start_ns;
+    __u64 netns;
     __u32 pid;
     __u32 offset;
     __u16 len;
@@ -147,9 +148,9 @@ struct chunk {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 128);
+    __type(key, __u64);
     __type(value, struct config);
 } settings SEC(".maps");
 struct {
@@ -199,11 +200,10 @@ static __always_inline __u64 socket_id(struct sock *sk)
 // or fills it. Kernel-internal buffers (kvec, bvec) are not application data.
 static __always_inline int begin(struct sock *sk, struct msghdr *msg, __u32 direction, __u8 protocol)
 {
-    __u32 zero = 0;
-    struct config *cfg = bpf_map_lookup_elem(&settings, &zero);
-    if (!cfg || !cfg->netns) return 0;
     struct task_struct *task = (void *)bpf_get_current_task(); // The _btf variant needs Linux 5.11.
-    if (BPF_CORE_READ(task, nsproxy, net_ns, ns.inum) != cfg->netns) return 0;
+    __u64 netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+    struct config *cfg = bpf_map_lookup_elem(&settings, &netns);
+    if (!cfg) return 0;
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
     if (family != AF_INET && family != AF_INET6) return 0;
 
@@ -265,6 +265,7 @@ static __always_inline void fill_header(struct chunk_header *h, struct sock *sk,
     h->cookie = call->cookie;
     h->pid = bpf_get_current_pid_tgid() >> 32;
     h->start_ns = process_start(task);
+    h->netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
     h->direction = call->direction;
     h->family = family == AF_INET ? 4 : 6;
     h->local_port = BPF_CORE_READ(sk, __sk_common.skc_num);

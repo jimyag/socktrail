@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；3A 的 Docker bridge/host/veth 行为已实测，3B 未开始；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、3、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -229,14 +229,16 @@
   - 接口的 ifindex 要在目标命名空间里解析。
 - 命名：不同命名空间的接口可能重名，界面和 JSON 用 `<命名空间名>:<接口>` 表示；`captureInterfaces` 的每一项都带上命名空间。
 - 探针：`settings.netns` 改成以命名空间 inode 为键的 BPF hash map。事件本身已经带有 netns，用户态据此把事件送到对应命名空间的采集器。
-- socket 表：每个命名空间选一个进程，读它的 `/proc/<pid>/net/tcp{,6}` 和 `udp{,6}`。
-- `flowKey` 必须加上命名空间，否则两个容器相同的私有地址（例如都是 172.17.0.2）会混成一条连接。
+- socket 表：每个命名空间在切换后的线程读 `/proc/thread-self/net/tcp{,6}` 和 `udp{,6}`；PID 反查仍走宿主 `/proc`。
+- 每接口采集器只接收一个命名空间的事件；整机聚合键加上命名空间 inode，避免相同私网地址合并，同时保持 `flow` 在 768 B 分配级别以内。
 - 参考 ptcpdump 的 `--netns` 和容器过滤实现。
 
 验收：
 - 两个容器用相同的私有地址发起连接，在宿主上用 `--netns` 分别显示各自的进程，不混淆。
 - 容器命名空间内的 NAT 仍能合并。
 - CPU 和内存与只采集单个命名空间时在同一量级。
+
+2026-09-25 验证：参考 ptcpdump 的 [NetNs.Do](https://github.com/mozillazg/ptcpdump/blob/main/internal/types/netns.go) 与按 netns 区分设备的实现。两个独立 netns 都配置 `172.17.0.2`，分别以 `172.17.0.2:50000 → 172.17.0.2:18081` 建连；两份报告保留不同的 client/server PID 和命名空间接口。目标 netns 内 `18082 → 18081` 的 DNAT 被 conntrack 识别。kind CoreDNS 与宿主同时采集时，`listeners[].netns` 区分 CoreDNS 与宿主的 53 端口，Pod 的 `kube-system` 元数据可见；修正了 `/proc/net` 会串到宿主视图的问题。5 秒空闲采集对比：单 netns user/sys 0.58/0.91 s、峰值 RSS 76 MiB；双 netns 0.58/1.05 s、83 MiB。`go test ./...`、root 冒烟，以及 5.10/6.8 amd64、6.4 arm64 虚拟机检查通过。
 
 ## 4. 容器与 Pod 名称
 
@@ -261,7 +263,7 @@
 - 虚拟机里的 kind 集群显示 Pod 名和 namespace。
 - 数据目录不可读时显示短 ID，不报错。
 
-2026-09-25 实测：kind 节点内 CoreDNS 的 cgroup 同时含外层 Docker scope 与内层 `cri-containerd-…scope`。修正容器身份为最内层后，在 CoreDNS 网络命名空间采集的 JSON 显示 `container.name=coredns`、`pod=coredns-589f44dc88-4f8jn`、`namespace=kube-system`。kind 节点容器的 PID 命名空间和宿主不同；验收时从宿主进入 CoreDNS 网络命名空间，并临时暴露节点的 `/var/log/containers`，才能同时读取宿主 PID 与节点 kubelet 日志名。默认从宿主采集仍受第 3B 项的跨网络命名空间限制。
+2026-09-25 实测：kind 节点内 CoreDNS 的 cgroup 同时含外层 Docker scope 与内层 `cri-containerd-…scope`。修正容器身份为最内层后，使用 `--netns pid:<CoreDNS 宿主 PID>` 采集的 JSON 显示 `container.name=coredns`、`pod=coredns-589f44dc88-4f8jn`、`namespace=kube-system`。kind 节点容器的 PID 命名空间和宿主不同；仍需从宿主运行 socktrail 并让节点 kubelet 的 `/var/log/containers` 对运行环境可见，才能同时读取宿主 PID 与节点日志名。
 
 ## 5. TCP 瓶颈判断
 

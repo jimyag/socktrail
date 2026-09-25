@@ -30,10 +30,13 @@ type socketTuple struct {
 // socketInventory is the latest reading of the TCP and UDP sockets in
 // socktrail's network namespace.
 type socketInventory struct {
+	ns                   *networkNamespace
+	loadErr              error
 	procRoot             string
 	read                 time.Time
 	loading              bool                   // A background reading is under way.
 	loaded               chan *socketInventory  // Delivers it.
+	done                 <-chan struct{}        // Allows a pending refresh to stop with the capture.
 	atStart              map[socketTuple]uint64 // The table before capture began.
 	sockets              map[socketTuple]uint64 // Inode, 0 when no process holds the socket, as in TIME_WAIT.
 	local                map[netip.Addr]bool
@@ -123,13 +126,25 @@ func socketPIDs(procRoot string) map[uint64]int {
 
 // load reads the socket tables and resets the owners resolved last time.
 func (inv *socketInventory) load() {
+	if inv.ns != nil {
+		inv.loadErr = inv.ns.do(func() error { inv.loadCurrent(); return nil })
+		return
+	}
+	inv.loadCurrent()
+}
+
+func (inv *socketInventory) loadCurrent() {
+	netRoot := inv.procRoot
+	if inv.ns != nil {
+		netRoot = "/proc/thread-self"
+	}
 	inv.sockets, inv.local, inv.pids, inv.processes = make(map[socketTuple]uint64), make(map[netip.Addr]bool), nil, make(map[int]participant)
 	if inv.trackListeners {
 		inv.listeners = make(map[socketTuple]listenerSocket)
 	}
 	for name, protocol := range map[string]uint8{"tcp": 6, "tcp6": 6, "udp": 17, "udp6": 17} {
 		//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
-		if data, err := os.ReadFile(filepath.Join(inv.procRoot, "net", name)); err == nil {
+		if data, err := os.ReadFile(filepath.Join(netRoot, "net", name)); err == nil {
 			if inv.trackListeners {
 				parseProcNet(data, protocol, inv.sockets, inv.listeners)
 			} else {
@@ -142,7 +157,7 @@ func (inv *socketInventory) load() {
 			inv.listeners[tuple] = entry
 			inv.sockets[tuple] = entry.inode
 		}
-		inv.listenOverflows, inv.listenDrops = readListenDrops(inv.procRoot)
+		inv.listenOverflows, inv.listenDrops = readListenDrops(netRoot)
 	}
 	addrs, _ := net.InterfaceAddrs()
 	for _, addr := range addrs {
@@ -163,17 +178,23 @@ func (inv *socketInventory) refresh(collectors map[string]*collector, now time.T
 		return
 	}
 	inv.loading = true
-	next := &socketInventory{procRoot: inv.procRoot, trackListeners: inv.trackListeners}
+	next := &socketInventory{procRoot: inv.procRoot, ns: inv.ns, trackListeners: inv.trackListeners}
 	go func() {
 		next.load()
 		next.pids = socketPIDs(next.procRoot)
-		inv.loaded <- next
+		select {
+		case inv.loaded <- next:
+		case <-inv.done:
+		}
 	}()
 }
 
 // apply names the processes of ownerless flows from a background reading.
 func (inv *socketInventory) apply(next *socketInventory, collectors map[string]*collector) {
 	inv.loading = false
+	if next.loadErr != nil {
+		return
+	}
 	inv.sockets, inv.local, inv.pids, inv.processes = next.sockets, next.local, next.pids, next.processes
 	inv.listeners, inv.listenOverflows, inv.listenDrops = next.listeners, next.listenOverflows, next.listenDrops
 	for _, c := range collectors {

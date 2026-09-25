@@ -133,6 +133,24 @@ func (t *natTable) json(status string) jsonNAT {
 	return n
 }
 
+func natTotals(tables map[uint64]*natTable, status string) jsonNAT {
+	total := jsonNAT{Status: status}
+	for _, table := range tables {
+		if table == nil {
+			continue
+		}
+		item := table.json(status)
+		total.Lookups += item.Lookups
+		total.Translated += item.Translated
+		total.QueueFull += item.QueueFull
+		total.Failed += item.Failed
+		if item.LastError != "" {
+			total.LastError = item.LastError
+		}
+	}
+	return total
+}
+
 // natFlow links a new flow to its NAT entry, or asks conntrack for one.
 func (c *collector) natFlow(f *flow, protocol uint8, src, dst netip.AddrPort) {
 	if c.nat == nil || protocol != 6 && protocol != 17 || dst.Addr().IsMulticast() {

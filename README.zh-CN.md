@@ -26,7 +26,7 @@
 
 socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选接口采集报文，并结合 eBPF socket 探针和内核 socket 表，将本机流量关联到进程。界面显示连接、IP 流量、应用协议，以及从可观察的 HTTP、TLS、QUIC、代理和 DNS 数据中发现的域名。
 
-目前仍是原型。本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9 和 10）以及 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量；CI 另在 amd64 和 arm64 runner 上以 root 运行测试。NAT 和 Docker bridge/host 网络已在本机验收，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过。bridge 容器的进程不在宿主网络命名空间，目前无法关联；详见[数据口径](docs/user/measurement.md#docker-网络)和[验证记录](docs/archive/validation.md)。
+目前仍是原型。本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9 和 10）以及 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量；CI 另在 amd64 和 arm64 runner 上以 root 运行测试。NAT、Docker bridge/host 网络和显式跨命名空间采集已在本机验收，包括 kind 的 CoreDNS Pod；Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过。要关联 bridge 容器的进程，可用 `--netns` 选择其网络命名空间；详见[数据口径](docs/user/measurement.md#docker-网络)和[验证记录](docs/archive/validation.md)。
 
 ## 为什么使用 socktrail
 
@@ -35,6 +35,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 ## 功能
 
 - 采集 IPv4、IPv6、ARP 和其他以太网流量。自动选择最多八张接口；显式指定 `--interface` 没有数量上限，也可包含回环和 tun 接口。
+- 用可重复的 `--netns` 选择网络命名空间（路径、名字、`pid:PID` 或 `container:ID`）；接口标签标明所属命名空间。
 - 将 TCP、UDP、ICMP 和其他流量归入连接或会话，显示应用协议提示、连接状态、RTT、拥塞窗口、重传（本机 socket 使用与 `ss -ti` 类似的内核值）、DNS 响应时间和 ICMP 错误。
 - 将本机 TCP/UDP socket 关联到进程，并把进程 socket RX/TX 与采集的 IP 字节分开显示。
 - 按 systemd 服务或容器、cgroup、进程树、可执行文件名分组；可用 `--process`、`--pid`（含子孙进程）、`--cgroup` 或 `--container` 只看指定进程。
@@ -103,11 +104,15 @@ sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface eth0
 sudo ./socktrail --interface eth0 --duration 30s --output json
+sudo ./socktrail --netns container:0123456789ab --interface eth0
+sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 ./socktrail --download-geoip-db
 ./socktrail --version
 ```
 
 不指定 `--interface` 时，socktrail 最多选择八张运行中的接口：先选物理网卡，再选回环、隧道和宿主网桥。容器 veth、Docker 网桥和虚拟机 tap 需要显式指定 `--interface`；它接受重复参数、逗号分隔的名称，以及 `'veth*,br-*,vnet*'` 等 glob 模式。显式选择不受网卡数量限制。可用 `ip -br link` 查找接口名称。
+`--netns` 可选择一个或多个网络命名空间；省略时只采集当前命名空间。每个 `--interface` 模式都在所选的每个命名空间内匹配，并且必须在那里存在；接口标签加上命名空间名前缀。`container:ID` 用至少 12 位的十六进制容器 ID 前缀查找可见进程。
+请把示例 ID 和 PID 换成目标容器或 Pod 进程的实际值。
 
 显式选择超过八张接口时，程序会列出匹配项并请求确认。默认在内存上限为 512 MiB 的 systemd scope 中运行。非交互运行可加 `--yes`，用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 关闭限制。如果无法使用 systemd，受限模式会在抓包前报错。
 

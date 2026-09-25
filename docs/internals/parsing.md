@@ -104,7 +104,7 @@ DNS 流（含 TCP 上的 DNS、mDNS、LLMNR）显示最近的查询名和类型�
 
 本机 dae 这类透明代理会让出站报文绕开被选接口，`br0` 上只看到回包；TSO/GRO 会把 ClientHello 并进超过复制上限的大段；Chrome 131 起的 ClientHello 有 1.7–1.8 KB，常跨两个 TCP 段。这些情况里报文侧都可能拿不到完整的客户端字节，但应用写进 socket 的字节是完整、有序的。这个思路来自 [qtap](https://github.com/qpoint-io/qtap) 在系统调用层读首次写入的做法，socktrail 挂在 `tcp_sendmsg`/`tcp_recvmsg` 上，直接拿到 `struct sock` 和五元组，不必跟踪 fd，也覆盖 write、send、sendmsg、writev 等所有写入路径；qtap 读 TLS 库明文的部分没有采用。
 
-socket 层前缀读取只覆盖当前网络命名空间内本机进程的 socket：TCP 每个 socket 每个方向最多前 16 KiB，以 4 KiB 为块经 ring buffer 送到用户态，每块带 socket cookie、流内偏移、进程和五元组；UDP 只读发出的 QUIC 长包头数据报，同样以每个 socket 16 KiB 为限，其他数据报不占预算。数据在内存中解析后丢弃，不写盘。TLS 和 QUIC 在这一层除握手外都是密文，所以它看到的内容和线上报文一致，不涉及 TLS 明文。
+socket 层前缀读取只覆盖所选网络命名空间内本机进程的 socket：TCP 每个 socket 每个方向最多前 16 KiB，以 4 KiB 为块经 ring buffer 送到用户态，每块带网络命名空间 inode、socket cookie、流内偏移、进程和五元组；UDP 只读发出的 QUIC 长包头数据报，同样以每个 socket 16 KiB 为限，其他数据报不占预算。数据在内存中解析后丢弃，不写盘。TLS 和 QUIC 在这一层除握手外都是密文，所以它看到的内容和线上报文一致，不涉及 TLS 明文。
 
 TCP 两个方向都会解析，只有读成客户端的 ClientHello、请求头或代理握手的方向才可能用来命名。连接的发起方已知时，还要求字节确实来自客户端：客户端 socket 发出的，或服务端 socket 收到的。服务端的回复也可能读起来像请求，例如 SQL Server 的 TDS pre-login 应答以 `04 01` 开头，结构上就是一个 SOCKS4 CONNECT 请求，此前让 sqlcmd 的连接显示成 `PROXY 0.0.1.0`。它要挂到至少一个采集接口上观察到的连接；完全没经过任何所选接口的连接不单独列出，连接的报文晚到时证据最多保留 10 秒等待。
 

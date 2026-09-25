@@ -135,19 +135,17 @@ struct {
     __type(value, struct event);
 } events SEC(".maps");
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 128);
+    __type(key, __u64);
     __type(value, __u64);
 } target_netns SEC(".maps");
 
 static __always_inline int in_scope(void)
 {
-    __u32 zero = 0;
-    __u64 *wanted = bpf_map_lookup_elem(&target_netns, &zero);
-    if (!wanted) return 0;
     struct task_struct *task = (void *)bpf_get_current_task(); // The _btf variant needs Linux 5.11.
-    return BPF_CORE_READ(task, nsproxy, net_ns, ns.inum) == *wanted;
+    __u64 netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+    return bpf_map_lookup_elem(&target_netns, &netns) != 0;
 }
 
 static __always_inline struct ssl_state *get_state(struct ssl_key *key)
@@ -201,12 +199,9 @@ static __always_inline int emit_sock(struct ssl_key *key, struct ssl_state *stat
 static __always_inline int emit(struct ssl_key *key, struct ssl_state *state)
 {
     if (!state || state->fd < 0 || state->hostname[0] == 0) return 0;
-    __u32 zero = 0;
-    __u64 *wanted = bpf_map_lookup_elem(&target_netns, &zero);
-    if (!wanted) return 0;
     struct task_struct *task = (void *)bpf_get_current_task(); // The _btf variant needs Linux 5.11.
     __u64 netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
-    if (netns != *wanted) return 0;
+    if (!bpf_map_lookup_elem(&target_netns, &netns)) return 0;
 
     struct fdtable *fdt = BPF_CORE_READ(task, files, fdt);
     if (!fdt || (__u32)state->fd >= BPF_CORE_READ(fdt, max_fds)) return 0;
@@ -382,12 +377,9 @@ int BPF_PROG(connect_tcp_send, struct sock *sk, void *msg, unsigned long size)
     if (!active || active->emitted) return 0;
     struct ssl_state *state = bpf_map_lookup_elem(&ssl_states, &active->key);
     if (!state || state->fd >= 0 || state->hostname[0] == 0) return 0;
-    __u32 zero = 0;
-    __u64 *wanted = bpf_map_lookup_elem(&target_netns, &zero);
-    if (!wanted) return 0;
     struct task_struct *task = (void *)bpf_get_current_task(); // The _btf variant needs Linux 5.11.
     __u64 netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
-    if (netns != *wanted) return 0;
+    if (!bpf_map_lookup_elem(&target_netns, &netns)) return 0;
     if (emit_sock(&active->key, state, sk, netns)) active->emitted = 1;
     return 0;
 }

@@ -26,7 +26,7 @@
 
 socktrail is a Linux terminal application for inspecting live network traffic. It captures packets from selected interfaces with AF_PACKET and uses eBPF socket probes and the kernel socket table to associate local traffic with processes. The interface shows connections, IP traffic, application protocols, and domain names found in observable HTTP, TLS, QUIC, proxy, and DNS data.
 
-It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8; CI runs the root tests on amd64 and arm64 runners. NAT and Docker bridge/host networking were tested locally, and protocol detection was checked against more than ten real services, including Kafka, SQL Server, and gRPC. Bridge containers' processes remain outside the host network namespace and cannot yet be attributed; see the [measurement rules](docs/user/measurement.md#docker-网络) and [validation record](docs/archive/validation.md).
+It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8; CI runs the root tests on amd64 and arm64 runners. NAT, Docker bridge/host networking, and explicit cross-namespace capture were tested locally, including a kind CoreDNS Pod; protocol detection was checked against more than ten real services, including Kafka, SQL Server, and gRPC. To attribute bridge-container processes, select their network namespace with `--netns`; see the [measurement rules](docs/user/measurement.md#docker-网络) and [validation record](docs/archive/validation.md).
 
 ## Why socktrail
 
@@ -35,6 +35,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 ## Features
 
 - Capture IPv4, IPv6, ARP, and other Ethernet traffic. Automatic selection uses up to eight interfaces; explicit `--interface` selection has no count limit and can include loopback and tun interfaces.
+- Capture selected network namespaces with repeatable `--netns` (path, name, `pid:PID`, or `container:ID`); interface labels identify their namespace.
 - Group TCP, UDP, ICMP, and other flows; show application protocol hints, connection state, RTT, congestion window and retransmissions (the kernel's values for local sockets, like `ss -ti`), DNS response time, and ICMP errors.
 - Associate local TCP/UDP sockets with processes and show socket RX/TX separately from captured IP bytes.
 - Group processes by systemd service or container, cgroup, process tree, or executable basename, and show only chosen processes with `--process`, `--pid` (with descendants), `--cgroup`, or `--container`.
@@ -103,11 +104,15 @@ sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface eth0
 sudo ./socktrail --interface eth0 --duration 30s --output json
+sudo ./socktrail --netns container:0123456789ab --interface eth0
+sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 ./socktrail --download-geoip-db
 ./socktrail --version
 ```
 
 Without `--interface`, socktrail selects up to eight active interfaces: physical interfaces first, then loopback, tunnels, and host bridges. Container veth links, Docker bridges, and VM tap links require an explicit `--interface`; it accepts repeated names, comma-separated names, and glob patterns such as `'veth*,br-*,vnet*'`. Explicit selection has no interface-count limit. Use `ip -br link` to find interface names.
+`--netns` selects one or more network namespaces; without it, only the current namespace is captured. Each `--interface` pattern is resolved inside every selected namespace and must match there. The target's interface label is prefixed with its namespace name. `container:ID` finds a visible process by a hexadecimal container ID prefix of at least 12 characters.
+Replace the example ID and PID with those of the target container or Pod process.
 
 Explicit capture on more than eight interfaces shows the matches and asks for confirmation. It starts in a systemd scope with a 512 MiB memory limit by default. Use `--yes` for non-interactive runs, `--memory-limit=1GiB` to change the limit, or `--memory-limit=none` to opt out of it. A protected run fails before capture if systemd is unavailable.
 

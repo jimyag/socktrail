@@ -15,7 +15,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 - 三种数字分开：报文的 IP 字节来自采集点，进程的 socket I/O 来自 `sendmsg`/`recvmsg` 的返回值，域名证据是连接级的名字或请求计数。它们口径不同，界面和快照都不把它们相加，也不互相核对成相等。[数据口径](../user/measurement.md)逐项说明。
 - 不确定就显示未知：连接方向只由 SYN、connect/accept、客户端首个报文或内核 socket 表确定，不按端口猜；PID 关联不上显示未知，多个候选显示歧义；证据冲突时保留报文里的名字并标出冲突。
 - 进程身份是 PID 加进程启动时间，进程名只是标签。PID 被复用后，新旧进程分别统计，历史不被覆盖。
-- 连接键是地址族、协议、两端地址和端口；同一五元组上的新 SYN 开始新的一代。
+- 接口采集器内的连接键是地址族、协议、两端地址和端口；同一五元组上的新 SYN 开始新的一代。整机聚合键还带网络命名空间 inode，两个命名空间里的相同私网五元组不会合并。
 - 所有索引都有容量、过期时间和淘汰计数；丢包、截断、事件丢失、解析失败都在界面上可见，不把缺口当成零流量。
 - 不读 TLS 明文，不保存请求正文。报文和 socket 层只读握手、请求头这类用于命名的前段，解析后丢弃；只有用户按 `c` 录制时才把原始帧写入文件。
 - 热路径逐包不做系统调用、不分配内存；需要保留的数据自行复制，因为报文负载直接引用抓包环。
@@ -24,11 +24,13 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 每张接口各有一个 AF_PACKET socket。内核把帧写入 TPACKET_V3 环，读取方按块交给主循环；[报文解码器](../../internal/capture/packet.go)识别链路层、IP、传输层和分片。主循环按连接键维护流，再把应用协议和域名证据附到流上。
 
-本机进程归属来自 eBPF 的 connect、accept 和 socket I/O 事件；启动前已存在或错过探针挂载时机的 socket，再从内核 socket 表补全。NAT 查询把改写前后的元组关联起来。整机视图合并跨接口观测，详情保留证据来源。
+显式指定 `--netns` 时，[netns_linux.go](../../internal/app/netns_linux.go) 按路径、名字、PID 或容器 ID 打开目标 netns 文件，用 inode 去重；在锁定的 OS 线程内进入目标 netns，创建接口的 AF_PACKET 与 conntrack netlink socket，再切回原命名空间。BPF 设置 map 以 netns inode 为键，PID、OpenSSL、socket stream 事件只送到对应命名空间的采集器。socket 表在目标 netns 内经 `/proc/thread-self/net` 读取，inode 到进程的反查仍遍历宿主 `/proc/<pid>/fd`。
+
+本机进程归属来自 eBPF 的 connect、accept 和 socket I/O 事件；启动前已存在或错过探针挂载时机的 socket，再从对应命名空间的内核 socket 表补全。每个命名空间各有 conntrack 查询，NAT 关联只发生在同一个命名空间内。整机视图合并同一命名空间的跨接口观测，详情保留证据来源。
 
 ## 运行条件与兼容性
 
-运行需 root 或相应的 `CAP_BPF`、`CAP_PERFMON`、`CAP_NET_RAW`、`CAP_NET_ADMIN` 权限；5.10 内核设置 eBPF memlock 限额还需要 `CAP_SYS_RESOURCE`。file capabilities 的安装命令和 `/proc`、OpenSSL 探针限制见[使用指南](../user/usage.md#不使用-sudo-运行)。内核要支持 fentry/fexit 和 BPF ring buffer，并带 BTF（`CONFIG_DEBUG_INFO_BTF=y`，存在 `/sys/kernel/btf/vmlinux`）。
+运行需 root 或相应的 `CAP_BPF`、`CAP_PERFMON`、`CAP_NET_RAW`、`CAP_NET_ADMIN` 权限；5.10 内核设置 eBPF memlock 限额还需要 `CAP_SYS_RESOURCE`，进入其他网络命名空间另需 `CAP_SYS_ADMIN`。file capabilities 的安装命令和 `/proc`、OpenSSL 探针限制见[使用指南](../user/usage.md#不使用-sudo-运行)。内核要支持 fentry/fexit 和 BPF ring buffer，并带 BTF（`CONFIG_DEBUG_INFO_BTF=y`，存在 `/sys/kernel/btf/vmlinux`）。
 
 - x86-64：5.10 起可用。已在 Debian 11 的 5.10，Ubuntu 的 5.11、5.13、5.15、6.8、6.17、7.0，以及 CentOS Stream 9（5.14）和 10（6.12）的内核里实测。5.4 及更早的内核没有 fentry；Ubuntu 的 5.8 内核没有 BTF。
 - arm64：6.4 起可用。arm64 通过 ftrace 直接调用挂 fentry/fexit，6.4 才支持；更早的内核上挂载报 `not supported`，程序提示需要 6.4。Debian 12 的 6.1、Ubuntu 22.04 的 5.15 和 6.2 因此不能运行。已在 mainline 6.4 和 Ubuntu 6.8 的 arm64 内核里实测。
@@ -97,7 +99,7 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 ## 内核 socket 表补全进程
 
-读取和进程关联见 [procnet_linux.go](../../internal/app/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
+读取和进程关联见 [procnet_linux.go](../../internal/app/procnet_linux.go)。内核 socket 表（`/proc/thread-self/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，每个所选命名空间每 10 秒最多在后台读一次，读完只应用到该命名空间的采集器；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。在两次读取之间开始又结束的连接，这里拿不到。
 
 交互界面和 JSON 快照还使用同一份 socket inventory 展示监听端口：TCP 的队列与 backlog 优先由 sock_diag netlink 读取，失败时沿用 `/proc/net` 的监听条目；UDP 取未连接 socket，inode 到进程沿用 `/proc/<pid>/fd`。交互运行时每 5 秒后台刷新一次，accept 次数由已有探针事件累计，入站失败按原有尝试表的目标端口聚合；没有新增逐包探针。全局 ListenOverflows、ListenDrops 取 `/proc/net/netstat` 的 TcpExt 增量。
 

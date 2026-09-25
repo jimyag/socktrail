@@ -12,6 +12,9 @@ sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface br0
 sudo ./socktrail --interface br0,dae0
+sudo ./socktrail --netns pid:12345 --interface eth0
+sudo ./socktrail --netns container:0123456789ab --interface lo
+sudo ./socktrail --netns team-a --netns team-b --interface lo
 sudo ./socktrail --openssl-probe=false  # 禁用默认开启的系统 OpenSSL 探针
 sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀读取
 ```
@@ -52,6 +55,8 @@ sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' 
 安装文件应由 root 持有，并限制可执行用户；这些能力允许读取网络流量。替换二进制后需要重新执行 `setcap`。file capabilities 还会受容器 capability bounding set、`nosuid` 挂载和系统安全策略限制。
 
 这组权限可运行核心抓包、socket 探针和 NAT 查询，但不保证能读取其他用户的 `/proc` 信息或挂载 OpenSSL 用户态探针；失败原因可在 `!` 状态页查看。内核模块 BTF 不允许读取时会提示并跳过可选的 kTLS 探针。需要完整进程信息或 OpenSSL 探针时使用 `sudo`。`--version` 不需要这些权限。
+
+进入其他网络命名空间的 `--netns` 还需要 `CAP_SYS_ADMIN`。安装时设置的 file capabilities 不包含它；跨命名空间采集请用 `sudo socktrail --netns ...`。
 
 ## 连接录制
 
@@ -95,7 +100,7 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 ## 页面与接口选择
 
-默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `b` 在四种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
+默认进入整机 PID 页，显示所选网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `b` 在四种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
 - PID 页只算选中的进程，进程分组页只算组内的进程，其他页算所有进程。
 - 父进程接受连接后交给子进程收发时（如 sshd），连接两端的 PID 仍是父进程，`I/O PID` 显示实际收发的子进程。
 
@@ -107,8 +112,10 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 范围和页面互相独立：按 `a` 只换范围、不换页，所以在合并视图的 PID 页里按 `a` 看不到变化。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `7` 看监听端口，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入该网卡详情。
 
 `7 PORTS` 列出当前网络命名空间的 TCP 监听 socket、未连接 UDP socket 和没有监听者却收到连接尝试的端口。每行有绑定地址、进程与服务、当前入站连接、启动后的 accept 次数、TCP accept 队列、被拒与无应答次数、前三个来源；底栏列出当前关联的入站连接。绑定 `0.0.0.0` 或 `::` 标黄，队列达到 backlog 的 80% 标红。顶部的 `ListenOverflows`、`ListenDrops` 是启动后的全局增量。`--output json` 的 `listeners[]` 提供同样数据；无监听端口的尝试带 `no_listener=true`。
+指定多个 `--netns` 时，端口行按命名空间加前缀，JSON 的 `listeners[].netns` 标出所属命名空间，顶部的丢监听计数合计所选命名空间。
 
 不指定 `--interface` 时，程序在当前网络命名空间内选择最多 8 张处于 UP 且 RUNNING 状态的接口：先按名称选择 `/sys/class/net/<name>/device` 下有设备入口的物理网卡，再用 loopback、宿主网桥、隧道等主机级虚拟接口补足；默认跳过容器 veth、Docker 子网桥和 VM tap。超过 8 张时会在标准错误输出提示未选中的名称，已选的 8 张继续采集。自动选择只决定从哪里采集报文，不要求在主页面选网卡。相同五元组和 TCP 代次的跨接口观测在整机页合为一条连接，只取一个采集点的 IP 字节，优先保留已识别的 Host/SNI。
+`--netns` 可重复指定路径、`/run/netns` 中的名字、`pid:PID` 或 `container:ID`（至少 12 位十六进制前缀）；指定后只采集列出的命名空间。每个 `--interface` 名称或 glob 都在每个目标命名空间中匹配，必须在每个命名空间都有匹配；不指定接口时每个命名空间各自自动选择最多 8 张。跨命名空间的同名接口会带上命名空间名前缀，例如 `team-a:eth0`。
 
 NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接口进、另一个接口出的连接方向标为 `forwarded`；conntrack 结果回来之前（通常不到一秒）两侧会各显示一行。代理、隧道改写的地址仍可能留下多个观测流，所以整机页的 IP 字节是观测值，不能作为精确整机总量。`--interface` 可重复指定、用逗号分隔，也支持带引号的 glob 模式，例如 `--interface 'veth*,br-*,docker*,vnet*,tap*'`；显式指定没有网卡数量上限，模式没有匹配时会报错。用 `ip -br link` 查看名称。交互界面按 `1` PID、`2` 来源 IP、`3` 目标 IP、`4` 协议、`d` 域名切换；多接口时按 `i` 切换接口。
 
@@ -153,7 +160,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 
 | 字段 | 内容 |
 | --- | --- |
-| `version`、`netns`、`interfaces` | 格式版本（目前为 1）、网络命名空间 inode、采集的接口 |
+| `version`、`netns`、`interfaces` | 格式版本（目前为 1）、第一个目标网络命名空间的 inode、采集的接口；多个 netns 时接口名含命名空间前缀 |
 | `filter` | 启动时给出的进程范围和 `--filter` 连接条件；连接条件筛选 `flows[]`、由连接计算的域名汇总和失败分组，采集总量及进程、服务总量仍表示采集范围 |
 | `probes.pid` | PID 探针的 `received`、`kernel_lost`、`dropped`、`invalid` |
 | `probes.openssl`、`probes.socket_stream` | 各自的 `status` 行和同样的计数；OpenSSL 探针不统计 `kernel_lost`，恒为 0 |
@@ -167,7 +174,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
 | `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
 | `failures[]` | 最近失败的出站 TCP 建连，按原因、进程和目标分组；包含次数、首次/最近时间及连接 ID。最多覆盖内存中最近 5000 条已结束连接 |
-| `listeners[]`、`listen_overflows`、`listen_drops` | 当前 TCP/UDP 监听端口与没有监听者的尝试；队列与 backlog 仅 TCP 有值，后两项是启动以来的全局增量 |
+| `listeners[]`、`listen_overflows`、`listen_drops` | 所选命名空间的 TCP/UDP 监听端口与没有监听者的尝试；多个 netns 时每项含 `netns` 名，队列与 backlog 仅 TCP 有值，后两项是所选命名空间启动后增量之和 |
 | `probes.connect_result` | 内核建连结果探针的状态和已收到事件数；不可用时仍按抓包状态显示连接 |
 
 `flows[]` 的字段：

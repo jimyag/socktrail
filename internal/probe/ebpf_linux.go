@@ -24,6 +24,11 @@ import (
 // their bytecode and does not invoke a separate tracing process at runtime.
 // Events come in batches, each what the ring held when it was read.
 func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Event, <-chan error, *Statistics, error) {
+	return StartEmbeddedNamespaces(ctx, []uint64{netNS}, port)
+}
+
+// StartEmbeddedNamespaces shares one probe instance across selected network namespaces.
+func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (<-chan []Event, <-chan error, *Statistics, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, nil, nil, fmt.Errorf("remove eBPF memlock limit: %w", err)
 	}
@@ -94,11 +99,13 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 		}
 		fmt.Fprintln(os.Stderr, notice)
 	}
-	key := uint32(0)
-	if err := objects.Maps["settings"].Update(key, BpfConfig{Netns: netNS, Port: port}, ebpf.UpdateAny); err != nil {
-		objects.Close()
-		return nil, nil, nil, fmt.Errorf("configure eBPF network namespace: %w", err)
+	for _, key := range netNS {
+		if err := objects.Maps["settings"].Update(key, BpfConfig{Netns: key, Port: port}, ebpf.UpdateAny); err != nil {
+			objects.Close()
+			return nil, nil, nil, fmt.Errorf("configure eBPF network namespace %d: %w", key, err)
+		}
 	}
+	key := uint32(0) // The lost counter remains a one-entry array.
 	var links []link.Link
 	for name, program := range objects.Programs {
 		attached, err := link.AttachTracing(link.TracingOptions{Program: program})

@@ -138,9 +138,9 @@ struct event {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 128);
+    __type(key, __u64);
     __type(value, struct config);
 } settings SEC(".maps");
 struct {
@@ -178,8 +178,9 @@ int BPF_PROG(tcp_connect_result, const struct sock *sk, int oldstate, int newsta
     if (!sk || (newstate != TCP_SYN_SENT && oldstate != TCP_SYN_SENT)) return 0;
     if (BPF_CORE_READ(sk, sk_protocol) != 6) return 0;
     __u32 zero = 0;
-    struct config *cfg = bpf_map_lookup_elem(&settings, &zero);
-    if (!cfg || !cfg->netns || BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum) != cfg->netns) return 0;
+    __u64 netns = BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum);
+    struct config *cfg = bpf_map_lookup_elem(&settings, &netns);
+    if (!cfg) return 0;
     __u64 key = (__u64)sk;
     if (newstate == TCP_SYN_SENT) {
         struct task_struct *task = (void *)bpf_get_current_task();
@@ -258,16 +259,14 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
                                   __s32 local_port_override)
 {
     __u32 zero = 0;
-    struct config *cfg = bpf_map_lookup_elem(&settings, &zero);
-    if (!cfg || !cfg->netns) return 0;
-
     // Not bpf_get_current_task_btf, which needs Linux 5.11.
     struct task_struct *task = (void *)bpf_get_current_task();
     // A retransmission runs in softirq or timer context on behalf of no
     // particular task: its netns comes from the socket, and it has no PID.
     __u64 netns = operation == OP_RETRANSMIT ? BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum)
                                              : BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
-    if (netns != cfg->netns) return 0;
+    struct config *cfg = bpf_map_lookup_elem(&settings, &netns);
+    if (!cfg) return 0;
 
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
     if (family_hint && family != family_hint) return 0;

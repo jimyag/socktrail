@@ -213,6 +213,7 @@ type collector struct {
 	filterPort      uint16
 	loopback        bool
 	interfaceIndex  int // Its position in captureInterfaces.
+	netns           uint64
 	debugPID        bool
 	pidIO           map[processID]processIO
 	rxBytes         uint64
@@ -1146,7 +1147,9 @@ func (c *collector) reconcileWildcards() {
 
 func Run() error {
 	var interfaceNames interfaceFlags
+	var netnsSpecs interfaceFlags
 	flag.Var(&interfaceNames, "interface", "network interfaces to observe (repeat or comma-separate names or glob patterns; default: up to 8, physical first)")
+	flag.Var(&netnsSpecs, "netns", "network namespace path, name, pid:PID, or container:ID (repeatable; default: current)")
 	duration := flag.Duration("duration", 0, "stop after this duration (default: until Ctrl-C)")
 	limit := flag.Int("limit", 30, "number of flows to print")
 	filterExpression := flag.String("filter", "", "filter displayed flows (for example 'port:443 dir:outbound proc:curl')")
@@ -1211,9 +1214,24 @@ func Run() error {
 	if *recordBefore > 0 && (*duration > 0 || *output == "ndjson") {
 		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
 	}
-	interfaceNames, err = resolveInterfaces(interfaceNames)
+	targets, namespaces, err := resolveCaptureTargets(netnsSpecs, interfaceNames)
 	if err != nil {
 		return err
+	}
+	defer func() {
+		for _, ns := range namespaces {
+			_ = ns.file.Close()
+		}
+	}()
+	interfaceNames = make(interfaceFlags, 0, len(targets))
+	targetByName := make(map[string]captureTarget, len(targets))
+	netNSIDs := make([]uint64, 0, len(namespaces))
+	for _, ns := range namespaces {
+		netNSIDs = append(netNSIDs, ns.inode)
+	}
+	for _, target := range targets {
+		interfaceNames = append(interfaceNames, target.name)
+		targetByName[target.name] = target
 	}
 	if handled, err := prepareCaptureMemory(interfaceNames, *memoryLimit, *yes); handled || err != nil {
 		return err
@@ -1222,14 +1240,7 @@ func Run() error {
 	if *duration == 0 && *output != "ndjson" && *debugPID {
 		return fmt.Errorf("--debug-pid-events requires --duration to keep the interactive screen readable")
 	}
-	info, err := os.Stat("/proc/self/ns/net")
-	if err != nil {
-		return fmt.Errorf("read network namespace: %w", err)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("read network namespace inode: unexpected stat type")
-	}
+	netNSInode := namespaces[0].inode
 	stopSignals := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	if !signal.Ignored(syscall.SIGHUP) {
 		// A hang-up stops cleanly, closing any recording; under nohup it
@@ -1242,7 +1253,7 @@ func Run() error {
 	defer cancelRun()
 	probeCtx, cancelProbe := context.WithCancel(ctx)
 	defer cancelProbe()
-	events, probeDone, probeStats, err := probe.StartEmbedded(probeCtx, stat.Ino, uint16(*port))
+	events, probeDone, probeStats, err := probe.StartEmbeddedNamespaces(probeCtx, netNSIDs, uint16(*port))
 	if err != nil {
 		return err
 	}
@@ -1252,7 +1263,7 @@ func Run() error {
 	tlsStatus := "OpenSSL process probe disabled"
 	if *opensslProbe {
 		var path string
-		tlsEvents, tlsDone, tlsStats, path, err = tlsprobe.Start(probeCtx, stat.Ino)
+		tlsEvents, tlsDone, tlsStats, path, err = tlsprobe.StartNamespaces(probeCtx, netNSIDs)
 		if err != nil {
 			tlsStatus = "OpenSSL process probe unavailable: " + err.Error()
 			if os.Geteuid() != 0 && errors.Is(err, os.ErrPermission) {
@@ -1267,24 +1278,75 @@ func Run() error {
 	var streamStats *sockstream.Statistics
 	streamStatus := "socket stream capture disabled"
 	if *socketSniff {
-		streamChunks, streamDone, streamStats, err = sockstream.Start(probeCtx, stat.Ino, uint16(*port))
+		streamChunks, streamDone, streamStats, err = sockstream.StartNamespaces(probeCtx, netNSIDs, uint16(*port))
 		if err != nil {
 			streamStatus = "socket stream capture unavailable: " + err.Error()
 		} else {
 			streamStatus = "socket stream capture active: first 16 KiB per TCP socket direction, QUIC long-header datagrams per UDP socket"
 		}
 	}
-	nat, natStatus := startNAT(probeCtx)
-	var natResults <-chan conntrack.Entry
-	if nat != nil {
-		natResults = nat.results
+	type natResult struct {
+		netns uint64
+		entry conntrack.Entry
+	}
+	natByNS := make(map[uint64]*natTable, len(namespaces))
+	natResults := make(chan natResult, 1024)
+	natStatus := "NAT mapping unavailable"
+	for _, ns := range namespaces {
+		var table *natTable
+		var status string
+		if err := ns.do(func() error { table, status = startNAT(probeCtx); return nil }); err != nil {
+			return err
+		}
+		if len(natByNS) == 0 {
+			natStatus = status
+		}
+		natByNS[ns.inode] = table
+		if table != nil {
+			go func() {
+				for {
+					select {
+					case <-probeCtx.Done():
+						return
+					case entry := <-table.results:
+						select {
+						case natResults <- natResult{ns.inode, entry}:
+						case <-probeCtx.Done():
+							return
+						}
+					}
+				}
+			}()
+		}
+	}
+	nat := natByNS[namespaces[0].inode]
+	activeNAT := 0
+	for _, table := range natByNS {
+		if table != nil {
+			activeNAT++
+			if nat == nil {
+				nat = table
+			}
+		}
+	}
+	if activeNAT > 0 && activeNAT < len(namespaces) {
+		natStatus = fmt.Sprintf("NAT mapping active in %d/%d namespaces", activeNAT, len(namespaces))
 	}
 	streams := make(socketStreams)
 	processes := newProcessTable("/proc")
-	sockets := &socketInventory{procRoot: "/proc", loaded: make(chan *socketInventory, 1), trackListeners: *output == "json" || *duration == 0 && *output == "text"}
-	sockets.load()
-	sockets.atStart = sockets.sockets
-	sockets.listenStartOverflows, sockets.listenStartDrops = sockets.listenOverflows, sockets.listenDrops
+	loadedSockets := make(chan *socketInventory, len(namespaces))
+	socketsByNS := make(map[uint64]*socketInventory, len(namespaces))
+	for _, ns := range namespaces {
+		inv := &socketInventory{procRoot: "/proc", ns: ns, loaded: loadedSockets, done: ctx.Done(), trackListeners: *output == "json" || *duration == 0 && *output == "text"}
+		inv.load()
+		if inv.loadErr != nil {
+			return fmt.Errorf("read socket table in %s: %w", ns.name, inv.loadErr)
+		}
+		inv.atStart = inv.sockets
+		inv.listenStartOverflows, inv.listenStartDrops = inv.listenOverflows, inv.listenDrops
+		socketsByNS[ns.inode] = inv
+	}
+	sockets := socketsByNS[namespaces[0].inode]
 	captureSockets := make(map[string]*capture.Socket, len(interfaceNames))
 	var captureWG sync.WaitGroup
 	defer func() {
@@ -1300,7 +1362,13 @@ func Run() error {
 	// almost nothing.
 	ringSize := captureRingSize(len(interfaceNames))
 	for _, name := range interfaceNames {
-		s, err := capture.Open(name, ringSize)
+		target := targetByName[name]
+		var s *capture.Socket
+		err := target.ns.do(func() error {
+			var openErr error
+			s, openErr = capture.OpenAs(target.device, name, ringSize)
+			return openErr
+		})
 		if err != nil {
 			return err
 		}
@@ -1334,16 +1402,26 @@ func Run() error {
 		close(packets)
 	}()
 	collectors := make(map[string]*collector, len(interfaceNames))
-	dnsHints := new(domain.DNSCache)
+	dnsHintsByNS := make(map[uint64]*domain.DNSCache, len(namespaces))
+	for _, ns := range namespaces {
+		dnsHintsByNS[ns.inode] = new(domain.DNSCache)
+	}
 	for i, name := range interfaceNames {
-		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHints, nat: nat, roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: name == "lo", interfaceIndex: i, debugPID: *debugPID && i == 0}
+		collectors[name] = &collector{flows: make(map[flowKey]*flow), dns: dnsHintsByNS[targetByName[name].ns.inode], nat: natByNS[targetByName[name].ns.inode], roles: make(map[flowKey]roles), wildcards: make(map[wildcardKey]participant), roleSeen: make(map[flowKey]time.Time), wildcardSeen: make(map[wildcardKey]time.Time), pidIO: make(map[processID]processIO), pidSeen: make(map[processID]time.Time), maxFlows: 20_000, filterPort: uint16(*port), loopback: targetByName[name].device == "lo", interfaceIndex: i, netns: targetByName[name].ns.inode, debugPID: *debugPID && i == 0}
+	}
+	collectorsByNS := make(map[uint64]map[string]*collector, len(namespaces))
+	for name, c := range collectors {
+		if collectorsByNS[c.netns] == nil {
+			collectorsByNS[c.netns] = make(map[string]*collector)
+		}
+		collectorsByNS[c.netns][name] = c
 	}
 	host, _, members := hostCollector(interfaceNames, collectors)
 	var hostState hostViewState
 	hostState.update(host, members)
 	var ui *terminalUI
 	if *duration == 0 && *output != "ndjson" {
-		ui, err = openUI(interfaceNames, stat.Ino, collectors)
+		ui, err = openUI(interfaceNames, netNSInode, collectors)
 		if err != nil {
 			return err
 		}
@@ -1355,6 +1433,7 @@ func Run() error {
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
 		ui.natStatus, ui.nat = natStatus, nat
+		ui.natByNS = natByNS
 		ui.geo = geo
 		ui.geoDir, ui.showGeo = *geoDir, geo.Available()
 		if !geo.Available() {
@@ -1362,13 +1441,14 @@ func Run() error {
 		}
 		ui.processes, ui.scopeFilter = processes, filter
 		ui.sockets = sockets
+		ui.namespaces, ui.socketsByNS = namespaces, socketsByNS
 		ui.filter = *filterExpression
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
 		if autoInterfaces {
-			fmt.Printf("socktrail OVERVIEW snapshot: %d capture interfaces, netns=%d; PID socket I/O for whole netns\n", len(interfaceNames), stat.Ino)
+			fmt.Printf("socktrail OVERVIEW snapshot: %d capture interfaces, netns=%d; PID socket I/O for whole netns\n", len(interfaceNames), netNSInode)
 		} else {
-			fmt.Printf("socktrail capture snapshot: interfaces=%s netns=%d; IP observations per interface, PID socket I/O for whole netns\n", strings.Join(interfaceNames, ","), stat.Ino)
+			fmt.Printf("socktrail capture snapshot: interfaces=%s netns=%d; IP observations per interface, PID socket I/O for whole netns\n", strings.Join(interfaceNames, ","), netNSInode)
 		}
 		fmt.Println(tlsStatus)
 		fmt.Println(streamStatus)
@@ -1453,10 +1533,14 @@ func Run() error {
 				history.trim(time.Now())
 			}
 			processes.expire(time.Now())
-			dnsHints.Expire(time.Now())
+			for _, hints := range dnsHintsByNS {
+				hints.Expire(time.Now())
+			}
 			streams.expire(time.Now())
-			if nat != nil {
-				nat.expire(time.Now())
+			for _, table := range natByNS {
+				if table != nil {
+					table.expire(time.Now())
+				}
 			}
 			for _, name := range interfaceNames {
 				c := collectors[name]
@@ -1474,8 +1558,10 @@ func Run() error {
 			if sockets.trackListeners {
 				interval = 5 * time.Second
 			}
-			if time.Since(sockets.read) >= interval {
-				sockets.refresh(collectors, time.Now())
+			for id, inv := range socketsByNS {
+				if time.Since(inv.read) >= interval {
+					inv.refresh(collectorsByNS[id], time.Now())
+				}
 			}
 			if ui != nil && !ui.closed || streamEncoder != nil {
 				if ui != nil && !ui.closed {
@@ -1619,14 +1705,17 @@ func Run() error {
 			for _, e := range batch {
 				e.StartNS = tickStartNS(e.StartNS)
 				processes.observe(e)
-				if e.Operation == "accept" && e.Protocol == 6 && sockets.trackListeners {
-					if sockets.accepted == nil {
-						sockets.accepted = make(map[uint16]uint64)
+				inv := socketsByNS[e.NetNS]
+				if e.Operation == "accept" && e.Protocol == 6 && inv != nil && inv.trackListeners {
+					if inv.accepted == nil {
+						inv.accepted = make(map[uint16]uint64)
 					}
-					sockets.accepted[e.Local.Port()]++
+					inv.accepted[e.Local.Port()]++
 				}
 				for _, name := range interfaceNames {
-					collectors[name].event(e)
+					if collectors[name].netns == e.NetNS {
+						collectors[name].event(e)
+					}
 				}
 			}
 		case e, ok := <-tlsEvents:
@@ -1636,7 +1725,9 @@ func Run() error {
 			}
 			e.StartNS = tickStartNS(e.StartNS)
 			for _, name := range interfaceNames {
-				collectors[name].tlsEvent(e)
+				if collectors[name].netns == e.NetNS {
+					collectors[name].tlsEvent(e)
+				}
 			}
 		case chunk, ok := <-streamChunks:
 			if !ok {
@@ -1645,15 +1736,19 @@ func Run() error {
 			}
 			if stream := streams.add(chunk, time.Now()); stream != nil {
 				for _, name := range interfaceNames {
-					collectors[name].socketEvidence(stream)
+					if collectors[name].netns == stream.netns {
+						collectors[name].socketEvidence(stream)
+					}
 				}
 			}
-		case next := <-sockets.loaded:
-			sockets.apply(next, collectors)
+		case next := <-loadedSockets:
+			socketsByNS[next.ns.inode].apply(next, collectorsByNS[next.ns.inode])
 		case e := <-natResults:
-			entry := nat.add(e, time.Now())
+			entry := natByNS[e.netns].add(e.entry, time.Now())
 			for _, name := range interfaceNames {
-				collectors[name].linkNAT(entry)
+				if collectors[name].netns == e.netns {
+					collectors[name].linkNAT(entry)
+				}
 			}
 		case err := <-streamDone:
 			if err != nil {
@@ -1693,10 +1788,13 @@ func Run() error {
 			fmt.Printf("Socket stream chunks %d kernel-lost %d dropped %d invalid %d\n", streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load())
 		}
 		if nat != nil {
-			fmt.Println(nat.stats())
+			total := natTotals(natByNS, natStatus)
+			fmt.Printf("NAT lookups %d  NAT'd %d  queue full %d  failed %d\n", total.Lookups, total.Translated, total.QueueFull, total.Failed)
 		}
 	}
-	sockets.refreshNow(collectors)
+	for id, inv := range socketsByNS {
+		inv.refreshNow(collectorsByNS[id])
+	}
 	for _, name := range interfaceNames {
 		c := collectors[name]
 		c.reconcileWildcards()
@@ -1730,7 +1828,7 @@ func Run() error {
 			}
 		}
 	} else if *output == "json" {
-		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, GeoIP: geo.Status(), Probes: jsonProbes{
+		snapshot := jsonSnapshot{Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Probes: jsonProbes{
 			PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
 			ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
 			OpenSSL:       jsonProbe{Status: tlsStatus},
@@ -1744,7 +1842,7 @@ func Run() error {
 			snapshot.Probes.SocketStream = jsonProbe{streamStatus, streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load()}
 		}
 		if nat != nil {
-			snapshot.Probes.NAT = nat.json(natStatus)
+			snapshot.Probes.NAT = natTotals(natByNS, natStatus)
 		}
 		scope := newProcessScope(processes, filter)
 		// A service's connections span every interface, like the host view.
@@ -1759,11 +1857,28 @@ func Run() error {
 			}
 		}
 		snapshot.Filter = strings.TrimSpace(filter.String() + " " + *filterExpression)
-		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit, processes, scope)
+		snapshot.Processes = processesJSON(host, *limit, processes, scope)
 		snapshot.Services = servicesJSON(host, processes, scope)
-		snapshot.Listeners = listenersJSON(host, sockets, processes, scope)
-		snapshot.ListenOverflows = sockets.listenOverflows - sockets.listenStartOverflows
-		snapshot.ListenDrops = sockets.listenDrops - sockets.listenStartDrops
+		if len(namespaces) == 1 {
+			snapshot.Listeners = listenersJSON(host, sockets, processes, scope)
+		} else {
+			for _, ns := range namespaces {
+				var names []string
+				for name := range collectorsByNS[ns.inode] {
+					names = append(names, name)
+				}
+				local, _, _ := hostCollector(names, collectors)
+				items := listenersJSON(local, socketsByNS[ns.inode], processes, scope)
+				for i := range items {
+					items[i].NetNS = ns.name
+				}
+				snapshot.Listeners = append(snapshot.Listeners, items...)
+			}
+		}
+		for _, inv := range socketsByNS {
+			snapshot.ListenOverflows += inv.listenOverflows - inv.listenStartOverflows
+			snapshot.ListenDrops += inv.listenDrops - inv.listenStartDrops
+		}
 		for _, group := range hostState.failureGroups(scope, host) {
 			var ids []uint64
 			var first, last time.Time
@@ -1806,7 +1921,7 @@ func Run() error {
 				printReport(*collectors[name], name, *limit, probeStats, scope, flowFilter{compiledFilter, processes, geo})
 			}
 		}
-		printPIDIO(collectors[interfaceNames[0]], *limit, processes, scope)
+		printPIDIO(host, *limit, processes, scope)
 		printServices(host, *limit, processes, scope)
 	}
 	return nil

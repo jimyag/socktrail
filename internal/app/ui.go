@@ -186,6 +186,9 @@ type terminalUI struct {
 	started           time.Time
 	interfaces        []string
 	collectors        map[string]*collector
+	namespaces        []*networkNamespace
+	socketsByNS       map[uint64]*socketInventory
+	natByNS           map[uint64]*natTable
 	interfaceName     string
 	hostScope         bool
 	interfacePrevious map[string]counters
@@ -786,8 +789,25 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		addWithKey(label, label, f, ownBytes)
 	}
 	if mode == viewPorts {
-		for _, row := range listenerRows(c, u.sockets, u.processes, scope, u.rates) {
-			rows[row.key] = row
+		if len(u.namespaces) > 1 {
+			for _, ns := range u.namespaces {
+				var names []string
+				for name, collector := range u.collectors {
+					if collector.netns == ns.inode {
+						names = append(names, name)
+					}
+				}
+				local, _, _ := hostCollector(names, u.collectors)
+				for _, row := range listenerRows(local, u.socketsByNS[ns.inode], u.processes, scope, u.rates) {
+					row.key = ns.name + ":" + row.key
+					row.label = ns.name + ":" + row.label
+					rows[row.key] = row
+				}
+			}
+		} else {
+			for _, row := range listenerRows(c, u.sockets, u.processes, scope, u.rates) {
+				rows[row.key] = row
+			}
 		}
 	} else if mode == viewLog && u.hostState != nil {
 		if u.logGrouping == 2 {
@@ -1358,14 +1378,23 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, fmt.Sprintf("Recent connection changes by %s (b cycles); last 5000 events, newest first", groups[u.logGrouping]))
 	} else if u.mode == viewPorts {
 		if u.sockets != nil {
-			lines = append(lines, fmt.Sprintf("Listening sockets and attempted ports | ListenOverflows +%d ListenDrops +%d since start", u.sockets.listenOverflows-u.sockets.listenStartOverflows, u.sockets.listenDrops-u.sockets.listenStartDrops))
+			var overflows, drops uint64
+			for _, inv := range u.socketsByNS {
+				overflows += inv.listenOverflows - inv.listenStartOverflows
+				drops += inv.listenDrops - inv.listenStartDrops
+			}
+			if len(u.socketsByNS) == 0 {
+				overflows = u.sockets.listenOverflows - u.sockets.listenStartOverflows
+				drops = u.sockets.listenDrops - u.sockets.listenStartDrops
+			}
+			lines = append(lines, fmt.Sprintf("Listening sockets and attempted ports | ListenOverflows +%d ListenDrops +%d since start", overflows, drops))
 		} else {
 			lines = append(lines, "Listening sockets and attempted ports")
 		}
 	} else if u.mode == viewService {
 		lines = append(lines, fmt.Sprintf("GROUPS by %s (b cycles grouping) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
 	} else if u.hostScope && u.mode == viewPID {
-		lines = append(lines, fmt.Sprintf("PID: whole-netns socket bytes | IP detail: one capture copy/flow | Host/SNI %d", namedDomainFlows))
+		lines = append(lines, fmt.Sprintf("PID: selected netns socket bytes | IP detail: one capture copy/flow | Host/SNI %d", namedDomainFlows))
 	} else if u.hostScope && u.mode == viewDomain {
 		lines = append(lines, fmt.Sprintf("%s | %d named flows | OBS IP bytes: one copy/flow", httpsCoverage(c.allFlows()), namedDomainFlows))
 	} else if u.hostScope {
@@ -1428,7 +1457,12 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		}
 		lines = append(lines, u.natStatus)
 		if u.nat != nil {
-			lines = append(lines, u.nat.stats())
+			if len(u.natByNS) == 0 {
+				lines = append(lines, u.nat.stats())
+			} else {
+				total := natTotals(u.natByNS, u.natStatus)
+				lines = append(lines, fmt.Sprintf("NAT lookups %d  NAT'd %d  queue full %d  failed %d", total.Lookups, total.Translated, total.QueueFull, total.Failed))
+			}
 		}
 		if u.capturePath != "" {
 			lines = append(lines, "PCAPNG: "+u.captureStatus+"  "+u.capturePath)

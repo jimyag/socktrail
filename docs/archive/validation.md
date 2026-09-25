@@ -428,7 +428,7 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 - 非当前网络命名空间的 PID 与容器内方向仍无法采集；Docker bridge/host 的宿主侧行为见上方实测。其他 CNI、conntrack zone 非 0 的条目（部分 OVS、CNI 场景）尚未验收，可能查不到。“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
 - `sendfile`、splice 和内核 TLS 的计数由 root 测试核对；io_uring 的零拷贝发送等其他路径没有验证，PID 应用字节只承诺已挂探针的返回值。
 - 探针挂载前已经进入阻塞 `recvfrom` 的 UDP 服务，首次返回可能少计；服务进程在探针之后启动的对照场景两端各为 RX/TX 5 B。启动时抓取的中途连接和调用不能补历史数据。Linux 6.8 以前的内核没有 `__inet_accept`，回退到 `inet_csk_accept` 的 fexit 已在 5.10 至 5.15 上加载并收到 accept 事件，但挂载前就阻塞着的第一次 accept 仍会漏掉，只能靠 socket 表补上仍存在的连接。
-- 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
+- 内核 socket 表只覆盖启动时所选的网络命名空间，每个命名空间每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
 - 其他内核只在虚拟机里验证了回环流量；arm64 实机只有 CI 的 GitHub arm64 runner（root 测试和冒烟快照），没有带真实负载运行过；RHEL 系只测了 CentOS Stream 9、10。
 - UDP 的 socket 层读取只读发出的 QUIC 长包头，DNS 应答仍只靠报文；QUIC Initial 的 socket 层读取只有 root 单元测试，尚未用真实本机 QUIC 客户端在透明代理下验收。
 - 抓包性能只在 veth 上测过（每秒约 60 万个 TCP 帧、48 万个 64 B UDP 报文），物理网卡、多队列 RSS、百万级 pps 没有测；长稳运行只做了 1 小时。另外还缺物理网卡上的 GSO/GRO、首片丢失的 IP 分片、丢包后的重组恢复，以及真实 ECH 与浏览器 GREASE ECH 流量。`lo` 上的 TSO 截断、无 SYN 的 ClientHello 和 veth 上的 IPv4/IPv6 分片已有受控样本或单元测试，但不代表这些场景都已验收。
