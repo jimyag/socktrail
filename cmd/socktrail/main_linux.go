@@ -1216,6 +1216,10 @@ func run() error {
 		}
 		return collectors[ui.interfaceName]
 	}
+	var summary sessionSummary
+	if ui != nil {
+		summary.sample(collectors)
+	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	tickCh := ticker.C
@@ -1255,6 +1259,9 @@ func run() error {
 	for packets != nil || events != nil || tlsEvents != nil || streamChunks != nil {
 		select {
 		case <-tickCh:
+			if ui != nil {
+				summary.sample(collectors)
+			}
 			if recording != nil && !time.Now().Before(recording.until) {
 				stopRecording("15s complete")
 			}
@@ -1453,23 +1460,25 @@ func run() error {
 		c.kernelDropped += uint64(packetStats.Dropped)
 	}
 	if ui != nil {
+		summary.sample(collectors)
 		ui.close()
 		if ui.capturePath != "" {
 			fmt.Printf("PCAPNG: %s (%s)\n", ui.capturePath, ui.captureStatus)
 		}
-		if autoInterfaces {
-			var dropped uint64
-			for _, name := range interfaceNames {
-				dropped += collectors[name].kernelDropped
-			}
-			fmt.Printf("socktrail stopped: %d capture interfaces, AF_PACKET dropped %d\n", len(interfaceNames), dropped)
-		} else {
+		var packets, ipBytes, dropped uint64
+		for _, name := range interfaceNames {
+			c := collectors[name]
+			packets += c.packets
+			ipBytes += c.bytes
+			dropped += c.kernelDropped
+		}
+		summary.print(os.Stdout, len(interfaceNames), packets, ipBytes, dropped, probeStats.KernelLost.Load())
+		if !autoInterfaces {
 			for _, name := range interfaceNames {
 				c := collectors[name]
-				fmt.Printf("socktrail stopped %s: %d IP packets, %d IP bytes, capture drops %d\n", name, c.packets, c.bytes, c.kernelDropped)
+				fmt.Printf("  %s: %d IP packets, %d IP bytes, capture drops %d\n", name, c.packets, c.bytes, c.kernelDropped)
 			}
 		}
-		fmt.Printf("PID ring lost %d\n", probeStats.KernelLost.Load())
 	} else if *output == "json" {
 		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, Probes: jsonProbes{
 			PID:          jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
