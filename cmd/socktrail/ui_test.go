@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,8 +168,8 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 		t.Fatalf("wide main table did not fill viewport: %d", len([]rune(mainWide.header())))
 	}
 	mainNarrow := groupLayout([]*uiRow{row}, viewPID, 79)
-	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.Contains(got, host) {
-		t.Fatalf("narrow layout discarded the domain before scrolling: %q", got)
+	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.HasSuffix(strings.TrimSpace(got), "+1") {
+		t.Fatalf("narrow layout did not count the hidden domain: %q", got)
 	}
 	detail := connectionLayout(row, viewPID, &collector{})
 	line := connectionLine(detail, f, row, viewPID, &collector{}, "▸")
@@ -184,6 +185,61 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	}
 	if got := scrollTableLine("▸ABCDEF", 3, 4); got != "▸DEF" {
 		t.Fatalf("horizontal scrolling lost the selected-row marker: %q", got)
+	}
+}
+
+func TestGroupColumnsExpandWhenViewportFits(t *testing.T) {
+	previous := captureInterfaces
+	captureInterfaces = []string{"eth0", "br0", "veth123"}
+	t.Cleanup(func() { captureInterfaces = previous })
+
+	first := &flow{Domain: domain.New(1)}
+	first.Domain.Add(1, []byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
+	second := &flow{Domain: domain.New(1)}
+	second.Domain.Add(1, []byte("GET / HTTP/1.1\r\nHost: web.example.test\r\n\r\n"))
+	row := &uiRow{label: "101 client", flows: []*flow{first, second}}
+	for index := range captureInterfaces {
+		row.ifaces.add(index)
+	}
+
+	wide := groupLayout([]*uiRow{row}, viewPID, 300)
+	if got := groupLine(wide, row, viewPID, "▸"); !strings.Contains(got, "eth0,br0,veth123") || !strings.Contains(got, "HTTP api.example.test, HTTP web.example.test") {
+		t.Fatalf("wide table kept folded values: %q", got)
+	}
+	narrow := groupLayout([]*uiRow{row}, viewPID, 100)
+	if got := groupLine(narrow, row, viewPID, "▸"); !strings.Contains(got, "eth0,br0 +1") || !strings.Contains(got, "HTTP api.example.test +1") {
+		t.Fatalf("narrow table lost compact values: %q", got)
+	}
+
+	first.Initiator, first.Target = netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("192.0.2.2:443")
+	second.Initiator, second.Target = netip.MustParseAddrPort("192.0.2.3:5001"), netip.MustParseAddrPort("192.0.2.4:443")
+	domainWide := groupLayout([]*uiRow{row}, viewDomain, 300)
+	if got := groupLine(domainWide, row, viewDomain, "▸"); !strings.Contains(got, "192.0.2.1 → 192.0.2.2") || !strings.Contains(got, "192.0.2.3 → 192.0.2.4") {
+		t.Fatalf("wide domain page kept only one peer: %q", got)
+	}
+}
+
+func TestGroupHintsFitAsManyAsPossibleWithRemainder(t *testing.T) {
+	row := &uiRow{label: "101 client"}
+	var names []string
+	for i := range 7 {
+		name := "service-" + strconv.Itoa(i) + ".example.test"
+		names = append(names, "HTTP "+name)
+		f := &flow{Domain: domain.New(1)}
+		f.Domain.Add(1, []byte("GET / HTTP/1.1\r\nHost: "+name+"\r\n\r\n"))
+		row.flows = append(row.flows, f)
+	}
+	want := strings.Join(names[:5], ", ") + " +2"
+	hintWidth := displayWidth(want)
+	base := groupLayout([]*uiRow{row}, viewPID, 0)
+	viewport := base.width + hintWidth - base.columns[len(base.columns)-1].width
+	layout := groupLayout([]*uiRow{row}, viewPID, viewport)
+	got := groupLine(layout, row, viewPID, "▸")
+	if !strings.Contains(got, want) || strings.Contains(got, names[5]) {
+		t.Fatalf("expected five visible domains and +2: %q", got)
+	}
+	if displayWidth(got) != viewport || displayWidth(fitItems(names, ", ", hintWidth)) > hintWidth {
+		t.Fatalf("group row or +N exceeded viewport %d: %q", viewport, got)
 	}
 }
 

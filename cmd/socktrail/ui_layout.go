@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -114,6 +115,45 @@ func groupHint(row *uiRow, mode viewMode) string {
 	return observedDomainHint(row)
 }
 
+func groupHintValues(row *uiRow, mode viewMode) []string {
+	if mode == viewDomain && len(row.flows) > 0 {
+		pairs := make(map[string]struct{}, len(row.flows))
+		for _, f := range row.flows {
+			source, target := displayedEndpoints(f)
+			pairs[source+" → "+target] = struct{}{}
+		}
+		return slices.Sorted(maps.Keys(pairs))
+	}
+	return observedDomainHints(row)
+}
+
+func fitItems(items []string, separator string, width int) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	best := "+" + strconv.Itoa(len(items))
+	var value strings.Builder
+	used := 0
+	for i, item := range items {
+		if i > 0 {
+			value.WriteString(separator)
+			used += displayWidth(separator)
+		}
+		value.WriteString(item)
+		used += displayWidth(item)
+		remaining := len(items) - i - 1
+		suffix := ""
+		if remaining > 0 {
+			suffix = " +" + strconv.Itoa(remaining)
+		}
+		if used+displayWidth(suffix) > width {
+			break
+		}
+		best = value.String() + suffix
+	}
+	return best
+}
+
 func flowTimes(flows []*flow) (string, string) {
 	var first, last time.Time
 	for _, f := range flows {
@@ -135,12 +175,18 @@ func displayTime(value time.Time) string {
 }
 
 func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
-	groupWidth, hintWidth, ifaceWidth := 0, 42, 0
+	groupWidth, ifaceWidth := 0, 0
+	fullHintWidth, fullIfaceWidth := 42, 0
 	tcpWidth, udpWidth, icmpWidth, reqWidth, unknownWidth, flowsWidth := 5, 5, 8, 5, 5, 6
 	for _, row := range rows {
 		groupWidth = max(groupWidth, displayWidth(row.label))
 		ifaceWidth = max(ifaceWidth, displayWidth(interfaceList(row.ifaces, 2)))
-		hintWidth = max(hintWidth, displayWidth(groupHint(row, mode)))
+		fullIfaceWidth = max(fullIfaceWidth, displayWidth(interfaceList(row.ifaces, 0)))
+		separator := ", "
+		if mode == viewDomain {
+			separator = "; "
+		}
+		fullHintWidth = max(fullHintWidth, displayWidth(strings.Join(groupHintValues(row, mode), separator)))
 		tcpWidth = max(tcpWidth, len(strconv.FormatUint(row.tcp, 10)))
 		udpWidth = max(udpWidth, len(strconv.FormatUint(row.udp, 10)))
 		icmpWidth = max(icmpWidth, len(strconv.FormatUint(row.icmp, 10)))
@@ -163,18 +209,31 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 		{title: "FLOWS", width: flowsWidth, right: true},
 		{title: "FIRST", width: 8},
 		{title: "LAST", width: 8},
-		{title: "HOST/SNI OR PEER", width: hintWidth},
+		{title: "HOST/SNI OR PEER", width: 42},
+	}
+	base := newTableLayout(columns, 0)
+	extra := max(0, viewport-base.width)
+	ifaceNeed := max(0, fullIfaceWidth-base.columns[1].width)
+	hintNeed := max(0, fullHintWidth-base.columns[len(base.columns)-1].width)
+	if ifaceNeed+hintNeed > 0 {
+		columns[1].width += min(ifaceNeed, extra*ifaceNeed/(ifaceNeed+hintNeed))
 	}
 	return newTableLayout(columns, viewport, len(columns)-1)
 }
 
 func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) string {
 	first, last := flowTimes(row.flows)
+	separator := ", "
+	if mode == viewDomain {
+		separator = "; "
+	}
+	ifaces := fitItems(interfacesOf(row.ifaces), ",", layout.columns[1].width)
+	hint := fitItems(groupHintValues(row, mode), separator, layout.columns[len(layout.columns)-1].width)
 	return layout.line(cursor,
-		row.label, interfaceList(row.ifaces, 2), human(row.rxRate), human(row.txRate), human(row.rx), human(row.tx),
+		row.label, ifaces, human(row.rxRate), human(row.txRate), human(row.rx), human(row.tx),
 		strconv.FormatUint(row.tcp, 10), strconv.FormatUint(row.udp, 10), strconv.FormatUint(row.icmp, 10),
 		strconv.FormatUint(row.reqs, 10), strconv.FormatUint(row.unknownPID, 10), strconv.Itoa(len(row.flows)),
-		first, last, groupHint(row, mode),
+		first, last, hint,
 	)
 }
 

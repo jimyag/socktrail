@@ -951,6 +951,14 @@ func evidenceLine(f *flow, c *collector) string {
 }
 
 func observedDomainHint(row *uiRow) string {
+	values := observedDomainHints(row)
+	if len(values) > 1 {
+		return fmt.Sprintf("%s +%d", values[0], len(values)-1)
+	}
+	return values[0]
+}
+
+func observedDomainHints(row *uiRow) []string {
 	names := make(map[string]struct{})
 	var hasUnknownTLS bool
 	for _, f := range row.flows {
@@ -965,16 +973,12 @@ func observedDomainHint(row *uiRow) string {
 		}
 	}
 	if len(names) > 0 {
-		ordered := slices.Sorted(maps.Keys(names))
-		if len(ordered) == 1 {
-			return ordered[0]
-		}
-		return fmt.Sprintf("%s +%d", ordered[0], len(ordered)-1)
+		return slices.Sorted(maps.Keys(names))
 	}
 	if hasUnknownTLS {
-		return "TLS/QUIC unknown"
+		return []string{"TLS/QUIC unknown"}
 	}
-	return "-"
+	return []string{"-"}
 }
 
 func rowMatches(row *uiRow, filter string) bool {
