@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -125,7 +126,7 @@ func numericCondition(key string, want uint64) condition {
 			return uint64(f.Target.Port()) == want
 		case "pid":
 			for _, p := range flowProcesses(f, c) {
-				if uint64(p.PID) == want {
+				if p.PID >= 0 && uint64(p.PID) == want {
 					return true
 				}
 			}
@@ -152,11 +153,7 @@ func stringCondition(key string, match func(string) bool) condition {
 		case "dir":
 			return match(f.Direction)
 		case "iface":
-			for _, name := range interfacesOf(f.Interfaces) {
-				if match(name) {
-					return true
-				}
-			}
+			return slices.ContainsFunc(interfacesOf(f.Interfaces), match)
 		case "proc", "svc":
 			for _, p := range flowProcesses(f, c) {
 				if key == "proc" && match(p.Name) {

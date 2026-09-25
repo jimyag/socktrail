@@ -21,9 +21,11 @@ const (
 
 type attemptSummary struct {
 	Refused, Unanswered uint64
-	Ports               map[uint16]struct{} // Up to maxAttemptPorts.
+	Ports               map[uint16]attemptPort // Up to maxAttemptPorts.
 	Last                time.Time
 }
+
+type attemptPort struct{ Refused, Unanswered uint64 }
 
 func (a *attemptSummary) String() string {
 	ports := fmt.Sprint(len(a.Ports), " ports")
@@ -39,11 +41,15 @@ func (a *attemptSummary) String() string {
 func (a *attemptSummary) add(other *attemptSummary) {
 	a.Refused += other.Refused
 	a.Unanswered += other.Unanswered
-	for port := range other.Ports {
-		if len(a.Ports) >= maxAttemptPorts {
+	for port, count := range other.Ports {
+		_, exists := a.Ports[port]
+		if len(a.Ports) >= maxAttemptPorts && !exists {
 			break
 		}
-		a.Ports[port] = struct{}{}
+		current := a.Ports[port]
+		current.Refused += count.Refused
+		current.Unanswered += count.Unanswered
+		a.Ports[port] = current
 	}
 	if other.Last.After(a.Last) {
 		a.Last = other.Last
@@ -64,7 +70,7 @@ func (c *collector) noteAttempt(f *flow, refused bool, now time.Time) {
 		if c.attempts == nil {
 			c.attempts = make(map[netip.Addr]*attemptSummary)
 		}
-		a = &attemptSummary{Ports: make(map[uint16]struct{})}
+		a = &attemptSummary{Ports: make(map[uint16]attemptPort)}
 		c.attempts[source] = a
 	}
 	if refused {
@@ -72,8 +78,16 @@ func (c *collector) noteAttempt(f *flow, refused bool, now time.Time) {
 	} else {
 		a.Unanswered++
 	}
-	if len(a.Ports) < maxAttemptPorts {
-		a.Ports[f.Target.Port()] = struct{}{}
+	port := f.Target.Port()
+	_, exists := a.Ports[port]
+	if len(a.Ports) < maxAttemptPorts || exists {
+		counts := a.Ports[port]
+		if refused {
+			counts.Refused++
+		} else {
+			counts.Unanswered++
+		}
+		a.Ports[port] = counts
 	}
 	a.Last = now
 }

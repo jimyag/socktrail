@@ -13,16 +13,55 @@ import (
 // jsonSnapshot is the --output json document. docs/user/usage.md lists its
 // fields; a change other than an added field raises Version.
 type jsonSnapshot struct {
-	Version    int             `json:"version"`
-	Netns      uint64          `json:"netns"`
-	Interfaces []string        `json:"interfaces"`
-	Filter     string          `json:"filter,omitempty"` // The --process, --pid and --cgroup selection, when given.
-	Probes     jsonProbes      `json:"probes"`
-	GeoIP      string          `json:"geoip"`
-	Reports    []jsonReport    `json:"reports"`
-	Processes  []jsonProcessIO `json:"processes"`
-	Services   []jsonService   `json:"services"`
-	Failures   []jsonFailure   `json:"failures,omitempty"`
+	Version         int             `json:"version"`
+	Netns           uint64          `json:"netns"`
+	Interfaces      []string        `json:"interfaces"`
+	Filter          string          `json:"filter,omitempty"` // The --process, --pid and --cgroup selection, when given.
+	Probes          jsonProbes      `json:"probes"`
+	GeoIP           string          `json:"geoip"`
+	Reports         []jsonReport    `json:"reports"`
+	Processes       []jsonProcessIO `json:"processes"`
+	Services        []jsonService   `json:"services"`
+	Failures        []jsonFailure   `json:"failures,omitempty"`
+	Listeners       []jsonListener  `json:"listeners,omitempty"`
+	ListenOverflows uint64          `json:"listen_overflows"`
+	ListenDrops     uint64          `json:"listen_drops"`
+}
+
+type jsonListener struct {
+	Protocol   string   `json:"protocol"`
+	Bind       string   `json:"bind"`
+	Port       uint16   `json:"port"`
+	Process    string   `json:"process,omitempty"`
+	Service    string   `json:"service,omitempty"`
+	Active     int      `json:"active"`
+	Accepted   uint64   `json:"accepted"`
+	Queue      *uint32  `json:"queue,omitempty"`
+	Backlog    *uint32  `json:"backlog,omitempty"`
+	Refused    uint64   `json:"refused"`
+	Unanswered uint64   `json:"unanswered"`
+	TopSources []string `json:"top_sources,omitempty"`
+	NoListener bool     `json:"no_listener,omitempty"`
+}
+
+func listenersJSON(c *collector, inv *socketInventory, processes *processTable, scope *processScope) []jsonListener {
+	rows := listenerRows(c, inv, processes, scope, nil)
+	result := make([]jsonListener, 0, len(rows))
+	for _, row := range rows {
+		p := row.listener
+		item := jsonListener{
+			Protocol: p.protocol, Bind: p.bind, Port: p.port, Process: p.process, Service: p.service,
+			Active: len(row.flows), Accepted: p.accepted, Refused: p.refused, Unanswered: p.unanswered, TopSources: p.sources, NoListener: p.noListener,
+		}
+		if p.protocol == "TCP" {
+			item.Queue = new(p.queue)
+			if p.backlogKnown {
+				item.Backlog = new(p.backlog)
+			}
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 type jsonFailure struct {

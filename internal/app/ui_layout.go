@@ -177,6 +177,9 @@ func displayTime(value time.Time) string {
 }
 
 func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
+	if mode == viewPorts {
+		return portLayout(rows, viewport)
+	}
 	groupWidth, ifaceWidth := 0, 0
 	fullHintWidth, fullIfaceWidth := 42, 0
 	tcpWidth, udpWidth, icmpWidth, reqWidth, unknownWidth, flowsWidth := 5, 5, 8, 5, 5, 6
@@ -232,6 +235,9 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 }
 
 func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) string {
+	if mode == viewPorts {
+		return portLine(layout, row, cursor)
+	}
 	first, last := flowTimes(row.flows)
 	if mode == viewLog {
 		last = displayTime(row.lastEvent)

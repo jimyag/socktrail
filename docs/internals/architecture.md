@@ -99,6 +99,8 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 读取和进程关联见 [procnet_linux.go](../../internal/app/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
 
+交互界面和 JSON 快照还使用同一份 socket inventory 展示监听端口：TCP 的队列与 backlog 优先由 sock_diag netlink 读取，失败时沿用 `/proc/net` 的监听条目；UDP 取未连接 socket，inode 到进程沿用 `/proc/<pid>/fd`。交互运行时每 5 秒后台刷新一次，accept 次数由已有探针事件累计，入站失败按原有尝试表的目标端口聚合；没有新增逐包探针。全局 ListenOverflows、ListenDrops 取 `/proc/net/netstat` 的 TcpExt 增量。
+
 ## NAT 映射
 
 查询和元组解析见 [conntrack_linux.go](../../internal/conntrack/conntrack_linux.go)。

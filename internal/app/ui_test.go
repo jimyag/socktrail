@@ -170,7 +170,7 @@ func TestPageKeysMoveFocusedTableByVisibleRows(t *testing.T) {
 
 func TestTabFollowsFocusedArea(t *testing.T) {
 	u := &terminalUI{mode: viewPID, hostScope: true, interfaces: []string{"eth0", "lo"}, interfaceName: "eth0"}
-	for _, want := range []viewMode{viewSource, viewTarget, viewProtocol, viewService, viewLog, viewDomain, viewInterfaces, viewDomain, viewDomain, viewPID} {
+	for _, want := range []viewMode{viewSource, viewTarget, viewProtocol, viewService, viewLog, viewPorts, viewDomain, viewInterfaces, viewDomain, viewDomain, viewPID} {
 		u.handleKey("tab")
 		if u.mode != want || u.focusBottom {
 			t.Fatalf("top Tab: mode=%v, focusBottom=%t; want mode=%v", u.mode, u.focusBottom, want)
@@ -201,7 +201,7 @@ func TestTabFollowsFocusedArea(t *testing.T) {
 	if u.mode != viewService {
 		t.Fatalf("top Tab ignored a direct page selection: mode=%v", u.mode)
 	}
-	single := &terminalUI{mode: viewInterfaces, returnMode: viewPID, hostScope: true, interfaces: []string{"lo"}, topTabIndex: 7}
+	single := &terminalUI{mode: viewInterfaces, returnMode: viewPID, hostScope: true, interfaces: []string{"lo"}, topTabIndex: 8}
 	single.handleKey("tab") // a overview
 	single.handleKey("tab") // Skip unavailable i and wrap to PID.
 	if single.mode != viewPID || !single.hostScope {

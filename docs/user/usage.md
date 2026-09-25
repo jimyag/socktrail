@@ -104,7 +104,9 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 - 各页的按键，当前页高亮。
 - 竖线右侧是切换范围的按键，只列出当前有效的：合并视图下是 `i per interface`，按 `i` 进入当前网卡的单网卡视图；单网卡视图下是 `a overview` 和 `i next interface`，`a` 回到合并视图，`i` 换下一张网卡。
 
-范围和页面互相独立：按 `a` 只换范围、不换页，所以在合并视图的 PID 页里按 `a` 看不到变化。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入该网卡详情。
+范围和页面互相独立：按 `a` 只换范围、不换页，所以在合并视图的 PID 页里按 `a` 看不到变化。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议，按 `7` 看监听端口，按 `d` 看域名（HTTP Host、TCP/QUIC SNI、代理目标、OpenSSL 进程 SNI、DNS 提示）。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入该网卡详情。
+
+`7 PORTS` 列出当前网络命名空间的 TCP 监听 socket、未连接 UDP socket 和没有监听者却收到连接尝试的端口。每行有绑定地址、进程与服务、当前入站连接、启动后的 accept 次数、TCP accept 队列、被拒与无应答次数、前三个来源；底栏列出当前关联的入站连接。绑定 `0.0.0.0` 或 `::` 标黄，队列达到 backlog 的 80% 标红。顶部的 `ListenOverflows`、`ListenDrops` 是启动后的全局增量。`--output json` 的 `listeners[]` 提供同样数据；无监听端口的尝试带 `no_listener=true`。
 
 不指定 `--interface` 时，程序在当前网络命名空间内选择最多 8 张处于 UP 且 RUNNING 状态的接口：先按名称选择 `/sys/class/net/<name>/device` 下有设备入口的物理网卡，再用 loopback、宿主网桥、隧道等主机级虚拟接口补足；默认跳过容器 veth、Docker 子网桥和 VM tap。超过 8 张时会在标准错误输出提示未选中的名称，已选的 8 张继续采集。自动选择只决定从哪里采集报文，不要求在主页面选网卡。相同五元组和 TCP 代次的跨接口观测在整机页合为一条连接，只取一个采集点的 IP 字节，优先保留已识别的 Host/SNI。
 
@@ -165,6 +167,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
 | `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
 | `failures[]` | 最近失败的出站 TCP 建连，按原因、进程和目标分组；包含次数、首次/最近时间及连接 ID。最多覆盖内存中最近 5000 条已结束连接 |
+| `listeners[]`、`listen_overflows`、`listen_drops` | 当前 TCP/UDP 监听端口与没有监听者的尝试；队列与 backlog 仅 TCP 有值，后两项是启动以来的全局增量 |
 | `probes.connect_result` | 内核建连结果探针的状态和已收到事件数；不可用时仍按抓包状态显示连接 |
 
 `flows[]` 的字段：

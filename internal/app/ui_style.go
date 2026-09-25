@@ -130,11 +130,11 @@ func tableRow(layout tableLayout, x, width int, selected, focused bool, line fun
 func label(name string) string { return styleCyan.paint(name) }
 
 // topPages are the top line's page keys, and pageEntries each page's entry.
-const topPages = "1 PID  2 SRC  3 DST  4 PROTO  5 SVC  6 LOG  d DOMAINS  0 IFACES"
+const topPages = "1 PID  2 SRC  3 DST  4 PROTO  5 SVC  6 LOG  7 PORTS  d DOMAINS  0 IFACES"
 
 var pageEntries = map[viewMode]string{
 	viewPID: "1 PID", viewSource: "2 SRC", viewTarget: "3 DST", viewProtocol: "4 PROTO",
-	viewService: "5 SVC", viewLog: "6 LOG", viewDomain: "d DOMAINS", viewInterfaces: "0 IFACES",
+	viewService: "5 SVC", viewLog: "6 LOG", viewPorts: "7 PORTS", viewDomain: "d DOMAINS", viewInterfaces: "0 IFACES",
 }
 
 // topKeys colors the top line's "key name" entries, which two spaces

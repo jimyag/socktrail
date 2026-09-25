@@ -23,7 +23,7 @@ func (s *sortSpec) selectColumn(key string) {
 		return
 	}
 	s.key = key
-	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "LOCAL", "I/O PID", "DIR", "SOURCE", "SRC GEO", "TARGET", "DST GEO", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
+	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "LOCAL", "I/O PID", "DIR", "SOURCE", "SRC GEO", "TARGET", "DST GEO", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS", "BIND", "PORT", "SERVICE", "TOP SOURCES"}, key)
 }
 
 func (s sortSpec) direction(order int) int {
@@ -51,6 +51,10 @@ func rowTime(row *uiRow, first bool) time.Time {
 }
 
 func sortGroups(rows []*uiRow, mode viewMode, spec sortSpec, sortRate bool) {
+	if mode == viewPorts {
+		sortPortRows(rows, spec)
+		return
+	}
 	slices.SortFunc(rows, func(a, b *uiRow) int {
 		var order int
 		switch spec.key {

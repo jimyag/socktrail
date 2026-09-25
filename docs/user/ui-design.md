@@ -4,7 +4,7 @@
 
 ## 页面
 
-顶部始终是可排序的统计表，底部默认占约半屏，显示选中分组的连接。启动后默认是整机 PID 页；按 `1`—`6` 或点击顶部入口切换 PID、来源 IP、目标 IP、协议、服务分组和 LOG，按 `d` 打开共用域名页。它按 `HTTP`、`HTTP/2`、`TLS`、`QUIC`、`PROXY`、`OPENSSL`、`DNS` 标出证据来源，第二行显示启动后建立的 TLS/QUIC 连接的命名覆盖率，启动前已有的连接流量另列。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入单网卡视图，按 `a` 回到 `OVERVIEW` 多网卡合并视图。`OVERVIEW` 指界面范围，HTTP `Host` 指请求域名。顶栏把两类按键分开：页面按键在前，当前页高亮；竖线后面是范围按键，只列出当前有效的，标签用小写的动作描述，和页面名区分开。合并视图下列出 `i per interface`，单网卡视图下列出 `a overview` 和 `i next interface`。底部只有 `conns` 和 `process` 两个标签。
+顶部始终是可排序的统计表，底部默认占约半屏，显示选中分组的连接。启动后默认是整机 PID 页；按 `1`—`7` 或点击顶部入口切换 PID、来源 IP、目标 IP、协议、服务分组、LOG 和 PORTS，按 `d` 打开共用域名页。它按 `HTTP`、`HTTP/2`、`TLS`、`QUIC`、`PROXY`、`OPENSSL`、`DNS` 标出证据来源，第二行显示启动后建立的 TLS/QUIC 连接的命名覆盖率，启动前已有的连接流量另列。`0` 打开网卡诊断总览，选中网卡按 `Enter` 进入单网卡视图，按 `a` 回到 `OVERVIEW` 多网卡合并视图。`OVERVIEW` 指界面范围，HTTP `Host` 指请求域名。顶栏把两类按键分开：页面按键在前，当前页高亮；竖线后面是范围按键，只列出当前有效的，标签用小写的动作描述，和页面名区分开。合并视图下列出 `i per interface`，单网卡视图下列出 `a overview` 和 `i next interface`。底部只有 `conns` 和 `process` 两个标签。
 
 | 顶部分组 | 汇总依据 | 底栏内容 |
 | --- | --- | --- |
@@ -14,9 +14,12 @@
 | 协议 | TCP、UDP、ICMPv4/ICMPv6、SCTP、GRE 等 IP 协议，以及 ARP、LLDP 等按 EtherType 区分的非 IP 帧；有负载证据时进一步按应用协议标签分组 | 匹配的连接、UDP 会话、ICMP 流或帧 |
 | 进程分组 | 默认按 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`；可读本地元数据时显示 Docker/Compose 或 Pod 名，否则显示短 ID）；`b` 切换为完整 cgroup 路径、进程树或可执行文件名（只取 `exe` 路径最后一段）。收发量是组内进程的 socket 字节之和 | 组内进程参与的连接，`I/O PID` 只列组内的进程，父进程接受连接后交给子进程收发时，这里是子进程；`process` 标签按父子关系缩进列出组内进程，详情在 CGROUP 下显示 CONTAINER |
 | LOG | 最近 5000 次连接变化；`b` 按变化类型、进程或失败原因＋进程＋目标分组，默认按最近事件时间排序 | 变化涉及的连接及其当前或最后一次观测详情；失败分组逐条列出失败记录 |
+| PORTS | 当前 TCP/UDP 监听 socket 与无监听者的连接尝试，列出绑定地址、进程、服务、活动连接、accept 次数、队列及失败尝试 | 所选端口的活动入站连接 |
 | 域名 | HTTP/1.1 Host、明文 HTTP/2 `:authority`、TCP/QUIC ClientHello SNI、无 SNI 时 TLS 1.2 及以下的证书名（标 `[cert]`）、CONNECT/SOCKS4/SOCKS5 代理目标、已关联 socket 的 OpenSSL 进程 SNI 或 DNS 应答提示；没有名字的按原因分组；`LOCAL` 列显示被访问的入站本机地址或出站源地址，最多两个后接 `+N` | 该域名分组的连接与本机 PID；HTTP 请求数与 TLS/QUIC 连接数不混用 |
 
 主表列出抓到该组连接的网卡（`IFACE`）、RX/TX 速率和累计字节、TCP/UDP 数量、ICMP 报文数、HTTP 请求数、未知 PID 数量、关联流数、首次/最近观测时间，以及 Host/SNI 或一组地址提示。`IFACE` 和 `HOST/SNI OR PEER` 按当前列宽尽量展示完整项，剩余项显示为 `+N`，且 `+N` 必须在列宽内；终端宽度变化时重新计算。PID 行显示 `PID 进程名`；同一 PID 的多次启动用 `#1`、`#2` 区分，内部仍按完整启动标识分组。PID 行的 RX/TX 来自整个当前网络命名空间的 socket I/O；整机其他分组的 RX/TX 取每条逻辑连接的单个采集点 IP 观测值，不是精确整机总量。单网卡详情显示该接口原始 IP 计数。两种计量点不相加。
+
+PORTS 页单独使用 `PROTO`、`BIND`、`PORT`、`PROCESS`、`SERVICE`、`ACTIVE`、`ACCEPTED`、`QUEUE`、`REFUSED`、`UNANSWERED`、`TOP SOURCES` 列。`BIND` 为 `0.0.0.0` 或 `::` 时标黄；TCP accept 队列达到 backlog 的 80% 时标红。第二行显示全局 ListenOverflows 和 ListenDrops 的启动后增量。
 
 `conns` 表按字节排序，各页的列完全相同。依次列出：
 - 在这条连接上有收发的进程（`I/O PID`）：PID 页只列选中的进程，进程分组页只列组内的进程，其他页列出所有进程。

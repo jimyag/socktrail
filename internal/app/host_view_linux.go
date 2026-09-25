@@ -200,7 +200,7 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 				host.attempts = make(map[netip.Addr]*attemptSummary)
 			}
 			if host.attempts[source] == nil {
-				host.attempts[source] = &attemptSummary{Ports: make(map[uint16]struct{})}
+				host.attempts[source] = &attemptSummary{Ports: make(map[uint16]attemptPort)}
 			}
 			host.attempts[source].add(a)
 		}

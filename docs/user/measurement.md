@@ -68,6 +68,8 @@ DNS 流详情保留最近 8 次查询，显示名字、类型、应答码、最�
 
 入站的连接尝试按来源汇总：被拒绝（目标回 RST，或 UDP 目标回端口不可达）和没有应答（只有 SYN 或单向的一两个 UDP 报文）的尝试计数，并记下尝试过的端口（最多 1024 个）。来源 IP 页在该来源的行上显示 `tried N ports: refused …, unanswered …`；流表满时先批量淘汰这类一次性的流（每次最旧的 10%），扫描不会挤掉正常连接，被淘汰的流仍留在汇总里。汇总 10 分钟没有新尝试后删除。
 
+`7 PORTS` 的 TCP 监听地址、当前 accept 队列和 backlog 优先取 sock_diag；不可用时退回 `/proc/net/tcp{,6}`，此时队列上限显示 `?`。UDP 列出远端未连接的 socket，没有 accept 队列。进程归属来自监听 socket inode 的 `/proc/<pid>/fd`；权限不足时显示 `-`。`ACCEPTED` 是 socktrail 启动后观察到的 accept 事件，已有连接不补计；同一端口有多个绑定地址时，该端口的 accept 和失败尝试计数可能出现在多行。`ACTIVE` 是当前保留的入站连接数，不能与 `ACCEPTED` 相减求关闭数。`ListenOverflows`、`ListenDrops` 是 `/proc/net/netstat` 中 TcpExt 计数器相对启动时的增量，属于整个网络命名空间，不能精确归到某一行。
+
 ## 丢失、索引淘汰与未覆盖路径
 
 任何一项缺失计数非零时，顶部标出 `INCOMPLETE` 并列出非零的项和数量，例如 `INCOMPLETE drop=12 parse=1`：

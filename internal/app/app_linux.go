@@ -1281,9 +1281,10 @@ func Run() error {
 	}
 	streams := make(socketStreams)
 	processes := newProcessTable("/proc")
-	sockets := &socketInventory{procRoot: "/proc", loaded: make(chan *socketInventory, 1)}
+	sockets := &socketInventory{procRoot: "/proc", loaded: make(chan *socketInventory, 1), trackListeners: *output == "json" || *duration == 0 && *output == "text"}
 	sockets.load()
 	sockets.atStart = sockets.sockets
+	sockets.listenStartOverflows, sockets.listenStartDrops = sockets.listenOverflows, sockets.listenDrops
 	captureSockets := make(map[string]*capture.Socket, len(interfaceNames))
 	var captureWG sync.WaitGroup
 	defer func() {
@@ -1360,6 +1361,7 @@ func Run() error {
 			ui.geoMessage = "GeoIP unavailable; g to download"
 		}
 		ui.processes, ui.scopeFilter = processes, filter
+		ui.sockets = sockets
 		ui.filter = *filterExpression
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
@@ -1468,7 +1470,11 @@ func Run() error {
 				c.kernelReceived += uint64(stats.Received)
 				c.kernelDropped += uint64(stats.Dropped)
 			}
-			if time.Since(sockets.read) >= socketTableInterval {
+			interval := socketTableInterval
+			if sockets.trackListeners {
+				interval = 5 * time.Second
+			}
+			if time.Since(sockets.read) >= interval {
 				sockets.refresh(collectors, time.Now())
 			}
 			if ui != nil && !ui.closed || streamEncoder != nil {
@@ -1613,6 +1619,12 @@ func Run() error {
 			for _, e := range batch {
 				e.StartNS = tickStartNS(e.StartNS)
 				processes.observe(e)
+				if e.Operation == "accept" && e.Protocol == 6 && sockets.trackListeners {
+					if sockets.accepted == nil {
+						sockets.accepted = make(map[uint16]uint64)
+					}
+					sockets.accepted[e.Local.Port()]++
+				}
 				for _, name := range interfaceNames {
 					collectors[name].event(e)
 				}
@@ -1749,6 +1761,9 @@ func Run() error {
 		snapshot.Filter = strings.TrimSpace(filter.String() + " " + *filterExpression)
 		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit, processes, scope)
 		snapshot.Services = servicesJSON(host, processes, scope)
+		snapshot.Listeners = listenersJSON(host, sockets, processes, scope)
+		snapshot.ListenOverflows = sockets.listenOverflows - sockets.listenStartOverflows
+		snapshot.ListenDrops = sockets.listenDrops - sockets.listenStartDrops
 		for _, group := range hostState.failureGroups(scope, host) {
 			var ids []uint64
 			var first, last time.Time

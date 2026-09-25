@@ -44,6 +44,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 按需为选中的连接或 PID 录制之后 15 秒的 PCAPNG，也可包含按键前数秒的帧。
 - 输出限时文本快照或 JSON 文档。
 - 按连接变化实时输出 NDJSON，并在 `6 LOG` 页查看最近的变化。
+- 在 `7 PORTS` 页查看 TCP/UDP 监听端口、所属进程、accept 队列和失败尝试。
 - 按进程、目标和内核错误排查出站 TCP 建连失败，并查看成功或失败的建连时延。
 - 从本地文件显示 Docker 容器名、Compose 服务名，以及有 kubelet 日志链接时的 Kubernetes Pod 名；读不到元数据时回退到短容器 ID。
 - 可选用离线 DB-IP Lite 国家和 ASN 数据补充连接信息。
@@ -112,7 +113,7 @@ sudo ./socktrail --interface eth0 --duration 30s --output json
 
 不使用 `sudo` 时，需要为二进制设置 Linux file capabilities。只有网络权限不足以加载 eBPF 探针；详见[权限设置及限制](docs/user/usage.md#不使用-sudo-运行)。
 
-按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树和可执行文件名之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。
+按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树和可执行文件名之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`7` 看监听端口；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。
 
 以普通用户运行 `socktrail --download-geoip-db`，可将可选的 [DB-IP Lite](https://db-ip.com/db/lite.php) 国家和 ASN 数据库安装到 `$XDG_DATA_HOME/socktrail/geoip`（通常为 `~/.local/share/socktrail/geoip`）。抓包不会自动联网，没有数据库也能使用；在 TUI 中按 `g` 可明确选择下载。启用后，连接表为来源和目标公网 IP 分别显示国旗、ASN 和组织简称；选中连接的详情和 JSON 快照保留完整名称。`--geoip-dir` 可选择其他数据库目录。DB-IP Lite 使用 CC BY 4.0 许可。
 
