@@ -1,6 +1,6 @@
 # 数据口径与限制
 
-从 [中文首页](../README.zh-CN.md) 进入。读数字前先区分报文 IP 字节、进程 socket I/O 和域名证据；这些量不能直接相加。
+从 [中文首页](../../README.zh-CN.md) 进入。读数字前先区分报文 IP 字节、进程 socket I/O 和域名证据；这些量不能直接相加。
 
 ## IP 字节与整机视图
 
@@ -36,7 +36,7 @@ TCP 显示 SYN、established、closing、closed、reset 或 midstream 观察状�
 - `kernel`：连接有本机 socket（任一端有 PID，或收到过重传事件）时，取内核 `tcp_sock` 里的累计重传数，与 `ss -ti` 的 `retrans` 总数一致，包括 SYN 重传和尾部丢失探测。回环上两端都在本机，两个 socket 的重传相加。
 - `capture`：转发或采集点之外的连接，统计本采集点观察到的重复 SYN 和已保存序号区间重叠的 TCP 数据段，是推断值；每方向最多保留 128 个区间，丢包、乱序、序号回绕或多接口合并会影响判定。
 
-两列是网络诊断提示，不与报文字节另行相加。DNS 流另有应答时延，见[解析原理](parsing.md#dns-与-ssh)；它和握手时差一样是采集点之后的往返，本机出口排队的时间不在其中。
+两列是网络诊断提示，不与报文字节另行相加。DNS 流另有应答时延，见[解析原理](../internals/parsing.md#dns-与-ssh)；它和握手时差一样是采集点之后的往返，本机出口排队的时间不在其中。
 
 ## HTTP Host 与 TLS SNI
 
@@ -63,8 +63,8 @@ HTTP/1.1 `Host` 统计已完整观察的请求数。同一 TCP 连接出现多�
 
 快照的 `capture status` 行给出同样的计数，`!` 状态页有更细的分项。GSO/GRO、首片丢失的 IP 分片、桥接、未被 conntrack 关联的地址改写、抓包缺口和高负载可能影响报文与进程归属；整机页 IP 数字只代表选定采集点的观测结果。
 
-PID 事件最多晚 100 ms 到达主循环（见[实现原理](architecture.md#pid-探针)），socket I/O 和进程关联在界面上可能比报文晚一次刷新。
+PID 事件最多晚 100 ms 到达主循环（见[实现原理](../internals/architecture.md#pid-探针)），socket I/O 和进程关联在界面上可能比报文晚一次刷新。
 
 `sendfile` 和 splice 的字节计入 PID socket I/O：6.5 之前的内核里，写往 socket 的 splice 走 `generic_splice_sendpage`，另挂探针；6.5 起它和 `sendfile` 一样走 `tcp_sendmsg`；从 socket 读出的 splice 走 `tcp_splice_read`，各内核都挂。开启内核 TLS 的 socket 读写走 tls 模块，`tls_sw_sendmsg`、`tls_device_sendmsg`、`tls_sw_recvmsg`、`tls_sw_splice_read` 另有探针，计的是应用明文的字节数，与普通 socket 一样；tls 模块没加载时这些探针不加载。其他不经过已挂探针的路径仍可能让 PID socket I/O 少计。
 
-实测范围与剩余缺口见 [验证记录](validation.md)。
+历史实测范围见 [验证记录](../archive/validation.md)；本页记录当前的数据口径与限制。

@@ -1,4 +1,6 @@
-# socktrail 验证记录
+# 历史验证记录
+
+本页保留 2026-09-23 至 2026-09-25 的实测记录。记录中的命令、代码路径、接口数量限制和待验证事项对应当时的版本，不能作为当前使用说明；当前入口和限制见[使用指南](../user/usage.md)与[数据口径](../user/measurement.md)。
 
 日期：2026-09-23。主机：开发机，Ubuntu Linux `6.8.0-139-generic`，x86_64，Go `1.27.1`。以下均为本机当前网络命名空间的短时观察，不代表跨内核或生产负载验收。部分表格记录的是界面调整前的版本，已在对应行标注。
 
@@ -247,7 +249,7 @@ conntrack 查询 14 次，全部查到改写。长稳负载下另跑的 20 秒�
 
 ### 内核矩阵
 
-虚拟机工具已放进仓库的 `test/vm/`：`run.sh` 按 [kernels.txt](../test/vm/kernels.txt) 下载发行版内核（Debian/Ubuntu 取 Packages 索引里最新的包，CentOS Stream 在对应镜像里用 dnf 下载），把 socktrail、四个包的 root 测试、Debian 12 的 openssl 客户端和一个 Go init 打进 initramfs，在 QEMU 里启动，按 init 打印的 `VM-RESULT` 行判定。amd64 有 KVM 时每个内核约 20 秒；arm64 在 x86 宿主上用 TCG 模拟，每个内核约 8 分钟。
+虚拟机工具已放进仓库的 `test/vm/`：`run.sh` 按 [kernels.txt](../../test/vm/kernels.txt) 下载发行版内核（Debian/Ubuntu 取 Packages 索引里最新的包，CentOS Stream 在对应镜像里用 dnf 下载），把 socktrail、四个包的 root 测试、Debian 12 的 openssl 客户端和一个 Go init 打进 initramfs，在 QEMU 里启动，按 init 打印的 `VM-RESULT` 行判定。amd64 有 KVM 时每个内核约 20 秒；arm64 在 x86 宿主上用 TCG 模拟，每个内核约 8 分钟。
 
 | 内核 | 结果 |
 | --- | --- |
@@ -406,7 +408,7 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 
 ## 尚未完成的验收
 
-后续要做的事项和做法见 [后续计划](roadmap.md)。
+以下是记录时尚未完成的验收，后续状态以当前代码和[数据口径](../user/measurement.md)为准。
 
 - 容器网络，以及非当前网络命名空间的 PID 与方向：探针只统计当前网络命名空间的 socket，其他命名空间的流量只有报文。桥接只验证了抓网桥端口的情况，同时抓两个端口时整机页按规则会合成一条 `forwarded` 连接，没有实测。NAT 只在本机网络命名空间搭的网关上验收了 SNAT、DNAT 和本机 OUTPUT DNAT；conntrack zone 非 0 的条目（部分 OVS、CNI 场景）查不到。“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
 - `sendfile`、splice 和内核 TLS 的计数由 root 测试核对；io_uring 的零拷贝发送等其他路径没有验证，PID 应用字节只承诺已挂探针的返回值。

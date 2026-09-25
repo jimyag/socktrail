@@ -8,7 +8,7 @@ import (
 	"github.com/jimyag/socktrail/internal/domain"
 )
 
-// jsonSnapshot is the --output json document. docs/usage.md lists its
+// jsonSnapshot is the --output json document. docs/user/usage.md lists its
 // fields; a change other than an added field raises Version.
 type jsonSnapshot struct {
 	Version    int             `json:"version"`

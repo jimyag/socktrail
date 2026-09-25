@@ -1,6 +1,6 @@
 # 实现原理
 
-从 [中文首页](../README.zh-CN.md) 进入。这里说明数据从采集到页面的路径和实现时遵守的约定；已验证场景见 [验证记录](validation.md)。
+从 [中文首页](../../README.zh-CN.md) 进入。这里说明数据从采集到页面的路径和实现时遵守的约定；已验证场景见 [验证记录](../archive/validation.md)。
 
 ```text
 AF_PACKET/TPACKET_V3 → 报文解码 ─────┐
@@ -8,11 +8,11 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 /proc socket 表、conntrack 映射 ─────┘
 ```
 
-主入口在 [main_linux.go](../main_linux.go)，采集主循环在 [app_linux.go](../internal/app/app_linux.go)，抓包环在 [socket_linux.go](../internal/capture/socket_linux.go)，报文解码在 [packet.go](../internal/capture/packet.go)。图省略了各接口独立采集、异步查询和录制分支。
+主入口在 [main_linux.go](../../main_linux.go)，采集主循环在 [app_linux.go](../../internal/app/app_linux.go)，抓包环在 [socket_linux.go](../../internal/capture/socket_linux.go)，报文解码在 [packet.go](../../internal/capture/packet.go)。图省略了各接口独立采集、异步查询和录制分支。
 
 ## 设计约定
 
-- 三种数字分开：报文的 IP 字节来自采集点，进程的 socket I/O 来自 `sendmsg`/`recvmsg` 的返回值，域名证据是连接级的名字或请求计数。它们口径不同，界面和快照都不把它们相加，也不互相核对成相等。[数据口径](measurement.md)逐项说明。
+- 三种数字分开：报文的 IP 字节来自采集点，进程的 socket I/O 来自 `sendmsg`/`recvmsg` 的返回值，域名证据是连接级的名字或请求计数。它们口径不同，界面和快照都不把它们相加，也不互相核对成相等。[数据口径](../user/measurement.md)逐项说明。
 - 不确定就显示未知：连接方向只由 SYN、connect/accept、客户端首个报文或内核 socket 表确定，不按端口猜；PID 关联不上显示未知，多个候选显示歧义；证据冲突时保留报文里的名字并标出冲突。
 - 进程身份是 PID 加进程启动时间，进程名只是标签。PID 被复用后，新旧进程分别统计，历史不被覆盖。
 - 连接键是地址族、协议、两端地址和端口；同一五元组上的新 SYN 开始新的一代。
@@ -22,13 +22,13 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 ## 采集与关联概览
 
-每张接口各有一个 AF_PACKET socket。内核把帧写入 TPACKET_V3 环，读取方按块交给主循环；[报文解码器](../internal/capture/packet.go)识别链路层、IP、传输层和分片。主循环按连接键维护流，再把应用协议和域名证据附到流上。
+每张接口各有一个 AF_PACKET socket。内核把帧写入 TPACKET_V3 环，读取方按块交给主循环；[报文解码器](../../internal/capture/packet.go)识别链路层、IP、传输层和分片。主循环按连接键维护流，再把应用协议和域名证据附到流上。
 
 本机进程归属来自 eBPF 的 connect、accept 和 socket I/O 事件；启动前已存在或错过探针挂载时机的 socket，再从内核 socket 表补全。NAT 查询把改写前后的元组关联起来。整机视图合并跨接口观测，详情保留证据来源。
 
 ## 运行条件与兼容性
 
-运行需 root 或相应的 `CAP_BPF`、`CAP_PERFMON`、`CAP_NET_RAW`、`CAP_NET_ADMIN` 权限；5.10 内核设置 eBPF memlock 限额还需要 `CAP_SYS_RESOURCE`。file capabilities 的安装命令和 `/proc`、OpenSSL 探针限制见[使用指南](usage.md#不使用-sudo-运行)。内核要支持 fentry/fexit 和 BPF ring buffer，并带 BTF（`CONFIG_DEBUG_INFO_BTF=y`，存在 `/sys/kernel/btf/vmlinux`）。
+运行需 root 或相应的 `CAP_BPF`、`CAP_PERFMON`、`CAP_NET_RAW`、`CAP_NET_ADMIN` 权限；5.10 内核设置 eBPF memlock 限额还需要 `CAP_SYS_RESOURCE`。file capabilities 的安装命令和 `/proc`、OpenSSL 探针限制见[使用指南](../user/usage.md#不使用-sudo-运行)。内核要支持 fentry/fexit 和 BPF ring buffer，并带 BTF（`CONFIG_DEBUG_INFO_BTF=y`，存在 `/sys/kernel/btf/vmlinux`）。
 
 - x86-64：5.10 起可用。已在 Debian 11 的 5.10，Ubuntu 的 5.11、5.13、5.15、6.8、6.17、7.0，以及 CentOS Stream 9（5.14）和 10（6.12）的内核里实测。5.4 及更早的内核没有 fentry；Ubuntu 的 5.8 内核没有 BTF。
 - arm64：6.4 起可用。arm64 通过 ftrace 直接调用挂 fentry/fexit，6.4 才支持；更早的内核上挂载报 `not supported`，程序提示需要 6.4。Debian 12 的 6.1、Ubuntu 22.04 的 5.15 和 6.2 因此不能运行。已在 mainline 6.4 和 Ubuntu 6.8 的 arm64 内核里实测。
@@ -47,7 +47,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 ## PID 探针
 
-[pid.bpf.c](../internal/probe/pid.bpf.c) 挂在 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求上，每个事件带协议、端点、PID、进程启动时间、角色和应用字节数，还有父进程（PID 和启动时间）和 cgroup v2 ID：在事件发生时读取，进程随后退出也不丢。TCP 事件另带 socket 此刻的平滑 RTT 及偏差、拥塞窗口、已发送数据段和累计重传，与 `ss -ti` 同源。
+[pid.bpf.c](../../internal/probe/pid.bpf.c) 挂在 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求上，每个事件带协议、端点、PID、进程启动时间、角色和应用字节数，还有父进程（PID 和启动时间）和 cgroup v2 ID：在事件发生时读取，进程随后退出也不丢。TCP 事件另带 socket 此刻的平滑 RTT 及偏差、拥塞窗口、已发送数据段和累计重传，与 `ss -ti` 同源。
 
 - `sendfile` 和写往 socket 的 splice 在 6.5 起都经过 `tcp_sendmsg`；之前的内核里 splice 写 socket 走 `generic_splice_sendpage`，另挂它的 fexit。读 socket 的 splice 走 `tcp_splice_read`，各内核都有。
 - socket 开启内核 TLS 后，协议操作换成 tls 模块的实现，读写不再经过 `tcp_sendmsg`/`tcp_recvmsg`。程序另挂 `tls_sw_sendmsg`、`tls_device_sendmsg`、`tls_sw_recvmsg` 和 `tls_sw_splice_read` 的 fexit；cilium/ebpf 能挂到已加载模块里的函数。`tls_*_sendpage` 不挂，它们的字节已由 `generic_splice_sendpage` 计入。
@@ -65,7 +65,7 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 ## socket 层前缀读取
 
-[sockstream](../internal/sockstream/sockstream.bpf.c) 在 `tcp_sendmsg`、`tcp_recvmsg` 上挂 fentry/fexit：fentry 记下调用方缓冲区的位置，fexit 按实际收发的字节数从该缓冲区复制，每个 socket 每个方向最多前 16 KiB。UDP 只复制发出的 QUIC 长包头数据报。不可用时顶部标出 `SOCKET-SNIFF-UNAVAILABLE`，可用 `--socket-sniff=false` 关闭。它补的是报文拿不到客户端字节的情况，解析规则见[解析原理](parsing.md#socket-层前缀读取)。
+[sockstream](../../internal/sockstream/sockstream.bpf.c) 在 `tcp_sendmsg`、`tcp_recvmsg` 上挂 fentry/fexit：fentry 记下调用方缓冲区的位置，fexit 按实际收发的字节数从该缓冲区复制，每个 socket 每个方向最多前 16 KiB。UDP 只复制发出的 QUIC 长包头数据报。不可用时顶部标出 `SOCKET-SNIFF-UNAVAILABLE`，可用 `--socket-sniff=false` 关闭。它补的是报文拿不到客户端字节的情况，解析规则见[解析原理](parsing.md#socket-层前缀读取)。
 
 ## AF_PACKET 环
 
@@ -73,31 +73,31 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 经典 BPF 过滤器把每帧截到 16 KiB 加 256 B，正好是解析器会读的范围：往环里拷帧发生在转发报文的软中断里，64 KiB 的 GSO 帧整帧拷贝在 veth 实验里让转发吞吐降了约 15%。录制 PCAPNG 时换成保留完整帧（最长 64 KiB），停止读取时过滤器改成全部丢弃，否则退出阶段填满的环会被内核记成丢包。
 
-各接口的环共分 16 MiB，每个至少 4 MiB：只抓一个接口时环是 16 MiB，八个接口时各 4 MiB。一个截到 16 KiB 的 GSO 帧占环里 16.6 KB，一块只放得下 15 个；每秒 60 万个这样的帧时，4 MiB 的环只能缓冲不到 0.5 ms，实测丢了约 1%，16 MiB 时几乎不丢，而主循环此时只用了不到一个核。小报文则一块能放约 2,000 个。环计入进程 RSS。
+单接口的环为 16 MiB，两接口时各 8 MiB，三接口时各 5 MiB，四张及以上时每张各 4 MiB；总内存随接口数增长。默认自动选最多 8 张，显式指定可以超过 8 张，启动确认与内存限制见[使用指南](../user/usage.md#页面与接口选择)。一个截到 16 KiB 的 GSO 帧占环里 16.6 KB，一块只放得下 15 个；每秒 60 万个这样的帧时，4 MiB 的环只能缓冲不到 0.5 ms，实测丢了约 1%，16 MiB 时几乎不丢，而主循环此时只用了不到一个核。小报文则一块能放约 2,000 个。环计入进程 RSS。
 
-主循环的停顿直接决定丢包，所以扫描所有进程 fd 的 socket 表读取（本机约 30 ms）放在后台 goroutine，读完才回到主循环应用。多队列网卡上也只有一个主循环：实测它的处理能力不是瓶颈，没有用 `PACKET_FANOUT` 拆分（数据见[验证记录](validation.md)）。
+主循环的停顿直接决定丢包，所以扫描所有进程 fd 的 socket 表读取（本机约 30 ms）放在后台 goroutine，读完才回到主循环应用。多队列网卡上也只有一个主循环：实测它的处理能力不是瓶颈，没有用 `PACKET_FANOUT` 拆分（数据见[验证记录](../archive/validation.md)）。
 
 ## 进程与 socket 关联
 
-[collector.event](../internal/app/app_linux.go) 先按 PID 和启动标识累计 socket I/O，再尝试用端点关联已观测的流。暂时没有流的 I/O 最多等待 2 秒；仍无法匹配的字节计入未关联统计。TCP 的 connect/accept 角色与实际执行 send/recv 的 PID 分开记录，避免把共享 socket 的 I/O 算给连接建立者；fd 传给别的进程后，各进程写的字节分别计入各自的 PID。
+[collector.event](../../internal/app/app_linux.go) 先按 PID 和启动标识累计 socket I/O，再尝试用端点关联已观测的流。暂时没有流的 I/O 最多等待 2 秒；仍无法匹配的字节计入未关联统计。TCP 的 connect/accept 角色与实际执行 send/recv 的 PID 分开记录，避免把共享 socket 的 I/O 算给连接建立者；fd 传给别的进程后，各进程写的字节分别计入各自的 PID。
 
 抓包和 eBPF 两个通道没有固定的处理顺序：抓包环的块最多攒 100 ms，事件最多晚 100 ms。accept 事件先于入站 SYN 被处理时，没有旧流、且角色是 2 秒内记录的就采用；否则按旧连接的角色丢掉。事件晚于报文时，一条短连接可能已经关闭，关闭后 2 秒内它仍接收自己的 connect、accept 和 I/O 事件；同一元组上的新连接要在这 2 秒内带着新 SYN 出现才会混淆。
 
 ## 进程树与服务
 
-[processes_linux.go](../internal/app/processes_linux.go) 按 PID 加启动时间记录每个出现过的进程的父进程和 cgroup，所有接口共用。父进程和 cgroup ID 来自事件；cgroup 路径在进程第一次出现时从 `/proc/<pid>/cgroup` 读取，并按 cgroup ID 记下，同一 cgroup 里之后的进程即使已经退出也能取到路径。进程的祖先大多不碰网络（shell、脚本），第一次见到一个进程时，趁它们还在，从 `/proc` 把祖先补齐。进程 10 分钟没有事件后删除，但保留仍在使用的进程的祖先。
+[processes_linux.go](../../internal/app/processes_linux.go) 按 PID 加启动时间记录每个出现过的进程的父进程和 cgroup，所有接口共用。父进程和 cgroup ID 来自事件；cgroup 路径在进程第一次出现时从 `/proc/<pid>/cgroup` 读取，并按 cgroup ID 记下，同一 cgroup 里之后的进程即使已经退出也能取到路径。进程的祖先大多不碰网络（shell、脚本），第一次见到一个进程时，趁它们还在，从 `/proc` 把祖先补齐。进程 10 分钟没有事件后删除，但保留仍在使用的进程的祖先。
 
-服务取 cgroup 路径里最内层的 `.service` 或 `.scope` 目录：systemd 服务、`docker-<id>.scope` 这样的容器、会话和终端的 scope；没有这类目录时整个路径就是服务。进程树以一个进程在同一服务里最远的祖先为根，所以 nginx 的 worker 归到主进程下，终端里的命令归到 shell 下，而不会一直追到 systemd。只有 cgroup v1 的主机取 systemd 层级的路径。
+服务取 cgroup 路径里最内层的 `.service` 或 `.scope` 目录：systemd 服务、`docker-<id>.scope` 这样的容器、会话和终端的 scope；没有这类目录时整个路径就是服务。进程树以一个进程在同一服务里最远的祖先为根，所以 nginx 的 worker 归到主进程下，终端里的命令归到 shell 下，而不会一直追到 systemd。只有 cgroup v1 的主机取 systemd 层级的路径。进程分组页还可按完整 cgroup 路径或可执行文件名分组；后者读取 `/proc/<pid>/exe` 的最后一段，无法读取时回退到内核任务名。
 
 `--process`、`--pid`、`--cgroup` 只影响显示：报文要先和进程对上才知道属于谁，所以抓包和事件照常全量处理，界面、快照和 JSON 在输出时按进程过滤，每次输出缓存每个进程的判断结果。
 
 ## 内核 socket 表补全进程
 
-读取和进程关联见 [procnet_linux.go](../internal/app/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
+读取和进程关联见 [procnet_linux.go](../../internal/app/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
 
 ## NAT 映射
 
-查询和元组解析见 [conntrack_linux.go](../internal/conntrack/conntrack_linux.go)。
+查询和元组解析见 [conntrack_linux.go](../../internal/conntrack/conntrack_linux.go)。
 
 新的 TCP/UDP 流出现时，在单独的 goroutine 里向 conntrack 发一个 ctnetlink `IPCTNL_MSG_CT_GET` 按元组查一次：先按报文方向，查不到再反向，因为 conntrack 只按原始方向和应答方向的元组建索引，改写后的一侧对应应答方向。只保留确实被改写过的条目，按两个元组都能找到；多播不查。不订阅 conntrack 事件，因为那会让内核为整机每条连接生成事件，而抓到的连接往往只是一小部分；也不挂逐包触发的 `nf_nat_manip_pkt`。查询队列满时跳过（状态页计数），连接只是不关联。条目随关联的流一起续期，空闲 5 分钟后删除，最多 65,536 条。
 
@@ -115,11 +115,11 @@ IPv4/IPv6 分片：后续分片按（源地址、目的地址、协议、分片 
 
 每个接口的流表最多 2 万条。流表满时先淘汰一次性的流：已关闭的 TCP、没有得到 SYN-ACK 的 SYN、单向不超过两个报文的 UDP，按最后活动时间最旧的 10% 批量淘汰，避免扫描期间每个新流都排序一次。入站尝试按来源汇总，在流被淘汰或过期时计入。
 
-一条已完成握手的 TLS 连接约占 1.5 KB 存活堆：流结构约 760 B，TCP 流解析器约 570 B，流表项约 300 B。只有少数流用到的状态按需分配：DNS 和 ICMP 状态、HTTP/2 解析器、重组的待排序片段、HTTP Host 计数和服务端的乱序片段。整机视图每秒重建一次，只在有数据时才分配 socket I/O 和 OpenSSL 进程的映射。
+只有少数流用到的状态按需分配：DNS 和 ICMP 状态、HTTP/2 解析器、重组的待排序片段、HTTP Host 计数和服务端的乱序片段。整机视图每秒重建一次，只在有数据时才分配 socket I/O 和 OpenSSL 进程的映射。历史版本的每流堆占用实测值见[验证记录](../archive/validation.md)，不作为当前容量估算。
 
 ## 录制与快照输出
 
-录制 PCAPNG 用格式规范里的 SHB、IDB、EPB 和注释选项实现最小写入器，不依赖 tshark。`--record-before` 开启后，主循环把每个帧复制进一个按时间和 32 MiB 上限淘汰的队列，按 `c` 时先把其中属于所选连接或 PID 的帧写进文件；为此抓包环一直按 SnapLength 复制帧，默认关闭。`--output json` 把快照的同一组数据按固定字段输出，字段见[使用指南](usage.md#json-快照)。
+录制 PCAPNG 用格式规范里的 SHB、IDB、EPB 和注释选项实现最小写入器，不依赖 tshark。`--record-before` 开启后，主循环把每个帧复制进一个按时间和 32 MiB 上限淘汰的队列，按 `c` 时先把其中属于所选连接或 PID 的帧写进文件；为此抓包环一直按 SnapLength 复制帧，默认关闭。`--output json` 把快照的同一组数据按固定字段输出，字段见[使用指南](../user/usage.md#json-快照)。
 
 ## 参考
 

@@ -1,6 +1,6 @@
 # 解析原理
 
-从 [中文首页](../README.zh-CN.md) 进入。报文先由 [packet.go](../internal/capture/packet.go) 解出网络和传输层；应用协议提示来自 [appproto/detect.go](../internal/appproto/detect.go)，域名证据由 [domain/stream.go](../internal/domain/stream.go) 及各协议解析器维护。域名标签是可见证据，不等于解密后的请求内容。
+从 [中文首页](../../README.zh-CN.md) 进入。报文先由 [packet.go](../../internal/capture/packet.go) 解出网络和传输层；应用协议提示来自 [appproto/detect.go](../../internal/appproto/detect.go)，域名证据由 [domain/stream.go](../../internal/domain/stream.go) 及各协议解析器维护。域名标签是可见证据，不等于解密后的请求内容。
 
 ## 协议识别
 
@@ -8,15 +8,13 @@
 
 `APP` 可识别 HTTP、HTTP/2（h2c；请求带 gRPC 内容类型时标 gRPC）、TLS、DNS（含 TCP 上的 DNS）、SSH、FTP、SMTP、Redis、PostgreSQL、MySQL、MongoDB、SQL Server、Oracle TNS、Cassandra、Kafka、AMQP、NATS、ZooKeeper、Memcached、LDAP、Kerberos、NFS 及其 RPC 辅助服务（portmapper、mount、lock）、SMB、RDP、VNC、Telnet、SIP、RTSP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、IKE、IPsec ESP（NAT 穿越）、VXLAN、GENEVE、STUN、NTP、mDNS、LLMNR、DHCP、DHCPv6、SNMP、SSDP、Syslog、TFTP、RADIUS、NetBIOS NS。
 
-Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos、Cassandra 的首包特征不够独特，只在默认端口上按报文结构确认，换了端口不猜；AMQP 和 NFS/RPC 按协议头或 RPC 调用结构识别，不限端口。除 Oracle TNS 和 NFS 外，这些标签都用真实服务和它们自带的客户端核对过，见[验证记录](validation.md)。
+Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos、Cassandra 的首包特征不够独特，只在默认端口上按报文结构确认，换了端口不猜；AMQP 和 NFS/RPC 按协议头或 RPC 调用结构识别，不限端口。除 Oracle TNS 和 NFS 外，这些标签都用真实服务和它们自带的客户端核对过，见[验证记录](../archive/validation.md)。
 
 连接名称列在域名之后附带应用自报的信息：DNS 的查询名、类型、应答码和失败次数，SSH 两端的版本标识，TLS 握手失败时的 alert。
 
 `4` 的协议页按“协议 + APP”分组：TCP/UDP 之外还有 ICMPv4/ICMPv6、SCTP、GRE、ESP 等 IP 协议名，以及 ARP、LLDP 等非 IP 帧；未知应用仍保留为 TCP/UDP。
 
 多数应用标签采用单包有界特征；QUIC 标签要求长包头带已知版本号，只有成功认证并重组受支持的客户端 Initial 后才会产生 QUIC SNI，且不会生成 HTTP/3 请求数。
-
-与 [RustNet 的功能清单](https://github.com/domcyrus/rustnet) 的具体差异见 [协议与功能对照](rustnet-comparison.md)。
 
 ## 域名证据与优先级
 
@@ -62,7 +60,7 @@ PID 页的 socket I/O 覆盖整个当前网络命名空间，因此 PID 行有�
 
 ## QUIC Initial
 
-客户端 Initial 的解密与 CRYPTO 重组见 [quicinitial](../internal/quicinitial/initial.go)。
+客户端 Initial 的解密与 CRYPTO 重组见 [quicinitial](../../internal/quicinitial/initial.go)。
 
 QUIC v1/v2 仅解析成功认证的客户端 Initial 中的 ClientHello；乱序 CRYPTO 片段可有界重组。其他 QUIC 版本、HTTP/3 加密的请求域名与请求数仍未知。无 SNI、漏抓握手、解析失败时保留 IP/PID/字节，按原因显示未命名分组；进程探针若恰好观察到该连接的 SNI，可独立补充。
 
@@ -72,7 +70,7 @@ QUIC v1/v2 仅解析成功认证的客户端 Initial 中的 ClientHello；乱序
 
 ## TCP 重组与请求体
 
-[Stream.AddSegment](../internal/domain/stream.go)按 TCP 序号交给解析器：重复区间不重复解析，超前片段暂存，缺口补齐后再继续。暂存最多 64 个片段、64 KiB；若捕获前缀后的字节缺失，解析器只在能按已知长度跳过 HTTP 请求体或帧内容时继续，否则记录截断失败。
+[Stream.AddSegment](../../internal/domain/stream.go)按 TCP 序号交给解析器：重复区间不重复解析，超前片段暂存，缺口补齐后再继续。暂存最多 64 个片段、64 KiB；若捕获前缀后的字节缺失，解析器只在能按已知长度跳过 HTTP 请求体或帧内容时继续，否则记录截断失败。
 
 客户端 ClientHello 解析完成后不再重组该方向的字节，之后的丢包或超过 16 KiB 保留上限的 TSO/GRO 段不再记为解析失败；HTTP 请求体中没复制到的字节按长度跳过，后续请求照常计数。没看到 SYN 时，从以 ClientHello 或 HTTP 请求行开头的报文开始解析。只有记录层 TLS 应用数据、没有握手的连接归入 `handshake not captured`。
 
@@ -80,13 +78,13 @@ QUIC v1/v2 仅解析成功认证的客户端 Initial 中的 ClientHello；乱序
 
 ## 服务端 TLS 握手
 
-服务端握手解析见 [tls_server.go](../internal/domain/tls_server.go)。
+服务端握手解析见 [tls_server.go](../../internal/domain/tls_server.go)。
 
-TLS 服务端回复只在客户端 ClientHello 解析成功后读，从服务端第一个以 TLS 记录开头的报文开始（CONNECT 或 SOCKS 的应答因此被跳过）。服务端报文在采集点之前丢失、重传随后才到时，先到的报文暂存，缺口补上后按序处理；暂存与客户端方向同样最多 64 个片段、64 KiB，缺口 10 秒没补上就停止解析。读到 ServerHello 即取版本和 ALPN；TLS 1.3 或客户端带了 SNI 时到此为止，否则继续读到 Certificate 消息里的叶子证书为止，不等证书链其余部分。证书只按 DER 结构取名字，不校验，最多 8 个名字，也不引入 `crypto/x509`（二进制会大约 2 MB）；缓冲最多 64 KiB，读完即释放。服务端解析挂在客户端流对象上，两者属于同一次握手，证据落在同一条记录里。alert 按报文判断：一个报文恰好是一条 7 字节的明文 alert 记录才算，所以只看得到握手失败时的 alert；握手后的 alert 都是加密的。
+TLS 服务端回复只在客户端 ClientHello 解析成功后读，从服务端第一个以 TLS 记录开头的报文开始（CONNECT 或 SOCKS 的应答因此被跳过）。服务端报文在采集点之前丢失、重传随后才到时，先到的报文暂存，缺口补上后按序处理；暂存与客户端方向同样最多 64 个片段、64 KiB，缺口 10 秒没补上就停止解析。读到 ServerHello 即取版本和 ALPN；TLS 1.3 或客户端带了 SNI 时到此为止，否则继续读到 Certificate 消息里的叶子证书为止，不等证书链其余部分。证书只按 DER 结构取名字，不校验，最多 8 个名字，也不引入 `crypto/x509`；缓冲最多 64 KiB，读完即释放。服务端解析挂在客户端流对象上，两者属于同一次握手，证据落在同一条记录里。alert 按报文判断：一个报文恰好是一条 7 字节的明文 alert 记录才算，所以只看得到握手失败时的 alert；握手后的 alert 都是加密的。
 
 ## 明文 HTTP/2
 
-帧和 HPACK 解析见 [http2.go](../internal/domain/http2.go)。
+帧和 HPACK 解析见 [http2.go](../../internal/domain/http2.go)。
 
 明文 HTTP/2 从客户端的连接前言开始解析，只读 HEADERS 和 CONTINUATION 帧，其余帧按长度跳过，没抓全的 DATA 帧也能跳过。一个头部块最多 64 KiB，HPACK 动态表最多 64 KiB；同一个流的第二个头部块（trailers）不重复计数。经 TLS 的 HTTP/2 是加密的，看不到。
 
@@ -130,5 +128,3 @@ DNS 提示取 UDP 53 应答中提问名对应的 A/AAAA 地址（包括 CNAME �
 - 逐请求的域名和 HTTPS 请求数（经 TLS 的 HTTP/2、HTTP/3）：只能靠读明文。明文 HTTP/2 已按请求计数。
 - 客户端没发 SNI、服务端用 TLS 1.3：证书在加密的握手消息里，只有 DNS 提示可用。
 - OpenSSL 探针不覆盖 Go TLS、静态链接的 TLS 库、其他 TLS 库以及不经已挂调用路径的握手。
-
-与 [RustNet](https://github.com/domcyrus/rustnet) 的功能差异见 [协议与功能对照](rustnet-comparison.md)。

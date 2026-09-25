@@ -4,7 +4,7 @@
 
 `socktrail` 是 Linux 终端实时流量观察程序。它从所选接口采集报文，并结合 eBPF 事件和内核 socket 表，在同一界面显示连接、进程、IP 流量、应用协议和可见的域名证据。IP 报文字节与进程 socket I/O 分开统计。
 
-目前是原型：本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9、10）和 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量，CI 另在 amd64 和 arm64 的 runner 上以 root 运行测试。NAT 在本机网络命名空间网关中验收过，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过；容器网络尚未验收。具体范围见 [验证记录](docs/validation.md)。
+目前是原型：本机 Linux 6.8 上做过实机验证；x86-64 上 5.10 到 7.0 的发行版内核（含 CentOS Stream 9、10）和 arm64 上 6.4、6.8 的内核在虚拟机里验证了探针加载和回环流量，CI 另在 amd64 和 arm64 的 runner 上以 root 运行测试。NAT 在本机网络命名空间网关中验收过，Kafka、SQL Server、gRPC 等十余种真实服务的协议识别也核对过；容器网络尚未验收。具体范围见 [验证记录](docs/archive/validation.md)。
 
 ## 构建与运行
 
@@ -16,7 +16,7 @@
 curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | sh
 ```
 
-目标目录不可写时会请求 `sudo`。v0.0.1 之后的版本带构建来源证明，装有 2.49 及以上版本并已登录的 GitHub CLI 时，安装脚本还会用 `gh attestation verify` 确认二进制出自本仓库的发布流程；否则只核对 SHA-256。安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
+目标目录不可写时会请求 `sudo`。v0.0.1 之后的版本带构建来源证明，装有 2.49 及以上版本并已登录的 GitHub CLI 时，安装脚本还会用 `gh attestation verify` 确认二进制出自本仓库的发布流程；否则只核对 SHA-256。安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/user/usage.md#不使用-sudo-运行)设置 file capabilities。
 
 ```sh
 CGO_ENABLED=0 go build -o socktrail .
@@ -27,9 +27,9 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 ./socktrail --version
 ```
 
-默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看进程分组（`g` 在服务、cgroup、进程树、可执行文件名四种分组间切换），按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/usage.md)。
+默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔，显式指定没有数量上限。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看进程分组（`g` 在服务、cgroup、进程树、可执行文件名四种分组间切换），按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/user/usage.md)。
 
-不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)。
+不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/user/usage.md#不使用-sudo-运行)。
 
 从源码构建可执行 `task` 或 `task build`，安装可执行 `task install`。构建时注入 Git 版本和构建时间；安装任务会把程序放到 `/usr/local/bin/socktrail`，并设置抓包和 eBPF 所需的 file capabilities。以普通用户执行 `task install`，安装步骤会调用 `sudo`；随后可直接运行 `socktrail` 做基础抓包。需要完整的 OpenSSL 进程 SNI、内核 TLS 探针等功能时运行 `sudo socktrail`。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），需要临时文件时用 `--capture-dir /tmp/...` 指定。
 
@@ -37,16 +37,7 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 
 ## 文档
 
-| 主题 | 内容 |
-| --- | --- |
-| [使用指南](docs/usage.md) | 构建、参数、界面、进程详情、PCAPNG 录制 |
-| [实现原理](docs/architecture.md) | AF_PACKET 环、eBPF、进程关联、NAT、分片与非 IP 帧 |
-| [解析原理](docs/parsing.md) | 应用协议、HTTP、TLS、QUIC、代理、DNS 与域名证据 |
-| [数据口径与限制](docs/measurement.md) | IP 字节、socket I/O、方向、RTT、重传与丢失 |
-| [验证记录](docs/validation.md) | 已验证的内核与场景、性能和剩余缺口 |
-| [后续计划](docs/roadmap.md) | 待做的发布、CI、功能、资源与验收事项及做法 |
-
-页面布局见 [界面说明](docs/ui-design.md)，与 RustNet 的功能对照见 [协议与功能对照](docs/rustnet-comparison.md)。
+从[文档索引](docs/README.md)进入使用指南、界面与数据口径说明、实现原理和历史验证记录。
 
 ## 开发与 CI
 
