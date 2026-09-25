@@ -1177,7 +1177,15 @@ func Run() error {
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
 	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
 	flag.Var(&filter.containers, "container", "show only containers by name, Compose service, Pod, or 12+ character ID prefix (repeat or comma-separate)")
+	configPath := flag.String("config", "", "configuration file of default flags, one per line (default: $XDG_CONFIG_HOME/socktrail/config if present; none skips it)")
+	completion := flag.String("completion", "", "print a completion script for bash, zsh or fish, then exit")
 	flag.Parse()
+	if *completion != "" {
+		return writeCompletion(os.Stdout, *completion, flag.CommandLine)
+	}
+	if err := applyConfig(flag.CommandLine, *configPath); err != nil {
+		return err
+	}
 	compiledFilter, err := parseFilter(*filterExpression)
 	if err != nil {
 		return fmt.Errorf("--filter: %w", err)

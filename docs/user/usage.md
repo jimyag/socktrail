@@ -23,6 +23,34 @@ sudo ./socktrail --drops                 # 按需采集内核丢包原因
 
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
 
+### 配置文件
+
+常用参数可以写进配置文件，每次启动自动生效。默认读取 `$XDG_CONFIG_HOME/socktrail/config`；没有设置绝对路径的 `XDG_CONFIG_HOME` 时为 `~/.config/socktrail/config`。以 root 运行时不看 `XDG_CONFIG_HOME`：通过 `sudo socktrail` 启动时读取发起 `sudo` 的用户的 `~/.config/socktrail/config`，否则读取 root 的这个文件，与 GeoIP 目录的规则相同。文件不存在时忽略。`--config /path/to/file` 指定其他文件，这时文件必须存在；`--config none` 不读任何配置文件。
+
+每行一个参数，写法与命令行相同，前面的 `--` 可以省略，参数名与值之间用空格或 `=` 分隔，值可以加单引号或双引号；只写参数名的布尔参数表示开启。空行和以 `#` 开头的行被忽略，行尾不支持注释。可重复的参数（`interface`、`netns`、`process`、`pid`、`cgroup`、`container`）写多行即累加。
+
+```text
+# ~/.config/socktrail/config
+interface eth0
+interface lo
+drops
+socket-sniff=false
+geoip-dir /srv/geoip
+filter 'dir:outbound !iface:lo'
+```
+
+命令行优先：命令行给出的参数不再读取文件中的同名项；可重复参数由命令行整体替换，不与文件中的值合并。`config`、`completion`、`version` 和 `download-geoip-db` 不能写进文件。未知参数、缺少值或值不合法时启动失败，并报出文件名和行号。socktrail 常以 root 运行，文件由它决定读写哪些路径，所以文件必须是普通文件，属于当前用户、root 或发起 `sudo` 的用户，且组和其他用户不可写，否则拒绝读取。
+
+### Shell 补全
+
+`socktrail --completion bash|zsh|fish` 输出补全脚本，不需要抓包权限。脚本按程序自身的参数生成：补全参数名，`--interface` 补全 `/sys/class/net` 下的网卡，`--netns` 补全 `/run/netns` 下的名字以及 `pid:`、`container:`，`--output`、`--memory-limit` 补全可选值，文件和目录参数补全路径；布尔参数可补全 `=true` 或 `=false`。
+
+```sh
+source <(socktrail --completion bash)                     # 写进 ~/.bashrc 长期生效
+socktrail --completion zsh > "${fpath[1]}/_socktrail"     # 然后重新执行 compinit
+socktrail --completion fish > ~/.config/fish/completions/socktrail.fish
+```
+
 ### 离线 GeoIP / ASN
 
 先用普通用户下载当月的 [DB-IP Lite](https://db-ip.com/db/lite.php) Country 和 ASN MMDB：

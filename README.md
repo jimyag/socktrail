@@ -46,6 +46,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Extract visible HTTP Host, TLS and QUIC SNI, proxy targets, and DNS name hints. Encrypted HTTP request names and real ECH inner names are not available from packet capture.
 - Inspect PID, source IP, destination IP, protocol, domain, and per-interface views in the terminal.
 - Record the next 15 seconds of packets for a selected connection or PID to a PCAPNG file on demand, optionally starting with the frames of the seconds before.
+- Keep default flags in `~/.config/socktrail/config`, and generate bash, zsh, or fish completion with `--completion`.
 - Print a timed snapshot as a text report or a JSON document.
 - Stream connection changes as NDJSON and inspect recent changes in the `6 LOG` view.
 - Inspect listening TCP/UDP ports, owning processes, accept queues, and failed attempts in `7 PORTS`.
