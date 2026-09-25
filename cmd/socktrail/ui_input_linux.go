@@ -118,7 +118,12 @@ func decodeUIInput(data []byte, flush bool) (uiInput, int, bool) {
 				return uiInput{key: "right"}, end + 1, false
 			case 'D':
 				return uiInput{key: "left"}, end + 1, false
+			case 'Z':
+				return uiInput{key: "shift-tab"}, end + 1, false
 			}
+		}
+		if data[end] == 'Z' && string(data[2:end]) == "1;2" {
+			return uiInput{key: "shift-tab"}, end + 1, false
 		}
 		if data[end] == '~' {
 			switch string(data[2:end]) {

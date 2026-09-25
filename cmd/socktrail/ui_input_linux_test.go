@@ -38,7 +38,7 @@ func TestDecodeUIInputHandlesSplitMouseAndEscape(t *testing.T) {
 	if input, n, incomplete := decodeUIInput([]byte("\x1b[D"), false); incomplete || n != 3 || input.key != "left" {
 		t.Fatalf("left arrow was lost: %+v consumed=%d incomplete=%t", input, n, incomplete)
 	}
-	for sequence, key := range map[string]string{"\x1b[5~": "pageup", "\x1b[6~": "pagedown"} {
+	for sequence, key := range map[string]string{"\x1b[5~": "pageup", "\x1b[6~": "pagedown", "\x1b[Z": "shift-tab", "\x1b[1;2Z": "shift-tab"} {
 		if input, n, incomplete := decodeUIInput([]byte(sequence), false); incomplete || n != len(sequence) || input.key != key {
 			t.Fatalf("%q decoded incorrectly: %+v consumed=%d incomplete=%t", sequence, input, n, incomplete)
 		}

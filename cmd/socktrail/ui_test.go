@@ -79,6 +79,64 @@ func TestPageKeysMoveFocusedTableByVisibleRows(t *testing.T) {
 	}
 }
 
+func TestTabFollowsFocusedArea(t *testing.T) {
+	u := &terminalUI{mode: viewPID, hostScope: true, interfaces: []string{"eth0", "lo"}, interfaceName: "eth0"}
+	for _, want := range []viewMode{viewSource, viewTarget, viewProtocol, viewService, viewDomain, viewInterfaces, viewDomain, viewDomain, viewPID} {
+		u.handleKey("tab")
+		if u.mode != want || u.focusBottom {
+			t.Fatalf("top Tab: mode=%v, focusBottom=%t; want mode=%v", u.mode, u.focusBottom, want)
+		}
+	}
+	if u.hostScope {
+		t.Fatal("top Tab did not reach per-interface scope")
+	}
+	u.handleKey("enter")
+	if !u.focusBottom || u.tab != 0 {
+		t.Fatalf("Enter did not focus connections: focusBottom=%t tab=%d", u.focusBottom, u.tab)
+	}
+	u.handleKey("tab")
+	if !u.focusBottom || u.tab != 1 || u.mode != viewPID {
+		t.Fatalf("bottom Tab did not select processes: focusBottom=%t tab=%d mode=%v", u.focusBottom, u.tab, u.mode)
+	}
+	u.handleKey("shift-tab")
+	if !u.focusBottom || u.tab != 0 {
+		t.Fatalf("bottom Shift+Tab did not return to connections: focusBottom=%t tab=%d", u.focusBottom, u.tab)
+	}
+	u.handleKey("enter")
+	u.handleKey("tab")
+	if u.focusBottom || u.mode != viewSource {
+		t.Fatalf("Enter did not return to top pages: focusBottom=%t mode=%v", u.focusBottom, u.mode)
+	}
+	u.handleKey("4")
+	u.handleKey("tab")
+	if u.mode != viewService {
+		t.Fatalf("top Tab ignored a direct page selection: mode=%v", u.mode)
+	}
+	single := &terminalUI{mode: viewInterfaces, returnMode: viewPID, hostScope: true, interfaces: []string{"lo"}, topTabIndex: 6}
+	single.handleKey("tab") // a overview
+	single.handleKey("tab") // Skip unavailable i and wrap to PID.
+	if single.mode != viewPID || !single.hostScope {
+		t.Fatalf("single-interface Tab did not skip i: mode=%v hostScope=%t", single.mode, single.hostScope)
+	}
+	single.handleKey("shift-tab")
+	if single.mode != viewInterfaces {
+		t.Fatalf("single-interface Shift+Tab did not skip i and a: mode=%v", single.mode)
+	}
+	reverse := &terminalUI{mode: viewPID, hostScope: true, interfaces: []string{"eth0", "lo"}, interfaceName: "eth0"}
+	reverse.handleKey("shift-tab") // i per interface
+	if reverse.mode != viewPID || reverse.hostScope {
+		t.Fatalf("Shift+Tab did not wrap to interface scope: mode=%v hostScope=%t", reverse.mode, reverse.hostScope)
+	}
+	reverse.handleKey("shift-tab") // a overview
+	if !reverse.hostScope {
+		t.Fatal("Shift+Tab did not return to overview")
+	}
+	reverse.handleKey("shift-tab") // 0 IFACES
+	if reverse.mode != viewInterfaces {
+		t.Fatalf("Shift+Tab did not reach previous page: mode=%v", reverse.mode)
+	}
+}
+
 func TestSharedPIDAndMultipleHostsDoNotDuplicateBytes(t *testing.T) {
 	src := netip.MustParseAddrPort("127.0.0.1:51000")
 	dst := netip.MustParseAddrPort("127.0.0.1:8080")

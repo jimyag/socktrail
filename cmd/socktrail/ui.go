@@ -32,6 +32,7 @@ const (
 
 var viewNames = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES"}
 var tabNames = [...]string{"conns", "process"}
+var topTabKeys = [...]string{"1", "2", "3", "4", "5", "d", "0", "a", "i"}
 
 type rate struct{ rx, tx uint64 }
 type counters struct{ rx, tx uint64 }
@@ -116,6 +117,7 @@ type terminalUI struct {
 	previousMode      viewMode
 	returnMode        viewMode
 	tab               int
+	topTabIndex       int
 	selected          int
 	selectedFlow      int
 	selectedProcess   int
@@ -269,6 +271,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		u.topTabIndex = topPageIndex(u.mode)
 	case "i":
 		if len(u.interfaces) > 1 {
 			// From the overview, i opens the current interface; then it moves on.
@@ -282,6 +285,7 @@ func (u *terminalUI) handleKey(key string) bool {
 			if u.mode == viewInterfaces {
 				u.selectedGroup = "iface:" + u.interfaceName
 			}
+			u.topTabIndex = 8
 		}
 	case "a":
 		u.hostScope = true
@@ -290,6 +294,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		u.topTabIndex = 7
 	case "1", "2", "3", "4", "5":
 		if u.mode == viewInterfaces {
 			u.hostScope = true
@@ -300,6 +305,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		u.topTabIndex = int(key[0] - '1')
 	case "g":
 		if u.mode == viewService {
 			u.grouping = (u.grouping + 1) % processGrouping(len(groupingNames))
@@ -318,6 +324,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		u.topTabIndex = topPageIndex(u.mode)
 	case "esc":
 		if u.focusBottom {
 			u.focusBottom = false
@@ -331,6 +338,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		} else if !u.hostScope {
 			u.hostScope = true
 		}
+		u.topTabIndex = topPageIndex(u.mode)
 	case "up", "k":
 		if u.focusBottom && u.tab == 0 {
 			u.selectedFlow = max(0, u.selectedFlow-1)
@@ -376,12 +384,20 @@ func (u *terminalUI) handleKey(key string) bool {
 			u.mode = u.returnMode
 			u.selected, u.scroll, u.selectedFlow = 0, 0, 0
 			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+			u.topTabIndex = topPageIndex(u.mode)
 		} else {
 			u.focusBottom = !u.focusBottom
 		}
-	case "tab":
-		u.tab = (u.tab + 1) % len(tabNames)
-		u.focusBottom = true
+	case "tab", "shift-tab":
+		direction := 1
+		if key == "shift-tab" {
+			direction = -1
+		}
+		if u.focusBottom {
+			u.tab = (u.tab + direction + len(tabNames)) % len(tabNames)
+		} else {
+			u.handleKey(u.topTabKey(direction))
+		}
 	case "left", "h":
 		u.scrollColumns(-max(4, u.screenWidth/4), u.focusBottom)
 	case "right", "l":
@@ -399,6 +415,43 @@ func (u *terminalUI) handleKey(key string) bool {
 		u.captureToggle = true
 	}
 	return false
+}
+
+func topPageIndex(mode viewMode) int {
+	switch mode {
+	case viewSource:
+		return 1
+	case viewTarget:
+		return 2
+	case viewProtocol:
+		return 3
+	case viewService:
+		return 4
+	case viewDomain:
+		return 5
+	case viewInterfaces:
+		return 6
+	default:
+		return 0
+	}
+}
+
+func (u *terminalUI) topTabKey(direction int) string {
+	for step := 1; step <= len(topTabKeys); step++ {
+		index := (u.topTabIndex + direction*step + len(topTabKeys)) % len(topTabKeys)
+		switch topTabKeys[index] {
+		case "a":
+			if u.hostScope && u.mode != viewInterfaces {
+				continue
+			}
+		case "i":
+			if len(u.interfaces) < 2 {
+				continue
+			}
+		}
+		return topTabKeys[index]
+	}
+	return "1"
 }
 
 func (u *terminalUI) activateSelectedInterface() {
@@ -530,14 +583,17 @@ func (u *terminalUI) handleMouse(m mouseInput, c *collector) {
 		index := u.scroll + m.y - 4
 		if index < len(rows) {
 			u.selectMain(index)
-			u.focusBottom = false
 		}
+		u.focusBottom = false
+		u.topTabIndex = topPageIndex(u.mode)
 		return
 	}
 	if m.y == 3 {
 		if key, ok := u.mainLayout.columnAt(m.x, u.mainX); ok {
 			u.mainSort.selectColumn(key)
 		}
+		u.focusBottom = false
+		u.topTabIndex = topPageIndex(u.mode)
 		return
 	}
 	if m.y == u.bottomStart+1 {
