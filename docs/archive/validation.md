@@ -406,6 +406,10 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 
 新的事件字段要读 `task_struct` 的 `real_parent`、`tgid`，调用 `bpf_get_current_cgroup_id`，并读 `tcp_sock` 的 `srtt_us`、`mdev_us`、`snd_cwnd`、`data_segs_out`。内核矩阵的 11 个内核（amd64 的 5.10 到 7.0 及 CentOS Stream 9、10，arm64 的 6.4 和 6.8）全部通过，各 16 项测试通过、3 项按预期跳过。
 
+## 2026-09-25 连接历史一小时压力测试
+
+在 `lo` 上以约每秒 20 次短 TCP 建连运行 `--output ndjson --duration 1h`，采集器正常退出（实际约 3630 秒），没有 stderr。输出 94,377 行、77,738 个连接 ID，逐行 JSON 全部解析成功，包含 77,536 次结束变化；文件权限 0600。RSS 每 30 秒采样：第 10–30 分钟中位数 117.8 MiB，第 30–60 分钟中位数 118.9 MiB，最后样本 116.9 MiB；后 30 分钟范围 115.1–122.5 MiB。历史保存上限 5000 条，约 7.7 万条已结束连接没有导致 RSS 持续增长。该样本是回环短连接，不代表物理网卡高吞吐时的 CPU 或丢包表现。
+
 ## 2026-09-25 Docker 网络实测
 
 本机 Docker 29.8.1、systemd cgroup v2；临时用 BusyBox HTTP 服务和 curl 容器，结束后删除测试容器。
