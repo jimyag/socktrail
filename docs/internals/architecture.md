@@ -91,6 +91,8 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 服务取 cgroup 路径里最内层的 `.service` 或 `.scope` 目录：systemd 服务、`docker-<id>.scope` 这样的容器、会话和终端的 scope；没有这类目录时整个路径就是服务。进程树以一个进程在同一服务里最远的祖先为根，所以 nginx 的 worker 归到主进程下，终端里的命令归到 shell 下，而不会一直追到 systemd。只有 cgroup v1 的主机取 systemd 层级的路径。进程分组页还可按完整 cgroup 路径或可执行文件名分组；后者读取 `/proc/<pid>/exe` 的最后一段，无法读取时回退到内核任务名。
 
+容器显示名在服务键确定后按容器 ID 查本地文件：Docker 读取 `config.v2.json` 的名称和 Compose 标签，支持 `/etc/docker/daemon.json` 的 `data-root`；containerd/CRI 读取 `/var/log/containers` 的 kubelet 日志链接来得到容器、Pod 和 namespace。最多缓存 4096 个 ID，找不到的 30 秒后重试；不可读时显示短 ID。这个查找只补名称，不改变 cgroup 服务键或跨网络命名空间的 PID 范围。
+
 `--process`、`--pid`、`--cgroup` 只影响显示：报文要先和进程对上才知道属于谁，所以抓包和事件照常全量处理，界面、快照和 JSON 在输出时按进程过滤，每次输出缓存每个进程的判断结果。
 
 ## 内核 socket 表补全进程

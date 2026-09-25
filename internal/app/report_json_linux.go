@@ -145,12 +145,13 @@ type jsonKernelTCP struct {
 // jsonProcess identifies a process; PID -1 means several processes share
 // the socket.
 type jsonProcess struct {
-	PID     int    `json:"pid"`
-	StartNS uint64 `json:"start_ns,omitempty"`
-	Name    string `json:"name,omitempty"`
-	PPID    int    `json:"ppid,omitempty"`
-	Cgroup  string `json:"cgroup,omitempty"`
-	Service string `json:"service,omitempty"`
+	PID       int            `json:"pid"`
+	StartNS   uint64         `json:"start_ns,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	PPID      int            `json:"ppid,omitempty"`
+	Cgroup    string         `json:"cgroup,omitempty"`
+	Service   string         `json:"service,omitempty"`
+	Container *containerInfo `json:"container,omitempty"`
 }
 
 type jsonProcessIO struct {
@@ -210,7 +211,7 @@ func processJSON(p participant, processes *processTable) *jsonProcess {
 	if m := processes.meta(p.id()); m != nil {
 		j.PPID, j.Cgroup = m.Parent.PID, processes.cgroupOf(m)
 		if j.Cgroup != "" {
-			_, j.Service = serviceOf(j.Cgroup)
+			_, j.Service, j.Container = processes.serviceFor(j.Cgroup)
 		}
 	}
 	return j

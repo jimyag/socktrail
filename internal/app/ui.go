@@ -1719,7 +1719,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			detailLines = append(detailLines, label("PROCESS DETAILS:")+" "+styleYellow.paint(info.errorText))
 		} else {
 			cgroup := u.processes.cgroupOf(u.processes.meta(p.id()))
-			_, service := serviceOf(cgroup)
+			_, service, container := u.processes.serviceFor(cgroup)
 			detailLines = append(detailLines,
 				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID),
 				label("EXECUTABLE")+" "+info.executable,
@@ -1727,6 +1727,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 				label("COMMAND")+"    "+info.command,
 				label("CGROUP")+"     "+cgroup+"  "+styleFaint.paint("("+service+")"),
 			)
+			if container != nil {
+				detailLines = append(detailLines, label("CONTAINER")+"  "+container.label())
+			}
 			detailLines = append(detailLines, "") // Filled after the visible environment range is known.
 		}
 		u.processEnvTotal = len(info.environment)

@@ -45,6 +45,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 输出限时文本快照或 JSON 文档。
 - 按连接变化实时输出 NDJSON，并在 `6 LOG` 页查看最近的变化。
 - 按进程、目标和内核错误排查出站 TCP 建连失败，并查看成功或失败的建连时延。
+- 从本地文件显示 Docker 容器名、Compose 服务名，以及有 kubelet 日志链接时的 Kubernetes Pod 名；读不到元数据时回退到短容器 ID。
 - 可选用离线 DB-IP Lite 国家和 ASN 数据补充连接信息。
 
 ## 界面截图

@@ -18,7 +18,7 @@ PID 页的 RX/TX 是当前网络命名空间内 TCP/UDP `sendmsg`/`recvmsg` 返�
 
 ## Docker 网络
 
-当前只采集 socktrail 所在的网络命名空间。`--network host` 的容器共享宿主网络命名空间：连接可关联容器进程，服务显示为 `docker-<短 ID>.scope`。普通 bridge 容器的进程属于另一个网络命名空间，宿主上的探针和 `/proc/net` 无法给这些连接补 PID；要看到容器内进程需要跨命名空间采集（计划中的 `--netns`）。
+当前只采集 socktrail 所在的网络命名空间。`--network host` 的容器共享宿主网络命名空间：连接可关联容器进程；能读取本地 Docker 配置时显示容器名和 Compose 服务名，读不到时显示 `docker-<短 ID>.scope`。普通 bridge 容器的进程属于另一个网络命名空间，宿主上的探针和 `/proc/net` 无法给这些连接补 PID；要看到容器内进程需要跨命名空间采集（计划中的 `--netns`）。
 
 本机 Docker 实测：bridge 容器向外建连的 SYN 在 `docker0` 和宿主出口 `br0` 各有一份；conntrack 将 NAT 前后的元组合成一个整机连接 ID，方向为 `forwarded`，PID 未知。此次外部目标未完成握手，验证的是建连尝试与 NAT 关联。两个同桥容器互访的帧出现在它们的宿主侧 veth 上，`docker0` 没有收到这些桥内转发帧。需要排查单个容器时，用 `--interface vethXXX` 显式指定其宿主侧接口；这只覆盖经过该 veth 的流量，仍不能关联容器内 PID。不同 Docker 网络和内核桥接配置可能改变具体采集点，应先用网卡页确认。
 

@@ -1881,7 +1881,7 @@ func printPIDIO(c *collector, limit int, processes *processTable, scope *process
 			if m.Parent.PID > 0 {
 				parent = strconv.Itoa(m.Parent.PID)
 			}
-			_, service = serviceOf(processes.cgroupOf(m))
+			_, service, _ = processes.serviceFor(processes.cgroupOf(m))
 		}
 		fmt.Printf("%-28s %-16s %-8s %-32s %-10d %d\n", fmt.Sprintf("%d@%d", id.PID, id.StartNS), v.Name, parent, service, v.RX, v.TX)
 	}

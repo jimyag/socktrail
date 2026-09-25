@@ -154,7 +154,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `reports[].flows[]` | 按字节排序的前 `--limit` 条连接，字段见下表 |
 | `reports[].domains[]` | 域名页的行：`label`、`connections`、`rx_bytes`、`tx_bytes`、`http_requests`、`unknown_pid`、`inbound`、`outbound`、`local_addresses`；本机地址取入站连接的目标或出站连接的来源 |
 | `reports[].inbound_attempts[]` | 被拒或无应答的入站尝试：`source`、`ports`、`refused`、`unanswered` |
-| `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
+| `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
 | `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
 | `failures[]` | 最近失败的出站 TCP 建连，按原因、进程和目标分组；包含次数、首次/最近时间及连接 ID。最多覆盖内存中最近 5000 条已结束连接 |
 | `probes.connect_result` | 内核建连结果探针的状态和已收到事件数；不可用时仍按抓包状态显示连接 |
@@ -173,7 +173,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `connect_result`、`connect_latency_us` | 本机出站 TCP 建连结果（`connected`、`refused`、`timeout`、`aborted`、`host unreachable` 等）及从 SYN_SENT 到结束的微秒数；探针未观察到时省略 |
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`（本端地址）、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits` |
-| `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`；`pid` 为 -1 表示多个进程有歧义 |
+| `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`；`container` 含名称、运行时、Pod/namespace、Compose 项目/服务；`pid` 为 -1 表示多个进程有歧义 |
 | `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
 | `dns` | DNS 流的查询、应答、失败次数和最近 8 次查询；每条记录含名字、类型、应答码、前 4 个地址、RTT 与时间 |
 | `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |

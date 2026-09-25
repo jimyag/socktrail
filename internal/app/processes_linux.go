@@ -42,14 +42,15 @@ type processMeta struct {
 // processTable remembers the processes of socket events and their
 // ancestors. All interfaces share it: a process owns sockets on every one.
 type processTable struct {
-	procRoot string
-	procs    map[processID]*processMeta
-	cgroups  map[uint64]string // Paths of the cgroup IDs events carried, learned from /proc.
-	expired  time.Time
+	procRoot   string
+	procs      map[processID]*processMeta
+	cgroups    map[uint64]string // Paths of the cgroup IDs events carried, learned from /proc.
+	containers *containerNames
+	expired    time.Time
 }
 
 func newProcessTable(procRoot string) *processTable {
-	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string)}
+	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string), containers: newContainerNames()}
 }
 
 // observe records the process of a socket event whose start time
@@ -228,6 +229,19 @@ func serviceOf(path string) (string, string) {
 	return path, path
 }
 
+func (t *processTable) serviceFor(path string) (string, string, *containerInfo) {
+	key, label := serviceOf(path)
+	if t.containers != nil {
+		if info, resolved := t.containers.lookup(path); info != nil {
+			if resolved {
+				label = info.label()
+			}
+			return key, label, info
+		}
+	}
+	return key, label, nil
+}
+
 // processGrouping is how the service page groups processes.
 type processGrouping uint8
 
@@ -275,7 +289,7 @@ func (t *processTable) group(id processID, name string, by processGrouping) (str
 		}
 		return "tree:" + pidGroupKey(root), pidGroupLabel(participant{PID: root.PID, StartNS: root.StartNS, Name: name})
 	}
-	key, label := serviceOf(t.cgroupOf(m))
+	key, label, _ := t.serviceFor(t.cgroupOf(m))
 	return "service:" + key, label
 }
 
