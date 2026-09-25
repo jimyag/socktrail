@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、3、5、6、7、8、9、10、11、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；6 的 `NO_SOCKET`、`NETFILTER_DROP` 和 5.10 函数名回退已在实机或虚拟机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试；11 的规则优先级与正常连接空诊断已通过单元测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。14 已实现静态离线读回，逐秒模拟按需再做；13 的进程来源链已实现，按用户分组未做。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、3、5、6、7、8、9、10、11、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；6 的 `NO_SOCKET`、`NETFILTER_DROP` 和 5.10 函数名回退已在实机或虚拟机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试；11 的规则优先级与正常连接空诊断已通过单元测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。14 已实现静态离线读回，逐秒模拟按需再做；13 的进程来源链和按用户分组均已实现，按用户分组通过 `fakeProc` 单元测试。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -484,7 +484,7 @@
 
 ## 13. 进程来源链与按用户分组
 
-进程详情的 `ANCESTRY` 来源链已实现并验证：沿现有 `processTable` 的父进程缓存展示，跨服务或容器边界时标出父进程所属单元；父进程资料缺失时止于 `?PID`。按用户分组未实现，等有实际需求再做。
+进程详情的 `ANCESTRY` 来源链已实现并验证：沿现有 `processTable` 的父进程缓存展示，跨服务或容器边界时标出父进程所属单元；父进程资料缺失时止于 `?PID`。按用户分组已实现：`b` 的第五种分组 `user` 读 `/proc/<pid>/status` 的有效 UID，用 passwd 数据库解析用户名并按 UID 缓存；进程详情显示 USER，过滤支持 `user:`。
 
 参考 witr。
 
@@ -649,6 +649,7 @@
 | [bcc](https://github.com/iovisor/bcc) | tcpconnlat、tcplife、tcpsynbl、solisten、gethostlatency | 第 1、2、7、10、16 项 |
 | [DnsTrace](https://github.com/furkanonder/DnsTrace) | 按进程的 DNS 查询 | 第 10 项 |
 | [witr](https://github.com/pranshuparmar/witr) | 进程、端口的来源链 | 第 13 项 |
+| [ecapture](https://github.com/gojue/ecapture) | OpenSSL、GnuTLS、NSS、Go TLS 的 uprobe | 不做：socket 层读取已覆盖各 TLS 库的明文 SNI，其他库的探针只多得真实 ECH 内层域名；Go TLS 探针需按版本维护结构偏移，等有需求再评估 |
 | [tcping](https://github.com/pouriyajamshidi/tcping)、[NextTrace](https://github.com/nxtrace/NTrace-core)、[nettools](https://github.com/baidu/nettools) | TCP 探测、MTR、链路质量探测 | 第 15 项，只做显式触发；长期拨测不做 |
 | [kyanos](https://github.com/hengyoush/kyanos) | L7 请求时延、内核各阶段耗时、TLS 解密。域名只来自解密后 HTTP/1.x 请求的 Host 头，不解析 SNI | 不读明文，不做。域名方面，SNI、协议升级后的 SNI 和按进程关联的 DNS 能覆盖按域名访问的连接（第 17 项）。明文协议的请求时延要成对匹配请求和应答，等第 1、2 项稳定后再评估 |
 | [oryx](https://github.com/pythops/oryx) | eBPF 抓包 TUI、防火墙 | 防火墙会修改网络，不做 |

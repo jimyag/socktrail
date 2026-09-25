@@ -104,14 +104,14 @@ func keyedCondition(key, value string) (condition, error) {
 		return func(f *flow, _ *collector, _ *processTable, _ *geoip.DB, _ string) bool {
 			return (f.Health.ConnectResult != 0 || f.ICMPError != "") == want
 		}, nil
-	case "proto", "app", "state", "dir", "iface", "proc", "svc", "host", "cc":
+	case "proto", "app", "state", "dir", "iface", "proc", "svc", "user", "host", "ja4", "cc":
 		match, err := filterString(value)
 		if err != nil {
 			return nil, err
 		}
 		return stringCondition(key, match), nil
 	default:
-		return nil, fmt.Errorf("unknown filter key %q", key)
+		return nil, fmt.Errorf("unknown filter key %q; keys: %s", key, filterKeyNames())
 	}
 }
 
@@ -154,10 +154,15 @@ func stringCondition(key string, match func(string) bool) condition {
 			return match(f.Direction)
 		case "iface":
 			return slices.ContainsFunc(interfacesOf(f.Interfaces), match)
-		case "proc", "svc":
+		case "proc", "svc", "user":
 			for _, p := range flowProcesses(f, c) {
 				if key == "proc" && match(p.Name) {
 					return true
+				}
+				if key == "user" && processes != nil {
+					if uid, name := processes.user(p.id()); uid >= 0 && (match(name) || match(strconv.Itoa(uid))) {
+						return true
+					}
 				}
 				if key == "svc" && processes != nil {
 					_, name := processes.group(p.id(), p.Name, byService)
@@ -170,6 +175,12 @@ func stringCondition(key string, match func(string) bool) condition {
 			if f.Domain != nil {
 				e := f.Domain.Evidence()
 				return match(e.Label()) || match(e.SNI) || match(e.Proxy) || match(e.DNS)
+			}
+		case "ja4":
+			if f.Domain != nil {
+				if e := f.Domain.Evidence(); e.JA4 != nil {
+					return match(*e.JA4)
+				}
 			}
 		case "cc":
 			for _, addr := range []netip.Addr{f.Key.A.Addr(), f.Key.B.Addr()} {

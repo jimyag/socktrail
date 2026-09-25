@@ -21,6 +21,8 @@ func TestStructuredFilter(t *testing.T) {
 	t.Cleanup(func() { captureInterfaces = previousInterfaces })
 	f.Interfaces.add(0)
 	processes := newProcessTable(t.TempDir())
+	processes.procs[processID{PID: 123}] = &processMeta{Name: "curl", UID: 1000, UIDChecked: true}
+	processes.userNames[1000] = "alice"
 	for _, tc := range []struct {
 		query string
 		want  bool
@@ -33,6 +35,9 @@ func TestStructuredFilter(t *testing.T) {
 		{"proc:curl pid:123", true},
 		{"iface:eth* host:example.org", true},
 		{"svc:unknown", true},
+		{"user:alice user:1000 user:al*", true},
+		{"user:root", false},
+		{"ja4:t13*", false},
 		{"asn:64500 cc:US", false},
 		{"proc:wget", false},
 		{"!port:80 !dir:inbound", true},
@@ -51,6 +56,21 @@ func TestStructuredFilter(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+	body := append(append([]byte{3, 3}, make([]byte, 32)...), 0, 0, 2, 0x13, 1, 1, 0) // TLS 1.2, one cipher, no extensions.
+	quic, err := domain.NewQUICClientHello(append([]byte{1, 0, 0, byte(len(body))}, body...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Domain = quic
+	for query, want := range map[string]bool{"ja4:q12i010000_*": true, "ja4:t12*": false, "!ja4:q*": false} {
+		conditions, err := parseFilter(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := matchesFilter(conditions, f, c, processes, nil, ""); got != want {
+			t.Errorf("%s: got %v, want %v", query, got, want)
+		}
 	}
 	for _, query := range []string{"foo:bar", "ip:bad", "port:abc", "proc:[", "!", "fail:maybe"} {
 		if _, err := parseFilter(query); err == nil {

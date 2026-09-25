@@ -39,11 +39,13 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 将 TCP、UDP、ICMP 和其他流量归入连接或会话，显示应用协议提示、连接状态、RTT、拥塞窗口、重传和采样的 TCP 瓶颈提示（本机 socket 使用与 `ss -ti` 类似的内核值）、DNS 响应时间和 ICMP 错误。
 - 使用 `--drops` 按需统计内核丢包原因；状态页和 JSON 快照显示汇总，匹配的连接显示自己的丢包次数。
 - 将本机 TCP/UDP socket 关联到进程，并把进程 socket RX/TX 与采集的 IP 字节分开显示。
-- 按 systemd 服务或容器、cgroup、进程树、可执行文件名分组；可用 `--process`、`--pid`（含子孙进程）、`--cgroup` 或 `--container` 只看指定进程。
+- 按 systemd 服务或容器、cgroup、进程树、可执行文件名或用户分组；可用 `--process`、`--pid`（含子孙进程）、`--cgroup` 或 `--container` 只看指定进程。
 - 有 conntrack 映射时，合并 NAT 地址改写前后观测到的连接。
+- 为每个 TLS 和 QUIC ClientHello 计算 JA4 指纹，区分客户端所用的 TLS 库和配置；可用 `ja4:` 过滤。
 - 提取可见的 HTTP Host、TLS 和 QUIC SNI、代理目标与 DNS 域名提示。抓包无法看到加密的 HTTP 请求域名和真实的 ECH 内层域名。
 - 在终端查看 PID、来源 IP、目标 IP、协议、域名和单网卡视图。
 - 按需为选中的连接或 PID 录制之后 15 秒的 PCAPNG，也可包含按键前数秒的帧。
+- 用 `~/.config/socktrail/config` 保存默认参数，用 `--completion` 生成 bash、zsh 或 fish 补全脚本，用 `socktrail --man | man -l -` 阅读完整手册。`socktrail -h` 列出全部过滤键，界面里按 `/` 过滤时 `Tab` 可补全键名和取值。
 - 输出限时文本快照或 JSON 文档。
 - 按连接变化实时输出 NDJSON，并在 `6 LOG` 页查看最近的变化。
 - 在 `7 PORTS` 页查看 TCP/UDP 监听端口、所属进程、accept 队列和失败尝试。
@@ -121,7 +123,7 @@ sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 
 不使用 `sudo` 时，需要为二进制设置 Linux file capabilities。只有网络权限不足以加载 eBPF 探针；详见[权限设置及限制](docs/user/usage.md#不使用-sudo-运行)。
 
-按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树和可执行文件名之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`7` 看监听端口；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。
+按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树、可执行文件名和用户之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`7` 看监听端口；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。
 
 以普通用户运行 `socktrail --download-geoip-db`，可将可选的 [DB-IP Lite](https://db-ip.com/db/lite.php) 国家和 ASN 数据库安装到 `$XDG_DATA_HOME/socktrail/geoip`（通常为 `~/.local/share/socktrail/geoip`）。抓包不会自动联网，没有数据库也能使用；在 TUI 中按 `g` 可明确选择下载。启用后，连接表为来源和目标公网 IP 分别显示国旗、ASN 和组织简称；选中连接的详情和 JSON 快照保留完整名称。`--geoip-dir` 可选择其他数据库目录。DB-IP Lite 使用 CC BY 4.0 许可。
 

@@ -12,11 +12,11 @@ func NewQUICClientHello(handshake []byte) (*Stream, error) {
 	if length != len(handshake)-4 || length > maxPendingBytes {
 		return nil, fmt.Errorf("invalid QUIC ClientHello length")
 	}
-	sni, ech, alpn, err := parseClientHello(handshake[4:])
+	hello, err := parseClientHello(handshake[4:])
 	if err != nil {
 		return nil, err
 	}
-	return &Stream{parser: parser{evidence: Evidence{Kind: "quic", SNI: sni, NoSNI: sni == "", ECH: ech, ALPN: alpn}}}, nil
+	return &Stream{parser: parser{evidence: Evidence{Kind: "quic", SNI: hello.sni, NoSNI: hello.sni == "", ECH: hello.ech, ALPN: hello.alpn, JA4: new(hello.ja4.fingerprint('q'))}}}, nil
 }
 
 func NewUnknownQUIC(reason string) *Stream {

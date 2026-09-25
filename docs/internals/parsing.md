@@ -50,7 +50,7 @@ SMTP、IMAP、POP3、FTP、XMPP、LDAP、PostgreSQL 和 MySQL 先以明文命令
 
 域名页第二行显示启动后建立的 TLS/QUIC 连接流量中已命名的比例、其中来自 DNS 提示的比例和各类未命名原因；启动时内核 socket 表里已有的连接握手早于抓包，它们的流量在同一行单独列出，不计入比例。
 
-连接详情的 `EVIDENCE` 行列出 ECH、客户端提供的 ALPN、服务端选定的 TLS 版本和 ALPN（TLS 1.3 的 ALPN 已加密）、证书名、代理目标、解析错误、连接是否早于抓包、NAT 改写（`SNAT 原地址 as 新地址`、`DNAT 原目标 to 新目标`），以及该 IP 最近解析过的所有域名。
+连接详情的 `EVIDENCE` 行列出 ECH、客户端提供的 ALPN、服务端选定的 TLS 版本和 ALPN（TLS 1.3 的 ALPN 已加密）、证书名、代理目标、解析错误、ClientHello 的 JA4 指纹、连接是否早于抓包、NAT 改写（`SNAT 原地址 as 新地址`、`DNAT 原目标 to 新目标`），以及该 IP 最近解析过的所有域名。
 
 整机页合并同一连接的跨接口证据；同一条连接的字节只进入一个域名分组。
 
@@ -85,6 +85,8 @@ QUIC v1/v2 仅解析成功认证的客户端 Initial 中的 ClientHello；乱序
 ## 服务端 TLS 握手
 
 服务端握手解析见 [tls_server.go](../../internal/domain/tls_server.go)。
+
+JA4 指纹在解析 ClientHello 时一并计算（`internal/domain/ja4.go`），按 FoxIO 的 [JA4 规范](https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4.md)：传输层（TCP 为 `t`，QUIC 为 `q`）、`supported_versions` 中最高的版本（没有时取 legacy_version）、有无 SNI 扩展、密码套件数和扩展数、第一个 ALPN 的首尾字符，加上排序后密码套件列表的哈希，以及排序后扩展列表（去掉 SNI 和 ALPN）连同原序签名算法列表的哈希；GREASE 值一律忽略。JA4 只描述客户端 TLS 库和配置，同一程序访问不同域名时相同，适合区分同一进程里不同 TLS 库发出的连接或识别伪装的客户端。JA4 以 BSD 3-Clause 发布；JA4S、JA4H 等 JA4+ 其他指纹采用 FoxIO 许可证，socktrail 不实现。证据里 `ja4` 用指针保存，没有 ClientHello 的连接不占额外内存，`Stream` 仍在 576 字节的分配规格内。
 
 TLS 服务端回复只在客户端 ClientHello 解析成功后读，从服务端第一个以 TLS 记录开头的报文开始（CONNECT 或 SOCKS 的应答因此被跳过）。服务端报文在采集点之前丢失、重传随后才到时，先到的报文暂存，缺口补上后按序处理；暂存与客户端方向同样最多 64 个片段、64 KiB，缺口 10 秒没补上就停止解析。读到 ServerHello 即取版本和 ALPN；TLS 1.3 或客户端带了 SNI 时到此为止，否则继续读到 Certificate 消息里的叶子证书为止，不等证书链其余部分。证书只按 DER 结构取名字，不校验，最多 8 个名字，也不引入 `crypto/x509`；缓冲最多 64 KiB，读完即释放。服务端解析挂在客户端流对象上，两者属于同一次握手，证据落在同一条记录里。alert 按报文判断：一个报文恰好是一条 7 字节的明文 alert 记录才算，所以只看得到握手失败时的 alert；握手后的 alert 都是加密的。
 
@@ -134,4 +136,4 @@ DNS 提示取 UDP 53 应答中提问名对应的 A/AAAA 地址（包括 CNAME �
 - DNS over TLS 和 DNS over QUIC 根据目标 853 端口标记为 DoT/DoQ；DNS over HTTPS 根据 443 端口和已知的服务名（可用 `--doh-list` 扩充）标记为 DoH。这是流量分类，不代表看到了其中的 DNS 查询。
 - 逐请求的域名和 HTTPS 请求数（经 TLS 的 HTTP/2、HTTP/3）：只能靠读明文。明文 HTTP/2 已按请求计数。
 - 客户端没发 SNI、服务端用 TLS 1.3：证书在加密的握手消息里，只有 DNS 提示可用。
-- OpenSSL 探针不覆盖 Go TLS、静态链接的 TLS 库、其他 TLS 库以及不经已挂调用路径的握手。
+- OpenSSL 探针不覆盖 Go TLS、静态链接的 TLS 库、其他 TLS 库以及不经已挂调用路径的握手。这些库的明文 SNI 由默认开启的 socket 层读取（`--socket-sniff`）覆盖，与所用 TLS 库无关；为它们另加进程内探针，唯一能多拿到的是真实 ECH 的内层域名，所以暂不实现，等有实际排查需求再评估 Go crypto/tls 探针。

@@ -34,6 +34,7 @@ type Evidence struct {
 	Hosts          map[string]uint64 `json:"hosts,omitempty"`           // HTTP request count per Host or HTTP/2 :authority.
 	SNI            string            `json:"sni,omitempty"`             // ClientHello server_name as sent, or the OpenSSL process value.
 	ALPN           []string          `json:"alpn,omitempty"`            // Protocols the client offered, not the negotiated one.
+	JA4            *string           `json:"ja4,omitempty"`             // JA4 fingerprint of the ClientHello: which TLS client software sent it.
 	Proxy          string            `json:"proxy,omitempty"`           // Destination requested through an HTTP CONNECT or SOCKS tunnel.
 	ProxyVia       string            `json:"proxy_via,omitempty"`       // CONNECT, SOCKS4 or SOCKS5.
 	ProxyClient    string            `json:"proxy_client,omitempty"`    // Original client address from a PROXY protocol header.
@@ -184,6 +185,9 @@ func (e Evidence) Detail() string {
 	}
 	if e.ParseError != "" {
 		parts = append(parts, "parse error: "+e.ParseError)
+	}
+	if e.JA4 != nil {
+		parts = append(parts, "JA4 "+*e.JA4)
 	}
 	return strings.Join(parts, "; ")
 }

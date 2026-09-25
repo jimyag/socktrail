@@ -33,3 +33,4 @@ tasks:
         esac
         sudo setcap "$caps+ep" /usr/local/bin/socktrail
       - getcap /usr/local/bin/socktrail
+      - ./socktrail --man | sudo install -D -m 0644 /dev/stdin /usr/local/share/man/man1/socktrail.1

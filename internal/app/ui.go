@@ -150,6 +150,10 @@ type terminalUI struct {
 	filterApplied     string
 	filterConditions  []condition
 	filterError       string
+	filterValues      map[string][]filterValue // Values seen for filter keys, for the filter menu.
+	filterValuesAt    time.Time
+	filterMenuIndex   int  // Highlighted item of the filter menu.
+	filterSubmitted   bool // Enter was pressed on an invalid filter: show why.
 	sortRate          bool
 	help              bool
 	status            bool
@@ -267,15 +271,31 @@ func (u *terminalUI) handleKey(key string) bool {
 		return true
 	}
 	if u.filtering {
+		items, _ := filterMenu(u.filter, u.filterValues)
+		edited := true
 		switch key {
 		case "enter":
 			if _, err := parseFilter(u.filter); err != nil {
-				u.filterError = err.Error()
+				u.filterError, u.filterSubmitted = err.Error(), true
 			} else {
 				u.filtering = false
 			}
+			edited = false
 		case "esc":
 			u.filtering, u.filter = false, ""
+		case "up", "down", "shift-tab":
+			if len(items) > 0 {
+				step := 1
+				if key != "down" {
+					step = len(items) - 1
+				}
+				u.filterMenuIndex = (min(u.filterMenuIndex, len(items)-1) + step) % len(items)
+			}
+			edited = false
+		case "tab":
+			if len(items) > 0 {
+				u.filter = acceptFilterItem(u.filter, items[min(u.filterMenuIndex, len(items)-1)])
+			}
 		case "backspace":
 			if len(u.filter) > 0 {
 				u.filter = u.filter[:len(u.filter)-1]
@@ -283,7 +303,12 @@ func (u *terminalUI) handleKey(key string) bool {
 		default:
 			if len(key) == 1 && len(u.filter) < 256 {
 				u.filter += key
+			} else {
+				edited = false
 			}
+		}
+		if edited {
+			u.filterMenuIndex, u.filterSubmitted = 0, false
 		}
 		u.selected, u.scroll = 0, 0
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
@@ -474,7 +499,7 @@ func (u *terminalUI) handleKey(key string) bool {
 	case "right", "l":
 		u.scrollColumns(max(4, u.screenWidth/4), u.focusBottom)
 	case "/":
-		u.filtering = true
+		u.filtering, u.filterValuesAt, u.filterMenuIndex, u.filterSubmitted = true, time.Time{}, 0, false
 	case "s":
 		u.sortRate = !u.sortRate
 		u.mainSort = sortSpec{}
@@ -1457,6 +1482,8 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		}
 		lines = append(lines, geoHelp+"; s: rate/total sort  !: status  q: quit")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
+		lines = append(lines, "/ filter: "+filterSyntax+"; the menu lists keys and values, Tab accepts; man page: socktrail --man")
+		lines = append(lines, "  keys: "+filterKeyNames())
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
 	} else if u.status {
 		if u.geo != nil {
@@ -1530,8 +1557,15 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, "")
 	}
 	if u.filtering {
+		if time.Since(u.filterValuesAt) >= time.Second {
+			u.filterValues, u.filterValuesAt = filterValues(c, u.processes), time.Now()
+		}
+		menu := u.filterMenuLines(width, height)
+		keep := min(len(lines), 2) // Leave the page title in view.
+		menu = menu[max(0, len(menu)-(len(lines)-keep)):]
+		copy(lines[len(lines)-len(menu):], menu)
 		prompt := styleAccent.paint("/") + u.filter + styleFaint.paint("_")
-		if u.filterError != "" {
+		if u.filterSubmitted && u.filterError != "" {
 			prompt += "  " + styleAlert.paint(u.filterError)
 		}
 		lines = append(lines, prompt)
@@ -1843,7 +1877,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			cgroup := u.processes.cgroupOf(u.processes.meta(p.id()))
 			_, service, container := u.processes.serviceFor(cgroup)
 			detailLines = append(detailLines,
-				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID),
+				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID)+userText(u.processes, p.id()),
 				label("EXECUTABLE")+" "+info.executable,
 				label("WORKDIR")+"    "+info.workingDir,
 				label("COMMAND")+"    "+info.command,
@@ -1941,4 +1975,48 @@ func sortName(byRate bool) string {
 		return "rate"
 	}
 	return "bytes"
+}
+
+// userText labels a process's effective user for its detail line, or is
+// empty when /proc no longer tells.
+func userText(processes *processTable, id processID) string {
+	uid, name := processes.user(id)
+	if uid < 0 {
+		return ""
+	}
+	text := "   " + label("USER") + " " + name
+	if name != strconv.Itoa(uid) {
+		text += styleFaint.paint(" (" + strconv.Itoa(uid) + ")")
+	}
+	return text
+}
+
+// filterMenuLines draws the filter menu that sits above the prompt: what
+// the typed word can become, the highlighted item, and the keys that act on
+// it.
+func (u *terminalUI) filterMenuLines(width, height int) []string {
+	items, title := filterMenu(u.filter, u.filterValues)
+	lines := []string{styleFaint.paint(strings.Repeat("─", width)), styleAccent.paint(fit(title, width))}
+	visible := min(len(items), max(3, height/2-4))
+	index := min(u.filterMenuIndex, max(0, len(items)-1))
+	first := min(max(0, index-visible+1), max(0, len(items)-visible))
+	labelWidth := 0
+	for _, item := range items {
+		labelWidth = max(labelWidth, len(item.label))
+	}
+	labelWidth = min(labelWidth, 32)
+	for i := first; i < first+visible; i++ {
+		item := items[i]
+		text := fit(fmt.Sprintf("  %-*s  %s", labelWidth, fit(item.label, labelWidth), item.detail), width)
+		if i == index {
+			lines = append(lines, styleBar.paint(text+strings.Repeat(" ", max(0, width-displayWidth(text)))))
+		} else {
+			lines = append(lines, "  "+fmt.Sprintf("%-*s", labelWidth, fit(item.label, labelWidth))+"  "+styleFaint.paint(fit(item.detail, max(0, width-labelWidth-4))))
+		}
+	}
+	footer := "↑↓ select  Tab accept  Enter apply  Esc clear  !negate  * glob  space = and"
+	if hidden := len(items) - visible; hidden > 0 {
+		footer = fmt.Sprintf("%d of %d shown  ", visible, len(items)) + footer
+	}
+	return append(lines, styleFaint.paint(fit(footer, width)))
 }
