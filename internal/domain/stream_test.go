@@ -208,6 +208,71 @@ func TestPROXYv2Authority(t *testing.T) {
 	}
 }
 
+func TestProtocolUpgradeTLS(t *testing.T) {
+	mysql := make([]byte, 36)
+	mysql[0], mysql[3], mysql[5] = 32, 1, 8
+	for _, tc := range []struct {
+		name     string
+		segments [][]byte
+		upgrade  string
+	}{
+		{"SMTP", [][]byte{[]byte("EHLO client.example\r\n"), []byte("STARTTLS\r\n")}, "smtp-starttls"},
+		{"IMAP", [][]byte{[]byte("a001 CAPABILITY\r\n"), []byte("a002 STARTTLS\r\n")}, "imap-starttls"},
+		{"POP3", [][]byte{[]byte("CAPA\r\n"), []byte("STLS\r\n")}, "pop3-stls"},
+		{"FTP", [][]byte{[]byte("USER anonymous\r\n"), []byte("AUTH TLS\r\n")}, "ftp-auth-tls"},
+		{"XMPP", [][]byte{[]byte("<stream:stream xmlns='jabber:client'>"), []byte("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")}, "xmpp-starttls"},
+		{"LDAP", [][]byte{{0x30, 0x0c, 0x02, 0x01, 0x01, 0x60, 0x07, 0x02, 0x01, 0x03, 0x04, 0, 0x80, 0}, append([]byte{0x30, 0x0e}, ldapStartTLSOID...)}, "ldap-starttls"},
+		{"PostgreSQL", [][]byte{{0, 0, 0, 8, 4, 210, 22, 47}}, "postgres-ssl"},
+		{"MySQL", [][]byte{mysql}, "mysql-ssl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1)
+			seq := uint32(1)
+			for _, segment := range tc.segments {
+				s.Add(seq, segment)
+				seq += uint32(len(segment))
+			}
+			if e := s.Evidence(); e.Kind != "upgrade" || e.Upgrade != "" || e.SNI != "" {
+				t.Fatalf("pre-TLS plaintext leaked into evidence: %+v", e)
+			}
+			hello := clientHello("mail.example.test", false)
+			s.Add(seq, hello[:7])
+			s.Add(seq+7, hello[7:])
+			if e := s.Evidence(); e.Kind != "tls" || e.SNI != "mail.example.test" || e.Upgrade != tc.upgrade || e.ParseError != "" {
+				t.Fatalf("upgrade evidence: %+v", e)
+			}
+		})
+	}
+	s := New(1)
+	s.Add(1, []byte("EHLO client.example\r\n"))
+	s.Tick(s.lastProgress.Add(31 * time.Second))
+	if e := s.Evidence(); e.Kind != "other" || e.Upgrade != "" {
+		t.Fatalf("unupgraded SMTP: %+v", e)
+	}
+}
+
+func BenchmarkSniffStream(b *testing.B) {
+	for _, tc := range []struct {
+		name, kind string
+		data       []byte
+	}{
+		{"TLS", "tls", clientHello("example.test", false)},
+		{"HTTP", "http", []byte("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")},
+		{"SMTP", "upgrade", []byte("EHLO client.example\r\n")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			var kind string
+			for b.Loop() {
+				kind, _, _ = sniffStream(tc.data)
+			}
+			if kind != tc.kind {
+				b.Fatalf("kind %q, want %q", kind, tc.kind)
+			}
+		})
+	}
+}
+
 func TestStartsClientMessage(t *testing.T) {
 	for _, tc := range []struct {
 		payload []byte
@@ -215,6 +280,8 @@ func TestStartsClientMessage(t *testing.T) {
 	}{
 		{clientHello("a.example.test", false), true},
 		{[]byte("GET /x HTTP/1.1\r\nHost: a\r\n\r\n"), true},
+		{[]byte("EHLO client.example\r\n"), true},
+		{[]byte{0, 0, 0, 8, 4, 210, 22, 47}, true},
 		{append([]byte{23, 3, 3, 0, 32}, make([]byte, 32)...), false},
 		{[]byte("GET part of a body without a request line"), false},
 	} {

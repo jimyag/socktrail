@@ -24,6 +24,8 @@ Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos
 
 `HTTP/2` 是明文 HTTP/2 连接里每个请求的 `:authority`，HPACK 按连接逐块解码，按请求计数，与 HTTP/1.1 的 Host 一样。
 
+SMTP、IMAP、POP3、FTP、XMPP、LDAP、PostgreSQL 和 MySQL 先以明文命令请求升级，再发 TLS ClientHello 时，解析器继续等待握手并在证据的 `upgrade` 字段标记升级协议。等待最多 16 KiB 客户端字节或 30 秒；升级前的内容只在有界解析缓冲中，不进入证据。若握手未出现，归为 `other`。
+
 前五者来自客户端发出的字节，取自所选接口的报文，报文没给出名字时取 socket 层的同一份字节（连接详情的 `APP` 来源标 `(socket)`）：`PROXY` 是 HTTP CONNECT、SOCKS4/4a 或 SOCKS5 请求里的目标，隧道里的 ClientHello 或明文请求仍按 `TLS`、`HTTP` 记录，连接详情标出经由的代理。
 
 连接开头的 PROXY protocol v1/v2 头（负载均衡器转发到后端时加上）会被跳过，详情列出其中的原始客户端地址。v2 的 AUTHORITY TLV 也会解析；没有 SNI 或 Host 时用它命名，JSON 证据字段为 `proxy_authority`。TLV 越界按解析失败处理。

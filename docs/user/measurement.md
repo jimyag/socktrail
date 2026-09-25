@@ -46,6 +46,8 @@ HTTP/1.1 `Host` 统计已完整观察的请求数。同一 TCP 连接出现多�
 
 PROXY protocol v2 的 AUTHORITY 来自转发代理提供的头部；只有没有 SNI 或 HTTP Host 时才用于连接命名。它代表代理声称的原始访问域名，可信程度取决于代理配置。
 
+STARTTLS 等协议升级后，若抓到 ClientHello，SNI 仍来自客户端握手；`evidence.upgrade` 标明 SMTP、IMAP、POP3、FTP、XMPP、LDAP、PostgreSQL 或 MySQL 的升级路径。升级前的明文命令不作为域名证据。
+
 ## 入站连接尝试
 
 入站的连接尝试按来源汇总：被拒绝（目标回 RST，或 UDP 目标回端口不可达）和没有应答（只有 SYN 或单向的一两个 UDP 报文）的尝试计数，并记下尝试过的端口（最多 1024 个）。来源 IP 页在该来源的行上显示 `tried N ports: refused …, unanswered …`；流表满时先批量淘汰这类一次性的流（每次最旧的 10%），扫描不会挤掉正常连接，被淘汰的流仍留在汇总里。汇总 10 分钟没有新尝试后删除。

@@ -41,6 +41,7 @@ type Evidence struct {
 	ProxyVia       string            `json:"proxy_via,omitempty"`       // CONNECT, SOCKS4 or SOCKS5.
 	ProxyClient    string            `json:"proxy_client,omitempty"`    // Original client address from a PROXY protocol header.
 	ProxyAuthority string            `json:"proxy_authority,omitempty"` // Original authority from a PROXY v2 TLV.
+	Upgrade        string            `json:"upgrade,omitempty"`         // Protocol upgraded before the observed TLS ClientHello.
 	DNS            string            `json:"dns,omitempty"`             // Name whose DNS answer pointed at the peer address.
 	NoHandshake    bool              `json:"no_handshake,omitempty"`    // TLS records arrived, but their ClientHello was not captured.
 	ParseError     string            `json:"parse_error,omitempty"`
@@ -100,7 +101,7 @@ func (e Evidence) Named() bool {
 }
 
 // Listed reports whether the evidence belongs on the domain page.
-func (e Evidence) Listed() bool { return e.Kind != "" && e.Kind != "other" }
+func (e Evidence) Listed() bool { return e.Kind != "" && e.Kind != "other" && e.Kind != "upgrade" }
 
 // Label is the domain page row: evidence source, group and an ECH marker.
 func (e Evidence) Label() string {
@@ -129,6 +130,9 @@ func (e Evidence) Detail() string {
 	}
 	if e.ProxyAuthority != "" {
 		parts = append(parts, "PROXY protocol authority "+e.ProxyAuthority)
+	}
+	if e.Upgrade != "" {
+		parts = append(parts, "TLS after "+e.Upgrade)
 	}
 	if e.ECH {
 		parts = append(parts, "ECH offered: on-wire SNI may be a provider's public name")
@@ -186,6 +190,7 @@ func (s *Stream) Fail(reason string) {
 	clear(s.pending)
 	s.pendingBytes = 0
 	s.parser.sniff = nil
+	s.parser.upgrade = nil
 	s.parser.tls.record, s.parser.tls.handshake = nil, nil
 	s.parser.http.buffer = nil
 }
@@ -202,6 +207,10 @@ func (s *Stream) Tick(now time.Time) {
 		return
 	}
 	if s.parser.incomplete() && now.Sub(s.lastProgress) > 30*time.Second {
+		if s.parser.evidence.Kind == "upgrade" {
+			s.parser.evidence.Kind, s.parser.upgrade = "other", nil
+			return
+		}
 		if s.parser.evidence.Kind == "" {
 			// A client that sent a few bytes, such as memcached's stats or a
 			// Cassandra OPTIONS frame, and nothing since: too little to tell.
@@ -341,6 +350,8 @@ func (p *parser) finished() bool {
 		return p.h2.stopped
 	case "proxy":
 		return p.opaque
+	case "upgrade":
+		return false
 	default:
 		return true
 	}
@@ -350,6 +361,8 @@ func (p *parser) incomplete() bool {
 	switch p.evidence.Kind {
 	case "", "proxy":
 		return len(p.sniff) > 0
+	case "upgrade":
+		return true
 	case "tls":
 		return !p.tls.done
 	case "http":
@@ -368,12 +381,16 @@ func (p *parser) skip(n int) error {
 }
 
 type parser struct {
-	evidence Evidence
-	sniff    []byte
-	opaque   bool // The proxy tunnel carries neither TLS nor HTTP.
-	tls      tlsParser
-	http     httpParser
-	h2       *h2Parser // Set with Kind http2; few streams need its buffers.
+	evidence     Evidence
+	sniff        []byte
+	opaque       bool // The proxy tunnel carries neither TLS nor HTTP.
+	upgrade      []byte
+	upgradeProto string
+	upgradeReady bool
+	upgradeBytes int
+	tls          tlsParser
+	http         httpParser
+	h2           *h2Parser // Set with Kind http2; few streams need its buffers.
 }
 
 func (p *parser) feed(data []byte) error {
@@ -407,6 +424,9 @@ func (p *parser) feed(data []byte) error {
 					}
 				}
 				data, p.sniff = p.sniff[used:], nil
+			case "upgrade":
+				p.evidence.Kind, p.upgradeProto = kind, target
+				data, p.sniff = p.sniff, nil
 			case "http2":
 				p.evidence.Kind, p.h2 = kind, new(h2Parser)
 				data, p.sniff = p.sniff[used:], nil
@@ -416,6 +436,14 @@ func (p *parser) feed(data []byte) error {
 			}
 		case "tls":
 			return p.tls.feed(data, &p.evidence)
+		case "upgrade":
+			if tlsData := p.feedUpgrade(data); len(tlsData) > 0 {
+				data = tlsData
+				p.evidence.Kind, p.evidence.Upgrade = "tls", p.upgradeProto
+				p.upgrade = nil
+				continue
+			}
+			return nil
 		case "http":
 			if err := p.http.feed(data, &p.evidence); err != nil {
 				return err
@@ -468,11 +496,15 @@ func sniffStream(b []byte) (kind string, used int, target string) {
 		return "http2", len(h2Preface), ""
 	case bytes.HasPrefix(h2Preface, b):
 		return "", 0, "" // The start of the HTTP/2 preface: wait for the rest.
+	case len(b) >= 8 && looksLikeHTTP(b):
+		return "http", 0, ""
 	case len(b) < 8:
 		return "", 0, ""
-	case looksLikeHTTP(b):
-		return "http", 0, ""
-	case len(b) < 16:
+	}
+	if upgrade := upgradeProtocol(b); upgrade != "" {
+		return "upgrade", 0, upgrade
+	}
+	if len(b) < 16 {
 		return "", 0, ""
 	}
 	return "other", 0, ""
@@ -659,7 +691,7 @@ func StartsClientMessage(b []byte) bool {
 		return true
 	}
 	line, _, found := bytes.Cut(b[:min(len(b), 256)], []byte("\r\n"))
-	return found && looksLikeHTTP(line) && (bytes.HasSuffix(line, []byte(" HTTP/1.1")) || bytes.HasSuffix(line, []byte(" HTTP/1.0")))
+	return found && looksLikeHTTP(line) && (bytes.HasSuffix(line, []byte(" HTTP/1.1")) || bytes.HasSuffix(line, []byte(" HTTP/1.0"))) || upgradeProtocol(b) != ""
 }
 
 // looksLikeHTTP reports whether data starts an HTTP/1.x request line: a
