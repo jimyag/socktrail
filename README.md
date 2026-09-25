@@ -57,8 +57,10 @@ The installer asks for `sudo` if the destination is not writable. For releases a
 
 For a source build, `task` (or `task build`) creates a static binary with the Git version and build time, and `task install` installs it to `/usr/local/bin/socktrail` with the file capabilities needed for packet capture and eBPF. Run `task install` as your normal user; it invokes `sudo` only for installation. Then run `socktrail` without `sudo` for core capture. Use `sudo socktrail` when you need all probes, including OpenSSL process SNI and kernel TLS on hosts that restrict module BTF access.
 
+From the repository root, `go install .` installs the binary to your Go binary directory. It does not set Linux file capabilities.
+
 ```sh
-CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
+CGO_ENABLED=0 go build -o socktrail .
 sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface eth0
@@ -92,7 +94,7 @@ Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for 
 ```sh
 go vet ./...
 go test -race ./...
-CGO_ENABLED=0 go build ./cmd/socktrail
+CGO_ENABLED=0 go build .
 ```
 
 GitHub Actions also checks Go formatting on pushes to `main` and pull requests, runs the probe and capture tests as root on amd64 and arm64 runners, takes a snapshot of test traffic with `test/smoke.sh`, and checks that the committed eBPF objects match their sources. The [kernel matrix](.github/workflows/kernels.yaml) boots each distribution kernel of `test/vm/kernels.txt` in QEMU with `test/vm/run.sh`, one job per kernel, weekly and whenever the probes change; run it locally with `test/vm/run.sh amd64` or `test/vm/run.sh arm64`, optionally followed by kernel names.

@@ -29,7 +29,7 @@ jobs:
       - name: Test
         run: go test -race ./...
       - name: Build
-        run: CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
+        run: CGO_ENABLED=0 go build -o socktrail .
 
   # Probe loading, verifier acceptance, the capture ring and conntrack are
   # tested only as root, on the runner's own kernel of each architecture.
@@ -59,7 +59,7 @@ jobs:
           done
       - name: Snapshot smoke test
         run: |
-          go build -o "$RUNNER_TEMP/socktrail" ./cmd/socktrail
+          go build -o "$RUNNER_TEMP/socktrail" .
           sudo test/smoke.sh "$RUNNER_TEMP/socktrail"
 
   bpf:

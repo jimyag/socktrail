@@ -112,7 +112,7 @@ mkdir -p "$root"/{bin,data,dev,proc,sys,tmp}
 	cd "$repo"
 	export CGO_ENABLED=0 GOOS=linux GOARCH=$arch
 	go build -o "$root/init" ./test/vm/init
-	go build -o "$root/bin/socktrail" ./cmd/socktrail
+	go build -o "$root/bin/socktrail" .
 	for package in probe sockstream capture conntrack; do
 		go test -c -o "$root/bin/$package.test" "./internal/$package"
 	done

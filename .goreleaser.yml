@@ -4,7 +4,7 @@ project_name: socktrail
 
 builds:
   - id: socktrail
-    main: ./cmd/socktrail
+    main: .
     binary: socktrail
     env:
       - CGO_ENABLED=0

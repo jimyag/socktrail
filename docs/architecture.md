@@ -8,7 +8,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 /proc socket 表、conntrack 映射 ─────┘
 ```
 
-主入口在 [main_linux.go](../cmd/socktrail/main_linux.go)，抓包环在 [socket_linux.go](../internal/capture/socket_linux.go)，报文解码在 [packet.go](../internal/capture/packet.go)。图省略了各接口独立采集、异步查询和录制分支。
+主入口在 [main_linux.go](../main_linux.go)，采集主循环在 [app_linux.go](../internal/app/app_linux.go)，抓包环在 [socket_linux.go](../internal/capture/socket_linux.go)，报文解码在 [packet.go](../internal/capture/packet.go)。图省略了各接口独立采集、异步查询和录制分支。
 
 ## 设计约定
 
@@ -79,13 +79,13 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 ## 进程与 socket 关联
 
-[collector.event](../cmd/socktrail/main_linux.go) 先按 PID 和启动标识累计 socket I/O，再尝试用端点关联已观测的流。暂时没有流的 I/O 最多等待 2 秒；仍无法匹配的字节计入未关联统计。TCP 的 connect/accept 角色与实际执行 send/recv 的 PID 分开记录，避免把共享 socket 的 I/O 算给连接建立者；fd 传给别的进程后，各进程写的字节分别计入各自的 PID。
+[collector.event](../internal/app/app_linux.go) 先按 PID 和启动标识累计 socket I/O，再尝试用端点关联已观测的流。暂时没有流的 I/O 最多等待 2 秒；仍无法匹配的字节计入未关联统计。TCP 的 connect/accept 角色与实际执行 send/recv 的 PID 分开记录，避免把共享 socket 的 I/O 算给连接建立者；fd 传给别的进程后，各进程写的字节分别计入各自的 PID。
 
 抓包和 eBPF 两个通道没有固定的处理顺序：抓包环的块最多攒 100 ms，事件最多晚 100 ms。accept 事件先于入站 SYN 被处理时，没有旧流、且角色是 2 秒内记录的就采用；否则按旧连接的角色丢掉。事件晚于报文时，一条短连接可能已经关闭，关闭后 2 秒内它仍接收自己的 connect、accept 和 I/O 事件；同一元组上的新连接要在这 2 秒内带着新 SYN 出现才会混淆。
 
 ## 进程树与服务
 
-[processes_linux.go](../cmd/socktrail/processes_linux.go) 按 PID 加启动时间记录每个出现过的进程的父进程和 cgroup，所有接口共用。父进程和 cgroup ID 来自事件；cgroup 路径在进程第一次出现时从 `/proc/<pid>/cgroup` 读取，并按 cgroup ID 记下，同一 cgroup 里之后的进程即使已经退出也能取到路径。进程的祖先大多不碰网络（shell、脚本），第一次见到一个进程时，趁它们还在，从 `/proc` 把祖先补齐。进程 10 分钟没有事件后删除，但保留仍在使用的进程的祖先。
+[processes_linux.go](../internal/app/processes_linux.go) 按 PID 加启动时间记录每个出现过的进程的父进程和 cgroup，所有接口共用。父进程和 cgroup ID 来自事件；cgroup 路径在进程第一次出现时从 `/proc/<pid>/cgroup` 读取，并按 cgroup ID 记下，同一 cgroup 里之后的进程即使已经退出也能取到路径。进程的祖先大多不碰网络（shell、脚本），第一次见到一个进程时，趁它们还在，从 `/proc` 把祖先补齐。进程 10 分钟没有事件后删除，但保留仍在使用的进程的祖先。
 
 服务取 cgroup 路径里最内层的 `.service` 或 `.scope` 目录：systemd 服务、`docker-<id>.scope` 这样的容器、会话和终端的 scope；没有这类目录时整个路径就是服务。进程树以一个进程在同一服务里最远的祖先为根，所以 nginx 的 worker 归到主进程下，终端里的命令归到 shell 下，而不会一直追到 systemd。只有 cgroup v1 的主机取 systemd 层级的路径。
 
@@ -93,7 +93,7 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 ## 内核 socket 表补全进程
 
-读取和进程关联见 [procnet_linux.go](../cmd/socktrail/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
+读取和进程关联见 [procnet_linux.go](../internal/app/procnet_linux.go)。内核 socket 表（`/proc/net/tcp`、`tcp6`、`udp`、`udp6` 与 `/proc/<pid>/fd`，即 ss/netstat 的数据源）是进程归属的补充来源。存在两端都没有 PID 的 TCP/UDP 连接时，程序每 10 秒最多在后台读一次，读完再应用；它给启动前已建立、或 connect/accept 早于探针挂载的连接补上进程，并确定中途开始的 TCP 连接方向。启动时先读一份，用来判断哪些连接早于抓包。只覆盖当前网络命名空间；在两次读取之间开始又结束的连接，这里拿不到。
 
 ## NAT 映射
 

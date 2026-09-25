@@ -19,7 +19,7 @@ tasks:
       - >-
         go build -trimpath -buildvcs=true
         -ldflags="-s -w -X github.com/jimmicro/version.GitTag={{.GIT_TAG}} -X github.com/jimmicro/version.BuildTime={{.BUILD_TIME}}"
-        -o socktrail ./cmd/socktrail
+        -o socktrail .
 
   install:
     desc: Install socktrail with capture and eBPF capabilities

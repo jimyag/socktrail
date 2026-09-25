@@ -7,7 +7,7 @@
 需要 Linux、Go 1.27。仓库已包含生成的 eBPF 对象；普通构建不需要 clang。`CGO_ENABLED=0` 构建出静态二进制，可以直接拷到其他发行版运行；默认的 cgo 构建依赖构建机的 glibc 版本，例如在 Ubuntu 24.04 上构建的要求 glibc 2.34，在 Debian 11、Ubuntu 20.04 上无法启动。
 
 ```sh
-CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
+CGO_ENABLED=0 go build -o socktrail .
 sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface br0
@@ -19,6 +19,8 @@ sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
 
 安装了 [Task](https://taskfile.dev/) 后，也可用 `task` 或 `task build` 构建，注入 Git 版本和构建时间（同发布构建）；以普通用户运行 `task install` 会先构建，再使用 `sudo install` 将程序安装到 `/usr/local/bin/socktrail` 并设置下面的 file capabilities。
+
+在仓库根目录直接运行 `go install .` 可安装到 Go 的二进制目录；需要抓包权限时另按下文设置 file capabilities。
 
 ### 不使用 sudo 运行
 

@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | 
 目标目录不可写时会请求 `sudo`。v0.0.1 之后的版本带构建来源证明，装有 2.49 及以上版本并已登录的 GitHub CLI 时，安装脚本还会用 `gh attestation verify` 确认二进制出自本仓库的发布流程；否则只核对 SHA-256。安装后运行 `sudo socktrail`，也可按[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)设置 file capabilities。
 
 ```sh
-CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
+CGO_ENABLED=0 go build -o socktrail .
 sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface br0
@@ -32,6 +32,8 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)。
 
 从源码构建可执行 `task` 或 `task build`，安装可执行 `task install`。构建时注入 Git 版本和构建时间；安装任务会把程序放到 `/usr/local/bin/socktrail`，并设置抓包和 eBPF 所需的 file capabilities。以普通用户执行 `task install`，安装步骤会调用 `sudo`；随后可直接运行 `socktrail` 做基础抓包。需要完整的 OpenSSL 进程 SNI、内核 TLS 探针等功能时运行 `sudo socktrail`。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），需要临时文件时用 `--capture-dir /tmp/...` 指定。
+
+在仓库根目录运行 `go install .` 也可安装到 Go 的二进制目录；这个命令不会设置 Linux file capabilities。
 
 ## 文档
 
@@ -51,7 +53,7 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 ```sh
 go vet ./...
 go test -race ./...
-CGO_ENABLED=0 go build ./cmd/socktrail
+CGO_ENABLED=0 go build .
 ```
 
 GitHub Actions 在推送到 `main` 和 PR 时检查格式、vet 和测试；在 amd64、arm64 两种 runner 上以 root 运行探针、socket 层读取、抓包环和 conntrack 的测试，再用 [test/smoke.sh](test/smoke.sh) 对测试流量做一次 JSON 快照核对；另检查提交的 eBPF 对象与源码一致（按 `go generate ./internal/...` 重新生成后逐字节比较）。[内核矩阵](.github/workflows/kernels.yaml)每周以及探针源码变化时，用 [test/vm/run.sh](test/vm/run.sh) 在 QEMU 里启动 [kernels.txt](test/vm/kernels.txt) 列出的发行版内核，每个内核一个作业、并行运行；本地可直接运行 `test/vm/run.sh amd64` 或 `test/vm/run.sh arm64`，后面可跟内核名只跑其中几个。
