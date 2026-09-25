@@ -32,23 +32,24 @@ const (
 type Evidence struct {
 	Kind           string            `json:"kind,omitempty"`            // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
 	Hosts          map[string]uint64 `json:"hosts,omitempty"`           // HTTP request count per Host or HTTP/2 :authority.
-	GRPC           bool              `json:"grpc,omitempty"`            // HTTP/2 requests carried a gRPC content type.
 	SNI            string            `json:"sni,omitempty"`             // ClientHello server_name as sent, or the OpenSSL process value.
-	NoSNI          bool              `json:"no_sni,omitempty"`          // A complete ClientHello carried no server_name.
-	ECH            bool              `json:"ech,omitempty"`             // The ClientHello carried an encrypted_client_hello extension.
 	ALPN           []string          `json:"alpn,omitempty"`            // Protocols the client offered, not the negotiated one.
 	Proxy          string            `json:"proxy,omitempty"`           // Destination requested through an HTTP CONNECT or SOCKS tunnel.
 	ProxyVia       string            `json:"proxy_via,omitempty"`       // CONNECT, SOCKS4 or SOCKS5.
 	ProxyClient    string            `json:"proxy_client,omitempty"`    // Original client address from a PROXY protocol header.
-	ProxyAuthority string            `json:"proxy_authority,omitempty"` // Original authority from a PROXY v2 TLV.
-	Upgrade        string            `json:"upgrade,omitempty"`         // Protocol upgraded before the observed TLS ClientHello.
+	ProxyAuthority *string           `json:"proxy_authority,omitempty"` // Original authority from a PROXY v2 TLV.
+	Upgrade        *string           `json:"upgrade,omitempty"`         // Protocol upgraded before the observed TLS ClientHello.
+	EncryptedDNS   *string           `json:"encrypted_dns,omitempty"`   // DoT, DoQ or DoH inferred from port and service name.
 	DNS            string            `json:"dns,omitempty"`             // Name whose DNS answer pointed at the peer address.
-	NoHandshake    bool              `json:"no_handshake,omitempty"`    // TLS records arrived, but their ClientHello was not captured.
 	ParseError     string            `json:"parse_error,omitempty"`
-	TLSVersion     string            `json:"tls_version,omitempty"` // Version the server chose in its ServerHello.
-	ServerALPN     string            `json:"server_alpn,omitempty"` // Protocol the server chose; TLS 1.3 sends it encrypted.
-	Certificate    []string          `json:"certificate,omitempty"` // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
-	Alert          string            `json:"alert,omitempty"`       // First plaintext alert of the handshake and the side that sent it.
+	TLSVersion     string            `json:"tls_version,omitempty"`  // Version the server chose in its ServerHello.
+	ServerALPN     string            `json:"server_alpn,omitempty"`  // Protocol the server chose; TLS 1.3 sends it encrypted.
+	Certificate    []string          `json:"certificate,omitempty"`  // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
+	Alert          string            `json:"alert,omitempty"`        // First plaintext alert of the handshake and the side that sent it.
+	GRPC           bool              `json:"grpc,omitempty"`         // HTTP/2 requests carried a gRPC content type.
+	NoSNI          bool              `json:"no_sni,omitempty"`       // A complete ClientHello carried no server_name.
+	ECH            bool              `json:"ech,omitempty"`          // The ClientHello carried an encrypted_client_hello extension.
+	NoHandshake    bool              `json:"no_handshake,omitempty"` // TLS records arrived, but their ClientHello was not captured.
 }
 
 // Group names the destination for the domain page. A ClientHello with an ECH
@@ -77,10 +78,12 @@ func (e Evidence) Group() string {
 		return e.DNS
 	}
 	switch {
-	case e.ProxyAuthority != "":
-		return e.ProxyAuthority
+	case e.ProxyAuthority != nil:
+		return *e.ProxyAuthority
 	case e.Proxy != "":
 		return e.Proxy
+	case e.EncryptedDNS != nil:
+		return "encrypted DNS"
 	case e.NoHandshake:
 		return groupNoHandshake
 	case e.ParseError != "":
@@ -94,24 +97,34 @@ func (e Evidence) Group() string {
 // Named reports whether the evidence identifies a destination name.
 func (e Evidence) Named() bool {
 	switch e.Group() {
-	case groupUnknown, groupNoSNI, groupNoHandshake, groupParseFailed:
+	case groupUnknown, groupNoSNI, groupNoHandshake, groupParseFailed, "encrypted DNS":
 		return false
 	}
 	return true
 }
 
 // Listed reports whether the evidence belongs on the domain page.
-func (e Evidence) Listed() bool { return e.Kind != "" && e.Kind != "other" && e.Kind != "upgrade" }
+func (e Evidence) Listed() bool {
+	return e.EncryptedDNS != nil || e.Kind != "" && e.Kind != "other" && e.Kind != "upgrade"
+}
 
 // Label is the domain page row: evidence source, group and an ECH marker.
 func (e Evidence) Label() string {
 	kind := strings.ToUpper(e.Kind)
+	if e.EncryptedDNS != nil && *e.EncryptedDNS == "DoT" && (kind == "OTHER" || kind == "") {
+		kind = "TLS"
+	} else if e.EncryptedDNS != nil && *e.EncryptedDNS == "DoQ" && (kind == "OTHER" || kind == "") {
+		kind = "QUIC"
+	}
 	if e.Kind == "http2" {
 		kind = "HTTP/2"
 	}
 	label := kind + " " + e.Group()
 	if e.ECH {
 		label += " [ECH]"
+	}
+	if e.EncryptedDNS != nil {
+		label += " [" + *e.EncryptedDNS + "]"
 	}
 	if e.SNI == "" && len(e.Certificate) > 0 {
 		label += " [cert]"
@@ -128,11 +141,14 @@ func (e Evidence) Detail() string {
 	if e.ProxyClient != "" {
 		parts = append(parts, "PROXY protocol client "+e.ProxyClient)
 	}
-	if e.ProxyAuthority != "" {
-		parts = append(parts, "PROXY protocol authority "+e.ProxyAuthority)
+	if e.ProxyAuthority != nil {
+		parts = append(parts, "PROXY protocol authority "+*e.ProxyAuthority)
 	}
-	if e.Upgrade != "" {
-		parts = append(parts, "TLS after "+e.Upgrade)
+	if e.Upgrade != nil {
+		parts = append(parts, "TLS after "+*e.Upgrade)
+	}
+	if e.EncryptedDNS != nil {
+		parts = append(parts, "encrypted DNS transport "+*e.EncryptedDNS)
 	}
 	if e.ECH {
 		parts = append(parts, "ECH offered: on-wire SNI may be a provider's public name")
@@ -163,21 +179,37 @@ func (e Evidence) Detail() string {
 }
 
 type Stream struct {
-	expected     uint32
-	pending      map[uint32][]byte
-	pendingBytes int
 	parser       parser
 	server       serverFlight
-	failed       bool
+	pending      map[uint32][]byte
 	lastProgress time.Time
 	gapSince     time.Time
+	pendingBytes int
+	expected     uint32
+	failed       bool
 }
 
 func New(initialSeq uint32) *Stream {
 	return &Stream{expected: initialSeq, lastProgress: time.Now()} // Maps come with their first entry: most streams never need them.
 }
 
+func NewEncryptedDNS(kind string) *Stream {
+	protocol := "tls"
+	if kind == "DoQ" {
+		protocol = "quic"
+	}
+	s := &Stream{parser: parser{evidence: Evidence{Kind: protocol, EncryptedDNS: &kind, NoHandshake: true}}}
+	s.parser.tls.done = true
+	return s
+}
+
 func (s *Stream) Evidence() Evidence { return s.parser.evidence }
+
+func (s *Stream) SetEncryptedDNS(kind string) {
+	if s.parser.evidence.EncryptedDNS == nil || *s.parser.evidence.EncryptedDNS != kind {
+		s.parser.evidence.EncryptedDNS = new(kind)
+	}
+}
 
 // Fail records why parsing stopped. A finished parser keeps its evidence:
 // losing bytes after a complete ClientHello is not a parse failure.
@@ -381,16 +413,13 @@ func (p *parser) skip(n int) error {
 }
 
 type parser struct {
-	evidence     Evidence
-	sniff        []byte
-	opaque       bool // The proxy tunnel carries neither TLS nor HTTP.
-	upgrade      []byte
-	upgradeProto string
-	upgradeReady bool
-	upgradeBytes int
-	tls          tlsParser
-	http         httpParser
-	h2           *h2Parser // Set with Kind http2; few streams need its buffers.
+	evidence Evidence
+	sniff    []byte
+	opaque   bool // The proxy tunnel carries neither TLS nor HTTP.
+	upgrade  *upgradeState
+	tls      tlsParser
+	http     httpParser
+	h2       *h2Parser // Set with Kind http2; few streams need its buffers.
 }
 
 func (p *parser) feed(data []byte) error {
@@ -418,14 +447,18 @@ func (p *parser) feed(data []byte) error {
 				p.evidence.ProxyClient = target
 				if bytes.HasPrefix(p.sniff, proxyV2Signature) {
 					var ok bool
-					p.evidence.ProxyAuthority, ok = proxyV2Authority(p.sniff[:used])
+					authority, valid := proxyV2Authority(p.sniff[:used])
+					ok = valid
 					if !ok {
 						return fmt.Errorf("invalid PROXY v2 TLV")
+					}
+					if authority != "" {
+						p.evidence.ProxyAuthority = new(authority)
 					}
 				}
 				data, p.sniff = p.sniff[used:], nil
 			case "upgrade":
-				p.evidence.Kind, p.upgradeProto = kind, target
+				p.evidence.Kind, p.upgrade = kind, &upgradeState{protocol: target}
 				data, p.sniff = p.sniff, nil
 			case "http2":
 				p.evidence.Kind, p.h2 = kind, new(h2Parser)
@@ -439,7 +472,7 @@ func (p *parser) feed(data []byte) error {
 		case "upgrade":
 			if tlsData := p.feedUpgrade(data); len(tlsData) > 0 {
 				data = tlsData
-				p.evidence.Kind, p.evidence.Upgrade = "tls", p.upgradeProto
+				p.evidence.Kind, p.evidence.Upgrade = "tls", new(p.upgrade.protocol)
 				p.upgrade = nil
 				continue
 			}

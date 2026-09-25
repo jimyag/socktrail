@@ -5,7 +5,15 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unsafe"
 )
+
+func TestStreamFits576ByteSizeClass(t *testing.T) {
+	// Pointerful allocations over 512 bytes need an 8-byte malloc header.
+	if size := unsafe.Sizeof(Stream{}); size > 568 {
+		t.Fatalf("stream size = %d bytes; exceeds usable 568 bytes in the 576-byte allocation class", size)
+	}
+}
 
 func clientHello(host string, ech bool) []byte {
 	name := []byte(host)
@@ -194,7 +202,7 @@ func TestPROXYv2Authority(t *testing.T) {
 			s := New(1)
 			s.Add(1, append(append([]byte(nil), header...), tc.payload...))
 			e := s.Evidence()
-			if e.ProxyAuthority != "app.example.test" || e.Group() != tc.want || e.ParseError != "" {
+			if e.ProxyAuthority == nil || *e.ProxyAuthority != "app.example.test" || e.Group() != tc.want || e.ParseError != "" {
 				t.Fatalf("unexpected evidence: %+v, group %q", e, e.Group())
 			}
 		})
@@ -232,13 +240,13 @@ func TestProtocolUpgradeTLS(t *testing.T) {
 				s.Add(seq, segment)
 				seq += uint32(len(segment))
 			}
-			if e := s.Evidence(); e.Kind != "upgrade" || e.Upgrade != "" || e.SNI != "" {
+			if e := s.Evidence(); e.Kind != "upgrade" || e.Upgrade != nil || e.SNI != "" {
 				t.Fatalf("pre-TLS plaintext leaked into evidence: %+v", e)
 			}
 			hello := clientHello("mail.example.test", false)
 			s.Add(seq, hello[:7])
 			s.Add(seq+7, hello[7:])
-			if e := s.Evidence(); e.Kind != "tls" || e.SNI != "mail.example.test" || e.Upgrade != tc.upgrade || e.ParseError != "" {
+			if e := s.Evidence(); e.Kind != "tls" || e.SNI != "mail.example.test" || e.Upgrade == nil || *e.Upgrade != tc.upgrade || e.ParseError != "" {
 				t.Fatalf("upgrade evidence: %+v", e)
 			}
 		})
@@ -246,7 +254,7 @@ func TestProtocolUpgradeTLS(t *testing.T) {
 	s := New(1)
 	s.Add(1, []byte("EHLO client.example\r\n"))
 	s.Tick(s.lastProgress.Add(31 * time.Second))
-	if e := s.Evidence(); e.Kind != "other" || e.Upgrade != "" {
+	if e := s.Evidence(); e.Kind != "other" || e.Upgrade != nil {
 		t.Fatalf("unupgraded SMTP: %+v", e)
 	}
 }

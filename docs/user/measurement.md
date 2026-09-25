@@ -48,6 +48,8 @@ PROXY protocol v2 的 AUTHORITY 来自转发代理提供的头部；只有没有
 
 STARTTLS 等协议升级后，若抓到 ClientHello，SNI 仍来自客户端握手；`evidence.upgrade` 标明 SMTP、IMAP、POP3、FTP、XMPP、LDAP、PostgreSQL 或 MySQL 的升级路径。升级前的明文命令不作为域名证据。
 
+加密 DNS 的 `evidence.encrypted_dns` 是端口或服务名推断：TCP 853 为 DoT，UDP 853 为 DoQ；443 端口的 SNI 或 DNS 提示命中内置 DoH 服务名时为 DoH，`--doh-list name1,name2` 可补充服务名。它不表示 socktrail 能读取加密的查询内容。
+
 ## 入站连接尝试
 
 入站的连接尝试按来源汇总：被拒绝（目标回 RST，或 UDP 目标回端口不可达）和没有应答（只有 SYN 或单向的一两个 UDP 报文）的尝试计数，并记下尝试过的端口（最多 1024 个）。来源 IP 页在该来源的行上显示 `tried N ports: refused …, unanswered …`；流表满时先批量淘汰这类一次性的流（每次最旧的 10%），扫描不会挤掉正常连接，被淘汰的流仍留在汇总里。汇总 10 分钟没有新尝试后删除。

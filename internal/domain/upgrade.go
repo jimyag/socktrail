@@ -4,6 +4,13 @@ import "bytes"
 
 const maxUpgradeBytes = 16 << 10
 
+type upgradeState struct {
+	data     []byte
+	protocol string
+	ready    bool
+	bytes    int
+}
+
 var ldapStartTLSOID = []byte("\x06\x0a\x2b\x06\x01\x04\x01\x8b\x3a\x81\x9c\x45")
 
 func upgradeProtocol(b []byte) string {
@@ -46,27 +53,28 @@ func upgradeProtocol(b []byte) string {
 }
 
 func (p *parser) feedUpgrade(data []byte) []byte {
-	p.upgradeBytes += len(data)
-	if p.upgradeBytes > maxUpgradeBytes {
+	u := p.upgrade
+	u.bytes += len(data)
+	if u.bytes > maxUpgradeBytes {
 		p.evidence.Kind, p.upgrade = "other", nil
 		return nil
 	}
-	p.upgrade = append(p.upgrade, data...)
-	if !p.upgradeReady {
-		end, protocol := upgradePoint(p.upgrade, p.upgradeProto)
+	u.data = append(u.data, data...)
+	if !u.ready {
+		end, protocol := upgradePoint(u.data, u.protocol)
 		if end == 0 {
 			return nil
 		}
-		p.upgradeProto, p.upgradeReady = protocol, true
-		p.upgrade = p.upgrade[end:]
+		u.protocol, u.ready = protocol, true
+		u.data = u.data[end:]
 	}
-	for i := 0; i+5 < len(p.upgrade); i++ {
-		if p.upgrade[i] == 22 && p.upgrade[i+1] == 3 && p.upgrade[i+5] == 1 {
-			return p.upgrade[i:]
+	for i := 0; i+5 < len(u.data); i++ {
+		if u.data[i] == 22 && u.data[i+1] == 3 && u.data[i+5] == 1 {
+			return u.data[i:]
 		}
 	}
-	if len(p.upgrade) > 5 {
-		p.upgrade = append([]byte(nil), p.upgrade[len(p.upgrade)-5:]...)
+	if len(u.data) > 5 {
+		u.data = append([]byte(nil), u.data[len(u.data)-5:]...)
 	}
 	return nil
 }

@@ -608,6 +608,8 @@ func clientBytes(f *flow) *domain.Stream {
 // proxy target, then the OpenSSL process SNI, then a DNS answer for the peer.
 // An ECH-offering ClientHello may carry only a provider's public name, so a
 // process-observed SNI outranks it without a conflict.
+var extraDoHNames []string
+
 func chooseDomain(f *flow) {
 	wire := clientBytes(f)
 	process := named(f.ProcessDomain)
@@ -634,8 +636,47 @@ func chooseDomain(f *flow) {
 			f.Domain = domain.NewMissedTLSHandshake(reason)
 		}
 	default:
-		f.Domain = wire
+		if f.Domain == nil || f.Domain.Evidence().EncryptedDNS == nil {
+			f.Domain = wire
+		}
 	}
+	if kind := encryptedDNSKind(f); kind != "" {
+		if f.Domain == nil {
+			f.Domain = domain.NewEncryptedDNS(kind)
+		}
+		f.Domain.SetEncryptedDNS(kind)
+	}
+}
+
+func encryptedDNSKind(f *flow) string {
+	port := f.Target.Port()
+	if !f.Target.IsValid() {
+		if f.Key.A.Port() == 853 || f.Key.A.Port() == 443 {
+			port = f.Key.A.Port()
+		} else {
+			port = f.Key.B.Port()
+		}
+	}
+	if port == 853 {
+		switch f.Key.Protocol {
+		case 6:
+			return "DoT"
+		case 17:
+			return "DoQ"
+		}
+	}
+	if port != 443 || f.Domain == nil {
+		return ""
+	}
+	e := f.Domain.Evidence()
+	if e.Kind != "tls" && e.Kind != "quic" && e.Kind != "openssl" && e.Kind != "dns" {
+		return ""
+	}
+	name := strings.ToLower(strings.TrimSuffix(e.Group(), "."))
+	if slices.Contains([]string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, name) || slices.Contains(extraDoHNames, name) {
+		return "DoH"
+	}
+	return ""
 }
 
 func (c *collector) tlsEvent(e tlsprobe.Event) bool {
@@ -1098,6 +1139,7 @@ func Run() error {
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
 	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
 	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
+	dohList := flag.String("doh-list", "", "additional comma-separated DoH service names for encrypted DNS labeling")
 	downloadGeo := flag.Bool("download-geoip-db", false, "download the current DB-IP Lite country and ASN databases, then exit")
 	output := flag.String("output", "text", "output format: text or json snapshots with --duration, or live ndjson")
 	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in ndjson output")
@@ -1110,6 +1152,13 @@ func Run() error {
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
 	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
 	flag.Parse()
+	extraDoHNames = nil
+	for name := range strings.SplitSeq(*dohList, ",") {
+		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+		if name != "" {
+			extraDoHNames = append(extraDoHNames, name)
+		}
+	}
 	if *geoDir == "" {
 		var err error
 		*geoDir, err = geoip.DefaultDir()

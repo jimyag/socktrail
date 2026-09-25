@@ -137,3 +137,46 @@ func TestDNSAnswerOnLoopbackNamesFlowOnOtherInterface(t *testing.T) {
 		t.Fatalf("evidence line: %s", line)
 	}
 }
+
+func TestEncryptedDNSClassification(t *testing.T) {
+	client := netip.MustParseAddrPort("192.0.2.10:50000")
+	for _, tc := range []struct {
+		name, target, kind string
+		protocol           uint8
+	}{
+		{"DoT", "192.0.2.20:853", "DoT", 6},
+		{"DoQ", "192.0.2.20:853", "DoQ", 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := netip.MustParseAddrPort(tc.target)
+			f := &flow{Key: keyFor(client, target, tc.protocol), Initiator: client, Target: target, AppProtocol: "TLS"}
+			chooseDomain(f)
+			first := f.Domain
+			chooseDomain(f)
+			if e := f.Domain.Evidence(); f.Domain != first || e.EncryptedDNS == nil || *e.EncryptedDNS != tc.kind || e.Named() {
+				t.Fatalf("encrypted DNS evidence: %+v", e)
+			}
+		})
+	}
+	opaqueTarget := netip.MustParseAddrPort("192.0.2.20:853")
+	opaque := domain.New(1)
+	opaque.Add(1, []byte("opaque application bytes"))
+	fOpaque := &flow{Key: keyFor(client, opaqueTarget, 6), Initiator: client, Target: opaqueTarget, WireDomain: opaque, WireClient: client}
+	chooseDomain(fOpaque)
+	if e := fOpaque.Domain.Evidence(); !e.Listed() || e.Label() != "TLS encrypted DNS [DoT]" {
+		t.Fatalf("opaque DoT evidence: %+v, label %q", e, e.Label())
+	}
+	target := netip.MustParseAddrPort("192.0.2.20:443")
+	f := &flow{Key: keyFor(client, target, 6), Initiator: client, Target: target, ProcessDomain: domain.NewOpenSSLSNI("dns.google")}
+	chooseDomain(f)
+	if e := f.Domain.Evidence(); e.EncryptedDNS == nil || *e.EncryptedDNS != "DoH" || e.Group() != "dns.google" {
+		t.Fatalf("built-in DoH evidence: %+v", e)
+	}
+	extraDoHNames = []string{"resolver.example.test"}
+	t.Cleanup(func() { extraDoHNames = nil })
+	f.ProcessDomain = domain.NewOpenSSLSNI("resolver.example.test")
+	chooseDomain(f)
+	if e := f.Domain.Evidence(); e.EncryptedDNS == nil || *e.EncryptedDNS != "DoH" {
+		t.Fatalf("custom DoH evidence: %+v", e)
+	}
+}
