@@ -1832,6 +1832,11 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		}
 		info := u.processInfo
 		detailLines := make([]string, 0, 8)
+		if !u.offline {
+			if chain := u.processes.ancestry(p); chain != "" {
+				detailLines = append(detailLines, label("ANCESTRY")+"  "+chain)
+			}
+		}
 		if info.errorText != "" {
 			detailLines = append(detailLines, label("PROCESS DETAILS:")+" "+styleYellow.paint(info.errorText))
 		} else {

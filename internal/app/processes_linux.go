@@ -123,6 +123,50 @@ func (t *processTable) addAncestors(id processID) {
 	}
 }
 
+// ancestry names the observed process and the known parents, marking a
+// service or container boundary when the parent's cgroup unit changes.
+func (t *processTable) ancestry(p participant) string {
+	if p.PID <= 0 {
+		return ""
+	}
+	id := p.id()
+	seen := make(map[processID]bool)
+	var parts []string
+	var childUnit string
+	for range maxAncestors {
+		if seen[id] {
+			parts = append(parts, "[cycle]")
+			break
+		}
+		seen[id] = true
+		m := t.meta(id)
+		name := ""
+		if m != nil {
+			name = m.Name
+		}
+		if len(parts) == 0 && p.Name != "" {
+			name = p.Name
+		}
+		if name == "" {
+			parts = append(parts, fmt.Sprintf("?%d", id.PID))
+			break
+		}
+		label := fmt.Sprintf("%s(%d)", name, id.PID)
+		path := t.cgroupOf(m)
+		unit, _ := serviceOf(path)
+		if len(parts) > 0 && unit != "" && childUnit != "" && unit != childUnit {
+			_, boundary, _ := t.serviceFor(path)
+			label = "[" + boundary + "] " + label
+		}
+		parts = append(parts, label)
+		if m == nil || m.Parent.PID <= 0 {
+			break
+		}
+		childUnit, id = unit, m.Parent
+	}
+	return strings.Join(parts, " ← ")
+}
+
 // readProc reads a live process from /proc; its Name is empty when the PID
 // is gone or belongs to a later process.
 func (t *processTable) readProc(id processID) *processMeta {

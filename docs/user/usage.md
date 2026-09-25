@@ -146,7 +146,7 @@ NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接�
 
 查看单个进程时，按 `1` 进入 PID 页，用 `/` 输入完整 PID 并回车；也可直接点击该 PID 行。默认的 `conns` 底栏列出该 PID 关联的 TCP/UDP 连接，包含来源、目标、协议、状态、Host/SNI 和连接 IP 字节；选中连接后显示**该 PID**在此连接上的 socket RX/TX。按 `Enter` 聚焦底栏后可用方向键逐条查看，也可以用鼠标点击或滚轮切换连接。PageUp/PageDown 会在当前聚焦的主列表或连接列表中翻页。
 
-切到 `process` 标签可看进程启动时间、父 PID、可执行文件、工作目录、命令行和环境变量；多个进程用方向键或点击列表选择，环境变量用 PageUp/PageDown 或鼠标滚轮滚动。启动信息来自 `/proc`，只有进程仍在运行且启动标识匹配时才可读取；权限不足或进程退出会显示原因。环境变量显示的是 `/proc/<pid>/environ` 提供的启动时快照。键名包含 token、secret、passw、pwd、key、credential、auth、cookie、session 或 private 的值默认遮蔽为 `••••(字节数)`；在进程标签中按 `E` 可临时显示原文，或用 `--show-env-secrets` 从启动时显示。原文只显示在终端，不写入日志。PID 汇总可能包含未匹配到已采集连接的 socket I/O，因此连接观测 IP 字节不能直接与 PID socket 字节相加或要求相等。
+切到 `process` 标签可看进程启动时间、父 PID、可执行文件、工作目录、命令行和环境变量；`ANCESTRY` 行沿已知父进程显示来源链，例如 `curl(300) ← bash(100) ← [sshd.service] sshd(20)`，跨 systemd 服务或容器边界时标出父进程所属的服务。多个进程用方向键或点击列表选择，环境变量用 PageUp/PageDown 或鼠标滚轮滚动。启动信息来自 `/proc`，只有进程仍在运行且启动标识匹配时才可读取；权限不足或进程退出会显示原因。来源链也使用采集期间缓存的父子关系；父进程已退出且未被缓存时以 `?PID` 结束，不代表完整启动历史。离线 PCAPNG 没有父进程资料，不显示来源链。环境变量显示的是 `/proc/<pid>/environ` 提供的启动时快照。键名包含 token、secret、passw、pwd、key、credential、auth、cookie、session 或 private 的值默认遮蔽为 `••••(字节数)`；在进程标签中按 `E` 可临时显示原文，或用 `--show-env-secrets` 从启动时显示。原文只显示在终端，不写入日志。PID 汇总可能包含未匹配到已采集连接的 socket I/O，因此连接观测 IP 字节不能直接与 PID socket 字节相加或要求相等。
 
 交互界面把进程显示为 `PID 进程名`，例如 `1224 tailscaled`。同一 PID 在观测期内被复用时，历史行会显示 `#1`、`#2` 以便区分；内部仍以 PID 和进程启动标识分别统计。启动日期可在 `process` 详情页查看。非交互式快照保留完整 `PID@启动纳秒`，便于核对原始身份。启动时间与 `/proc/<pid>/stat` 同一基准（开机后经过的时间，挂起期间也计入），并按内核时钟节拍（通常 10 ms）取整，这样 eBPF 事件和 socket 表找到的同一进程归为一行。
 

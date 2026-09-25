@@ -12,7 +12,7 @@
 | PID | 执行 socket I/O 的 PID 与进程启动时间 | 该 PID 在各采集接口关联的连接；每条连接的观测 IP 字节与该 PID 的 socket 字节分别显示 |
 | 来源 IP、目标 IP | 观测到的连接发起端和目标端；来源页上，向本机发起过被拒或无应答连接尝试的来源在行名后附 `tried N ports: refused …, unanswered …`，流被淘汰后这一行仍保留；目标页的 `CONN50`、`CONN95` 是当前成功出站 TCP 建连时延分位数 | 匹配连接的双端地址、协议、域名证据与本机 PID |
 | 协议 | TCP、UDP、ICMPv4/ICMPv6、SCTP、GRE 等 IP 协议，以及 ARP、LLDP 等按 EtherType 区分的非 IP 帧；有负载证据时进一步按应用协议标签分组 | 匹配的连接、UDP 会话、ICMP 流或帧 |
-| 进程分组 | 默认按 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`；可读本地元数据时显示 Docker/Compose 或 Pod 名，否则显示短 ID）；`b` 切换为完整 cgroup 路径、进程树或可执行文件名（只取 `exe` 路径最后一段）。收发量是组内进程的 socket 字节之和 | 组内进程参与的连接，`I/O PID` 只列组内的进程，父进程接受连接后交给子进程收发时，这里是子进程；`process` 标签按父子关系缩进列出组内进程，详情在 CGROUP 下显示 CONTAINER |
+| 进程分组 | 默认按 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`；可读本地元数据时显示 Docker/Compose 或 Pod 名，否则显示短 ID）；`b` 切换为完整 cgroup 路径、进程树或可执行文件名（只取 `exe` 路径最后一段）。收发量是组内进程的 socket 字节之和 | 组内进程参与的连接，`I/O PID` 只列组内的进程，父进程接受连接后交给子进程收发时，这里是子进程；`process` 标签按父子关系缩进列出组内进程，详情显示 ANCESTRY 来源链、CGROUP 和 CONTAINER |
 | LOG | 最近 5000 次连接变化；`b` 按变化类型、进程或失败原因＋进程＋目标分组，默认按最近事件时间排序 | 变化涉及的连接及其当前或最后一次观测详情；失败分组逐条列出失败记录 |
 | PORTS | 当前 TCP/UDP 监听 socket 与无监听者的连接尝试，列出绑定地址、进程、服务、活动连接、accept 次数、队列及失败尝试 | 所选端口的活动入站连接 |
 | 域名 | HTTP/1.1 Host、明文 HTTP/2 `:authority`、TCP/QUIC ClientHello SNI、无 SNI 时 TLS 1.2 及以下的证书名（标 `[cert]`）、CONNECT/SOCKS4/SOCKS5 代理目标、已关联 socket 的 OpenSSL 进程 SNI 或 DNS 应答提示；没有名字的按原因分组；`LOCAL` 列显示被访问的入站本机地址或出站源地址，最多两个后接 `+N` | 该域名分组的连接与本机 PID；HTTP 请求数与 TLS/QUIC 连接数不混用 |

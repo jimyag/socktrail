@@ -324,6 +324,20 @@ func TestProcessTabAvailableForPIDWithoutCapturedFlow(t *testing.T) {
 	}
 }
 
+func TestProcessDetailShowsAncestry(t *testing.T) {
+	parent, child := processID{PID: 99999990, StartNS: 1}, processID{PID: 99999991, StartNS: 2}
+	table := newProcessTable(t.TempDir())
+	table.procs[parent] = &processMeta{Name: "bash", Cgroup: "/user.slice/session.scope"}
+	table.procs[child] = &processMeta{Name: "curl", Parent: parent, Cgroup: "/user.slice/session.scope"}
+	c := &collector{pidIO: map[processID]processIO{child: {Name: "curl"}}}
+	u := &terminalUI{mode: viewPID, tab: 1, screenWidth: 160, bottomHeight: 20, processes: table}
+	var lines []string
+	u.renderBottom(&lines, u.rows(c, viewPID), c)
+	if shown := ansi.Strip(strings.Join(lines, "\n")); !strings.Contains(shown, "ANCESTRY  curl(99999991) ← bash(99999990)") {
+		t.Fatalf("process detail omitted ancestry: %s", shown)
+	}
+}
+
 func TestObservedDomainHintUsesCapturedFlowEvidence(t *testing.T) {
 	row := &uiRow{}
 	if got := observedDomainHint(row); got != "-" {

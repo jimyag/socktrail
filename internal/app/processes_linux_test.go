@@ -86,6 +86,20 @@ func TestProcessTreesAndServices(t *testing.T) {
 	if path := table.cgroupOf(table.procs[processID{PID: 500, StartNS: 1}]); path != nginx {
 		t.Fatalf("cgroup of an exited process: %q", path)
 	}
+	if chain := table.ancestry(participant{PID: curl.PID, StartNS: curl.StartNS, Name: "curl"}); !strings.HasPrefix(chain, "curl(300) ← deploy.sh(200) ← bash(100)") {
+		t.Fatalf("exited ancestor missing from chain: %q", chain)
+	}
+}
+
+func TestAncestryMarksServiceBoundary(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 10, 1, "sshd", "/system.slice/sshd.service")
+	child := fakeProc(t, root, 20, 10, "bash", "/user.slice/session-1.scope")
+	table := newProcessTable(root)
+	chain := table.ancestry(participant{PID: child.PID, StartNS: child.StartNS, Name: "bash"})
+	if !strings.HasPrefix(chain, "bash(20) ← [sshd.service] sshd(10)") {
+		t.Fatalf("service boundary: %q", chain)
+	}
 }
 
 // The service page puts a flow under the service of each process in it, and
