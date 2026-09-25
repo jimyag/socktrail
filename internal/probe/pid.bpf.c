@@ -19,6 +19,7 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define OP_RECV 4
 #define OP_RETRANSMIT 5
 #define OP_CONNECT_RESULT 6
+#define OP_TCP_METRIC 7
 #define TCP_ESTABLISHED 1
 #define TCP_SYN_SENT 2
 #define TCP_CLOSE 7
@@ -27,7 +28,7 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 struct in_addr { __be32 s_addr; } __attribute__((preserve_access_index));
 struct in6_addr {
     union { __u8 u6_addr8[16]; } in6_u;
-} __attribute__((preserve_access_index));
+};
 struct sockaddr_in {
     unsigned short sin_family;
     __be16 sin_port;
@@ -82,6 +83,14 @@ struct tcp_sock {
     __u32 snd_cwnd;
     __u32 total_retrans;
     __u32 data_segs_out;
+    __u32 chrono_start;
+    __u32 chrono_stat[3];
+    __u8 chrono_type: 2;
+    __u8 rate_app_limited: 1;
+    __u32 rate_delivered;
+    __u32 rate_interval_us;
+    __u32 mss_cache;
+    __u32 snd_wnd;
 } __attribute__((preserve_access_index));
 struct socket { struct sock *sk; } __attribute__((preserve_access_index));
 struct file { void *private_data; } __attribute__((preserve_access_index));
@@ -137,6 +146,29 @@ struct event {
     char comm[16];
 };
 
+// The ordinary 128-byte event stays small. A TCP sample has extra fields and
+// is emitted at most once per second per socket during application I/O.
+struct tcp_metric_event {
+    __u64 netns;
+    __u8 local_ip[16];
+    __u8 remote_ip[16];
+    __u16 local_port;
+    __u16 remote_port;
+    __u8 family;
+    __u8 role;
+    __u64 sampled_ns;
+    __u64 jiffies;
+    __u64 busy_jiffies;
+    __u64 rwnd_jiffies;
+    __u64 sndbuf_jiffies;
+    __u32 rate_delivered;
+    __u32 rate_interval_us;
+    __u32 mss;
+    __u32 snd_wnd;
+    __u8 app_limited;
+};
+struct ring_value { struct event event; struct tcp_metric_event metric; };
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 128);
@@ -152,7 +184,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 22);
-    __type(value, struct event);
+    __type(value, struct ring_value);
 } events SEC(".maps");
 
 struct connect_start {
@@ -171,6 +203,12 @@ struct {
     __type(key, __u64);
     __type(value, struct connect_start);
 } connecting SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);
+    __type(value, __u64);
+} tcp_metric_sampled SEC(".maps");
 
 SEC("tp_btf/inet_sock_set_state")
 int BPF_PROG(tcp_connect_result, const struct sock *sk, int oldstate, int newstate)
@@ -342,6 +380,53 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
             BPF_CORE_READ_INTO(&remote6, sk, __sk_common.skc_v6_daddr);
         __builtin_memcpy(e->local_ip, local6.in6_u.u6_addr8, 16);
         __builtin_memcpy(e->remote_ip, remote6.in6_u.u6_addr8, 16);
+    }
+    if (protocol == 6 && app_bytes && (operation == OP_SEND || operation == OP_RECV)) {
+        __u64 socket_key = (__u64)sk;
+        __u64 now = bpf_ktime_get_ns();
+        __u64 *last = bpf_map_lookup_elem(&tcp_metric_sampled, &socket_key);
+        if (!last || now - *last >= 1000000000ULL) {
+            struct tcp_metric_event *metric = bpf_ringbuf_reserve(&events, sizeof(*metric), 0);
+            if (metric) {
+                __builtin_memset(metric, 0, sizeof(*metric));
+                metric->netns = netns;
+                metric->local_port = local_port;
+                metric->remote_port = remote_port;
+                metric->family = e->family;
+                metric->role = role;
+                if (family == AF_INET) {
+                    __be32 local = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+                    __be32 remote = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+                    __builtin_memcpy(metric->local_ip, &local, 4);
+                    __builtin_memcpy(metric->remote_ip, &remote, 4);
+                } else {
+                    BPF_CORE_READ_INTO(metric->local_ip, sk, __sk_common.skc_v6_rcv_saddr);
+                    BPF_CORE_READ_INTO(metric->remote_ip, sk, __sk_common.skc_v6_daddr);
+                }
+                struct tcp_sock *tp = (void *)sk;
+                __u32 chrono = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+                __u32 start = BPF_CORE_READ(tp, chrono_start);
+                __u32 elapsed = (__u32)bpf_jiffies64() - start;
+                __u64 busy = BPF_CORE_READ(tp, chrono_stat[0]);
+                __u64 rwnd = BPF_CORE_READ(tp, chrono_stat[1]);
+                __u64 sndbuf = BPF_CORE_READ(tp, chrono_stat[2]);
+                if (chrono == 1) busy += elapsed;
+                if (chrono == 2) rwnd += elapsed;
+                if (chrono == 3) sndbuf += elapsed;
+                metric->busy_jiffies = busy + rwnd + sndbuf;
+                metric->rwnd_jiffies = rwnd;
+                metric->sndbuf_jiffies = sndbuf;
+                metric->sampled_ns = now;
+                metric->jiffies = bpf_jiffies64();
+                metric->rate_delivered = BPF_CORE_READ(tp, rate_delivered);
+                metric->rate_interval_us = BPF_CORE_READ(tp, rate_interval_us);
+                metric->mss = BPF_CORE_READ(tp, mss_cache);
+                metric->snd_wnd = BPF_CORE_READ(tp, snd_wnd);
+                metric->app_limited = BPF_CORE_READ_BITFIELD_PROBED(tp, rate_app_limited);
+                bpf_map_update_elem(&tcp_metric_sampled, &socket_key, &now, BPF_ANY);
+                bpf_ringbuf_submit(metric, BPF_RB_NO_WAKEUP);
+            }
+        }
     }
     // Waking the reader costs more than handling an event, and a busy host
     // makes one per socket call: wake it only once events pile up. It also

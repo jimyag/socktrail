@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、3、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、3、5、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -266,6 +266,10 @@
 2026-09-25 实测：kind 节点内 CoreDNS 的 cgroup 同时含外层 Docker scope 与内层 `cri-containerd-…scope`。修正容器身份为最内层后，使用 `--netns pid:<CoreDNS 宿主 PID>` 采集的 JSON 显示 `container.name=coredns`、`pod=coredns-589f44dc88-4f8jn`、`namespace=kube-system`。kind 节点容器的 PID 命名空间和宿主不同；仍需从宿主运行 socktrail 并让节点 kubelet 的 `/var/log/containers` 对运行环境可见，才能同时读取宿主 PID 与节点日志名。
 
 ## 5. TCP 瓶颈判断
+
+已实现。指标算法对照 Linux [`tcp_get_info_chrono_stats`](https://github.com/torvalds/linux/blob/v6.8/net/ipv4/tcp.c) 与 iproute2 [`ss -ti`](https://github.com/iproute2/iproute2/blob/main/misc/ss.c)。普通 PID 事件保持 128 B，TCP 指标每个活跃 socket 最多每秒采一条 112 B 事件。窗口/发送缓冲判定要求累计 busy 至少 100 ms，再满足 20% 比例；不足时不判定，避免短连接只经历一个 jiffy 就被误报。分类是排障线索，不是内核确定的根因。
+
+2026-09-25 验证：root 探针测试、amd64 Linux 5.10、arm64 Linux 6.4 均通过。100 Mbit/s 本地 TCP 负载下，同一 socket 的 `ss -ti` delivery_rate 约 62.9 Gbit/s，socktrail 快照为 62.86 Gbit/s（两者都是内核按瞬时 ACK 样本估计的送达速率，与应用限速口径不同）。7 秒相同负载的采集进程 CPU user/sys 为改动前 0.55/0.59 秒、改动后 0.54/0.58 秒；峰值 RSS 为 74,340/74,132 KiB，未观察到明显回退。窗口阻塞和发送缓冲阻塞的分类使用合成计数器单元测试验证，尚未在真实阻塞负载下逐项对照 `ss -ti`。
 
 目标：对本机的每条 TCP 连接回答"慢在哪一侧"：网络、对端接收窗口、本端发送缓冲，还是应用自己没有数据可发。
 

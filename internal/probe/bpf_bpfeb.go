@@ -59,6 +59,35 @@ type BpfEvent struct {
 	_             [4]byte
 }
 
+type BpfRingValue struct {
+	_      structs.HostLayout
+	Event  BpfEvent
+	Metric BpfTcpMetricEvent
+}
+
+type BpfTcpMetricEvent struct {
+	_              structs.HostLayout
+	Netns          uint64
+	LocalIp        [16]uint8
+	RemoteIp       [16]uint8
+	LocalPort      uint16
+	RemotePort     uint16
+	Family         uint8
+	Role           uint8
+	_              [2]byte
+	SampledNs      uint64
+	Jiffies        uint64
+	BusyJiffies    uint64
+	RwndJiffies    uint64
+	SndbufJiffies  uint64
+	RateDelivered  uint32
+	RateIntervalUs uint32
+	Mss            uint32
+	SndWnd         uint32
+	AppLimited     uint8
+	_              [7]byte
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
@@ -67,6 +96,7 @@ const (
 	BpfMapEvents              = "events"
 	BpfMapLost                = "lost"
 	BpfMapSettings            = "settings"
+	BpfMapTcpMetricSampled    = "tcp_metric_sampled"
 	BpfProgInetAcceptEntry    = "inet_accept_entry"
 	BpfProgKtlsDeviceSendExit = "ktls_device_send_exit"
 	BpfProgKtlsRecvExit       = "ktls_recv_exit"
@@ -171,10 +201,11 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	Connecting *ebpf.MapSpec `ebpf:"connecting"`
-	Events     *ebpf.MapSpec `ebpf:"events"`
-	Lost       *ebpf.MapSpec `ebpf:"lost"`
-	Settings   *ebpf.MapSpec `ebpf:"settings"`
+	Connecting       *ebpf.MapSpec `ebpf:"connecting"`
+	Events           *ebpf.MapSpec `ebpf:"events"`
+	Lost             *ebpf.MapSpec `ebpf:"lost"`
+	Settings         *ebpf.MapSpec `ebpf:"settings"`
+	TcpMetricSampled *ebpf.MapSpec `ebpf:"tcp_metric_sampled"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -203,10 +234,11 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	Connecting *ebpf.Map `ebpf:"connecting"`
-	Events     *ebpf.Map `ebpf:"events"`
-	Lost       *ebpf.Map `ebpf:"lost"`
-	Settings   *ebpf.Map `ebpf:"settings"`
+	Connecting       *ebpf.Map `ebpf:"connecting"`
+	Events           *ebpf.Map `ebpf:"events"`
+	Lost             *ebpf.Map `ebpf:"lost"`
+	Settings         *ebpf.Map `ebpf:"settings"`
+	TcpMetricSampled *ebpf.Map `ebpf:"tcp_metric_sampled"`
 }
 
 func (m *BpfMaps) Close() error {
@@ -215,6 +247,7 @@ func (m *BpfMaps) Close() error {
 		m.Events,
 		m.Lost,
 		m.Settings,
+		m.TcpMetricSampled,
 	)
 }
 

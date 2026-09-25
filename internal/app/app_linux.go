@@ -840,7 +840,7 @@ func (c *collector) event(e probe.Event) {
 			c.pendingTCP[key] = pending
 		}
 	}
-	if e.Operation == "retransmit" {
+	if e.Operation == "retransmit" || e.Operation == "tcp_metric" {
 		return // No process and no bytes: only the socket's state.
 	}
 	portMatch := c.acceptPort(e.Local, e.Remote)

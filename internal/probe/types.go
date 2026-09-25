@@ -35,6 +35,18 @@ type TCPInfo struct {
 	Cwnd        uint32        // Congestion window, in segments.
 	SegsOut     uint32        // Data segments sent.
 	Retransmits uint32        // Segments retransmitted, in total.
+	Metrics     TCPMetrics
+}
+
+// TCPMetrics uses the same chrono and delivery-rate fields as tcp_get_info.
+// Time counters are raw kernel jiffies; a later sample can estimate CONFIG_HZ.
+type TCPMetrics struct {
+	SampledNS, Jiffies               uint64
+	Busy, RwndLimited, SndbufLimited uint64
+	DeliveryRate                     uint64 // Bytes per second.
+	SendWindow                       uint32
+	AppLimited                       bool
+	HZ                               uint32
 }
 
 type Statistics struct {

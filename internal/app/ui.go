@@ -1630,7 +1630,12 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.detailCanvas = layout.width
 		u.detailX = min(u.detailX, max(0, layout.width-u.screenWidth))
 		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth)))
-		visible := max(1, u.bottomHeight-7-len(geoLines)) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
+		limitLine := limitDetail(selected)
+		extra := 0
+		if limitLine != "" {
+			extra = 1
+		}
+		visible := max(1, u.bottomHeight-7-len(geoLines)-extra) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
 		if u.selectedFlow < start {
 			start = u.selectedFlow
@@ -1675,6 +1680,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			tcpLine = label("TCP") + " " + detail
 		}
 		*lines = append(*lines, tcpLine)
+		if limitLine != "" {
+			*lines = append(*lines, label("LIMIT")+" "+limitLine)
+		}
 		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
 			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))
 		*lines = append(*lines, label("EVIDENCE")+strings.TrimPrefix(evidenceLine(selected, c), "EVIDENCE"))

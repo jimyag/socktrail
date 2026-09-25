@@ -180,6 +180,12 @@ type jsonKernelTCP struct {
 	Cwnd         uint32 `json:"cwnd"`
 	DataSegsOut  uint32 `json:"data_segs_out"`
 	Retransmits  uint32 `json:"retransmits"`
+	BusyMS       uint64 `json:"busy_ms,omitempty"`
+	RwndMS       uint64 `json:"rwnd_limited_ms,omitempty"`
+	SndbufMS     uint64 `json:"sndbuf_limited_ms,omitempty"`
+	DeliveryBPS  uint64 `json:"delivery_rate_bps,omitempty"`
+	AppLimited   *bool  `json:"app_limited,omitempty"`
+	Limit        string `json:"limit,omitempty"`
 }
 
 // jsonProcess identifies a process; PID -1 means several processes share
@@ -321,7 +327,20 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 			if side == 1 {
 				local = f.Key.B
 			}
-			row.KernelTCP = append(row.KernelTCP, jsonKernelTCP{local.String(), k.RTT.Microseconds(), k.RTTVar.Microseconds(), k.Cwnd, k.SegsOut, k.Retransmits})
+			m := k.Metrics
+			item := jsonKernelTCP{
+				Local: local.String(), RTTMicros: k.RTT.Microseconds(), RTTVarMicros: k.RTTVar.Microseconds(), Cwnd: k.Cwnd, DataSegsOut: k.SegsOut, Retransmits: k.Retransmits,
+				DeliveryBPS: m.DeliveryRate * 8, Limit: tcpLimit(k),
+			}
+			if m.SampledNS > 0 {
+				item.AppLimited = &m.AppLimited
+			}
+			if m.HZ > 0 {
+				item.BusyMS = m.Busy * 1000 / uint64(m.HZ)
+				item.RwndMS = m.RwndLimited * 1000 / uint64(m.HZ)
+				item.SndbufMS = m.SndbufLimited * 1000 / uint64(m.HZ)
+			}
+			row.KernelTCP = append(row.KernelTCP, item)
 		}
 	}
 	if f.Domain != nil {

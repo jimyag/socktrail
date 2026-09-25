@@ -201,14 +201,18 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 				readErr = fmt.Errorf("read eBPF event ring: %w", err)
 				break
 			}
-			if len(record.RawSample) < int(unsafe.Sizeof(BpfEvent{})) {
+			if len(record.RawSample) != int(unsafe.Sizeof(BpfEvent{})) && len(record.RawSample) != int(unsafe.Sizeof(BpfTcpMetricEvent{})) {
 				stats.Invalid.Add(1)
 				continue
 			}
-			// The program wrote the struct in the generated layout; reflection
-			// through encoding/binary cost a tenth of the CPU under load.
-			//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
-			event, err := decodeEvent(*(*BpfEvent)(unsafe.Pointer(&record.RawSample[0])))
+			var event Event
+			if len(record.RawSample) == int(unsafe.Sizeof(BpfTcpMetricEvent{})) {
+				//nolint:gosec // G103: the checked record uses the generated BPF layout.
+				event, err = decodeMetric(*(*BpfTcpMetricEvent)(unsafe.Pointer(&record.RawSample[0])))
+			} else {
+				//nolint:gosec // G103: the checked record uses the generated BPF layout.
+				event, err = decodeEvent(*(*BpfEvent)(unsafe.Pointer(&record.RawSample[0])))
+			}
 			if err != nil {
 				stats.Invalid.Add(1)
 				continue
@@ -254,7 +258,7 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 	if raw.Protocol != 6 && raw.Protocol != 17 && raw.Protocol != 1 && raw.Protocol != 58 {
 		return Event{}, fmt.Errorf("invalid eBPF protocol %d", raw.Protocol)
 	}
-	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit", 6: "connect_result"}[raw.Operation]
+	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit", 6: "connect_result", 7: "tcp_metric"}[raw.Operation]
 	if operation == "" {
 		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
 	}
@@ -292,4 +296,53 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		event.ConnectLatency = uint32(raw.AppBytes) //nolint:gosec // BPF clamps latency to uint32 before writing it.
 	}
 	return event, nil
+}
+
+func decodeMetric(raw BpfTcpMetricEvent) (Event, error) {
+	var local, remote netip.Addr
+	switch raw.Family {
+	case 4:
+		local = netip.AddrFrom4([4]byte(raw.LocalIp[:4]))
+		remote = netip.AddrFrom4([4]byte(raw.RemoteIp[:4]))
+	case 6:
+		local = netip.AddrFrom16(raw.LocalIp)
+		remote = netip.AddrFrom16(raw.RemoteIp)
+	default:
+		return Event{}, fmt.Errorf("invalid TCP metric address family %d", raw.Family)
+	}
+	role := "out"
+	if raw.Role == 2 {
+		role = "in"
+	} else if raw.Role != 1 {
+		return Event{}, fmt.Errorf("invalid TCP metric role %d", raw.Role)
+	}
+	return Event{
+		Protocol: 6, Family: int(raw.Family), Role: role, Operation: "tcp_metric", NetNS: raw.Netns,
+		Local:  netip.AddrPortFrom(local.Unmap(), raw.LocalPort),
+		Remote: netip.AddrPortFrom(remote.Unmap(), raw.RemotePort),
+		TCP: TCPInfo{Metrics: TCPMetrics{
+			SampledNS: raw.SampledNs, Jiffies: raw.Jiffies, Busy: raw.BusyJiffies,
+			RwndLimited: raw.RwndJiffies, SndbufLimited: raw.SndbufJiffies,
+			DeliveryRate: deliveryRate(raw.RateDelivered, raw.Mss, raw.RateIntervalUs),
+			SendWindow:   raw.SndWnd, AppLimited: raw.AppLimited != 0,
+		}},
+	}, nil
+}
+
+func deliveryRate(delivered, mss, intervalUS uint32) uint64 {
+	if delivered == 0 || mss == 0 || intervalUS == 0 {
+		return 0
+	}
+	bytes := uint64(delivered) * uint64(mss)
+	whole, fraction := bytes/uint64(intervalUS), bytes%uint64(intervalUS)
+	maxRate := ^uint64(0)
+	if whole > maxRate/1_000_000 {
+		return maxRate
+	}
+	rate := whole * 1_000_000
+	extra := fraction * 1_000_000 / uint64(intervalUS)
+	if extra > maxRate-rate {
+		return maxRate
+	}
+	return rate + extra
 }

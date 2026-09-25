@@ -82,6 +82,48 @@ func TestKernelTCPStateArrivesBeforeCapturedPacket(t *testing.T) {
 	}
 }
 
+func TestTCPLimitFromKernelCounters(t *testing.T) {
+	base := probe.TCPInfo{
+		RTT: 20 * time.Millisecond, SegsOut: 100,
+		Metrics: probe.TCPMetrics{SampledNS: 1, HZ: 1000, Busy: 1000, DeliveryRate: 1_000_000},
+	}
+	if got := tcpLimit(probe.TCPInfo{}); got != "" {
+		t.Fatalf("idle socket limit = %q", got)
+	}
+	base.Metrics.RwndLimited = 630
+	if got := tcpLimit(base); got != "peer window" {
+		t.Fatalf("receiver window limit = %q", got)
+	}
+	base.Metrics.Busy, base.Metrics.RwndLimited = 1, 1
+	if got := tcpLimit(base); got != "" {
+		t.Fatalf("one jiffy of window pressure classified as %q", got)
+	}
+	base.Metrics.Busy = 1000
+	base.Metrics.RwndLimited, base.Metrics.SndbufLimited = 0, 400
+	if got := tcpLimit(base); got != "send buffer" {
+		t.Fatalf("sender buffer limit = %q", got)
+	}
+	base.Metrics.SndbufLimited, base.Metrics.Busy, base.Metrics.AppLimited = 0, 10, true
+	if got := tcpLimit(base); got != "application" {
+		t.Fatalf("application limit = %q", got)
+	}
+	base.Metrics.AppLimited, base.Retransmits = false, 6
+	if got := tcpLimit(base); got != "network" {
+		t.Fatalf("network limit = %q", got)
+	}
+}
+
+func TestTCPMetricKeepsKernelState(t *testing.T) {
+	var h tcpHealth
+	h.observeKernel(0, probe.TCPInfo{RTT: 2 * time.Millisecond, SegsOut: 10})
+	h.observeKernel(0, probe.TCPInfo{Metrics: probe.TCPMetrics{SampledNS: 1_000_000_000, Jiffies: 1000, Busy: 100}})
+	h.observeKernel(0, probe.TCPInfo{Metrics: probe.TCPMetrics{SampledNS: 2_000_000_000, Jiffies: 2000, Busy: 300}})
+	h.observeKernel(0, probe.TCPInfo{RTT: 3 * time.Millisecond, SegsOut: 12})
+	if got := h.Kernel[0]; got.RTT != 3*time.Millisecond || got.Metrics.HZ != 1000 || got.Metrics.Busy != 300 {
+		t.Fatalf("merged kernel state = %+v", got)
+	}
+}
+
 func TestTCPHealthCountsRepeatedInboundSYNWithoutRTT(t *testing.T) {
 	local := netip.MustParseAddrPort("192.0.2.10:443")
 	remote := netip.MustParseAddrPort("198.51.100.20:40000")

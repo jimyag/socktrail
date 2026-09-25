@@ -24,6 +24,18 @@ func TestRingEventSize(t *testing.T) {
 	if size := unsafe.Sizeof(BpfEvent{}); size != 128 {
 		t.Fatalf("PID ring event is %d B, want 128 B", size)
 	}
+	if size := unsafe.Sizeof(BpfTcpMetricEvent{}); size != 112 {
+		t.Fatalf("TCP metric event is %d B, want 112 B", size)
+	}
+}
+
+func TestDeliveryRateMatchesTCPInfo(t *testing.T) {
+	if got := deliveryRate(1000, 1448, 50_000); got != 28_960_000 {
+		t.Fatalf("delivery rate = %d B/s", got)
+	}
+	if got := deliveryRate(1, 1000, 0); got != 0 {
+		t.Fatalf("empty interval rate = %d", got)
+	}
 }
 
 // Needs root to load the probe: sudo go test ./internal/probe/
@@ -146,6 +158,10 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 		},
 		"tcp state": func(e Event) bool {
 			return e.Protocol == 6 && e.Operation == "send" && e.Local == client && e.TCP.RTT > 0 && e.TCP.Cwnd > 0 && e.TCP.SegsOut > 0
+		},
+		"tcp metric": func(e Event) bool {
+			return e.Operation == "tcp_metric" && e.Local == client && e.Remote == server &&
+				e.TCP.Metrics.SampledNS > 0 && e.TCP.Metrics.Jiffies > 0 && e.TCP.Metrics.SendWindow > 0
 		},
 		"process": func(e Event) bool {
 			return e.Operation == "connect" && e.PID == os.Getpid() && e.ParentPID == os.Getppid() && e.ParentStartNS > 0 &&

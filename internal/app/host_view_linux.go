@@ -418,9 +418,11 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		if f.End == flowFailed {
 			merged.End, merged.Closed = flowFailed, true
 		}
-		for side, info := range f.Health.Kernel {
-			if info != (probe.TCPInfo{}) {
-				merged.Health.observeKernel(side, info)
+		if f.Health.Kernel != nil {
+			for side, info := range f.Health.Kernel {
+				if info != (probe.TCPInfo{}) {
+					merged.Health.observeKernel(side, info)
+				}
 			}
 		}
 		if !f.First.IsZero() && (merged.First.IsZero() || f.First.Before(merged.First)) {

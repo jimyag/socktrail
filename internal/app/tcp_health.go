@@ -26,7 +26,7 @@ type tcpHealth struct {
 	ConnectLatency uint32 // Time from SYN_SENT to the result, in microseconds.
 	// Each local end's socket as the kernel last reported it, indexed like
 	// the key's A and B; zero for an end that is not a local socket.
-	Kernel      [2]probe.TCPInfo
+	Kernel      *[2]probe.TCPInfo
 	synAt       time.Time
 	synFrom     netip.AddrPort
 	synSeq      uint32
@@ -38,7 +38,32 @@ type tcpHealth struct {
 // observeKernel records a local end's socket state from a TCP event. The
 // counters only grow; events from different CPUs may arrive out of order.
 func (h *tcpHealth) observeKernel(side int, info probe.TCPInfo) {
+	if h.Kernel == nil {
+		h.Kernel = new([2]probe.TCPInfo)
+	}
 	k := &h.Kernel[side]
+	if info.Metrics.SampledNS != 0 {
+		base := *k
+		base.Metrics = info.Metrics
+		info = base
+	}
+	if info.Metrics.SampledNS == 0 {
+		info.Metrics = k.Metrics
+	} else if info.Metrics.SampledNS < k.Metrics.SampledNS {
+		info.Metrics = k.Metrics
+	} else if previous := k.Metrics; previous.SampledNS > 0 && info.Metrics.Jiffies > previous.Jiffies {
+		elapsed := info.Metrics.SampledNS - previous.SampledNS
+		if elapsed > 0 {
+			hz := (info.Metrics.Jiffies - previous.Jiffies) * 1_000_000_000 / elapsed
+			if hz <= 10_000 { // Linux CONFIG_HZ is lower; reject distorted sample timing.
+				info.Metrics.HZ = uint32(hz)
+			} else {
+				info.Metrics.HZ = previous.HZ
+			}
+		}
+	} else {
+		info.Metrics.HZ = k.Metrics.HZ
+	}
 	retransmits, segments := max(k.Retransmits, info.Retransmits), max(k.SegsOut, info.SegsOut)
 	*k = info
 	k.Retransmits, k.SegsOut = retransmits, segments
@@ -47,6 +72,9 @@ func (h *tcpHealth) observeKernel(side int, info probe.TCPInfo) {
 // kernelSides returns the flow's ends with kernel state, the initiator's
 // first: its round trip is the one a client sees.
 func kernelSides(f *flow) []int {
+	if f.Health.Kernel == nil {
+		return nil
+	}
 	first := 0
 	if f.Initiator.IsValid() && f.Initiator == f.Key.B {
 		first = 1
@@ -64,7 +92,10 @@ func kernelSides(f *flow) []int {
 // with a local socket has the kernel's own count, zero until the kernel
 // reports one; a flow only passing through has the capture's guess.
 func retransmits(f *flow) (uint64, string) {
-	kernel := f.Health.Kernel
+	var kernel [2]probe.TCPInfo
+	if f.Health.Kernel != nil {
+		kernel = *f.Health.Kernel
+	}
 	if len(kernelSides(f)) > 0 || f.Client.PID > 0 || f.Server.PID > 0 {
 		return uint64(kernel[0].Retransmits) + uint64(kernel[1].Retransmits), "kernel"
 	}
@@ -101,6 +132,55 @@ func kernelDetail(f *flow) string {
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func tcpLimit(k probe.TCPInfo) string {
+	m := k.Metrics
+	if m.SampledNS == 0 {
+		return ""
+	}
+	// A few jiffies of socket activity can be entirely in one chrono state.
+	if m.HZ > 0 && m.Busy >= uint64(m.HZ)/10 && m.RwndLimited*5 >= m.Busy {
+		return "peer window"
+	}
+	if m.HZ > 0 && m.Busy >= uint64(m.HZ)/10 && m.SndbufLimited*5 >= m.Busy {
+		return "send buffer"
+	}
+	if m.AppLimited && m.HZ > 0 && m.Busy < uint64(m.HZ)/10 {
+		return "application"
+	}
+	if k.SegsOut >= 20 && k.Retransmits*20 >= k.SegsOut || k.RTT > 0 && k.RTTVar >= k.RTT/2 {
+		return "network"
+	}
+	return ""
+}
+
+func limitDetail(f *flow) string {
+	var parts []string
+	for _, side := range kernelSides(f) {
+		k := f.Health.Kernel[side]
+		if k.Metrics.SampledNS == 0 {
+			continue
+		}
+		m := k.Metrics
+		part := fmt.Sprintf("rwnd %d%%  sndbuf %d%%", percent(m.RwndLimited, m.Busy), percent(m.SndbufLimited, m.Busy))
+		if m.HZ > 0 {
+			part += fmt.Sprintf(" of %.1fs busy", float64(m.Busy)/float64(m.HZ))
+		}
+		part += fmt.Sprintf("  delivery %.1f Mbit/s", float64(m.DeliveryRate)*8/1e6)
+		if limit := tcpLimit(k); limit != "" {
+			part += " → " + limit
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func percent(part, whole uint64) uint64 {
+	if whole == 0 {
+		return 0
+	}
+	return min(100, part*100/whole)
 }
 
 func formatSYNRTT(value time.Duration) string {
