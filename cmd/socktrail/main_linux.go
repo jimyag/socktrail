@@ -1040,6 +1040,8 @@ func run() error {
 	captureDir := flag.String("capture-dir", "socktrail-captures", "directory for on-demand 15-second PCAPNG recordings")
 	output := flag.String("output", "text", "snapshot format with --duration: text or json")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
+	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
+	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
 	var filter processFilter
 	flag.Var(&filter.names, "process", "show only these processes: names or globs, comma-separated; the kernel keeps 15 bytes of a name")
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
@@ -1058,6 +1060,9 @@ func run() error {
 	var err error
 	interfaceNames, err = resolveInterfaces(interfaceNames)
 	if err != nil {
+		return err
+	}
+	if handled, err := prepareCaptureMemory(interfaceNames, *memoryLimit, *yes); handled || err != nil {
 		return err
 	}
 	captureInterfaces = interfaceNames
@@ -1136,7 +1141,7 @@ func run() error {
 	// SnapLength, 15 to a 256 KiB block: at 600,000 such frames a second a
 	// lone 4 MiB ring held under half a millisecond and dropped 1%, 16 MiB
 	// almost nothing.
-	ringSize := max(4<<20, 16<<20/len(interfaceNames))
+	ringSize := captureRingSize(len(interfaceNames))
 	for _, name := range interfaceNames {
 		s, err := capture.Open(name, ringSize)
 		if err != nil {
