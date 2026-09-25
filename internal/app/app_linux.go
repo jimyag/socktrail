@@ -190,6 +190,7 @@ type collector struct {
 	expiredPIDIO    ioBytes
 	expiredPIDCount uint64
 	pendingIO       map[flowKey][]pendingIOSample
+	pendingTCP      map[flowKey]pendingTCPState
 	pendingIOCount  int
 	ioUnmatched     uint64
 	ioUnindexed     ioBytes
@@ -212,6 +213,11 @@ type collector struct {
 type pendingTLSEvent struct {
 	event tlsprobe.Event
 	seen  time.Time
+}
+
+type pendingTCPState struct {
+	health tcpHealth
+	seen   time.Time
 }
 
 type interfaceFlags []string
@@ -341,6 +347,12 @@ func (c *collector) packet(p capture.Packet) {
 			}
 		}
 		c.flows[key] = f
+		if pending, ok := c.pendingTCP[key]; ok {
+			if time.Since(pending.seen) <= 2*time.Second {
+				f.Health.Kernel = pending.health.Kernel
+			}
+			delete(c.pendingTCP, key)
+		}
 		if p.Protocol == 17 || p.Protocol == 6 && p.SYN && !p.ACK {
 			c.attachPendingIO(key, f)
 		}
@@ -717,12 +729,25 @@ func (c *collector) event(e probe.Event) {
 	}
 	e.Local, e.Remote = c.natSocket(e.Local, e.Remote, e.Protocol)
 	if e.Protocol == 6 && e.TCP != (probe.TCPInfo{}) {
-		if f := c.flows[keyFor(e.Local, e.Remote, 6)]; f != nil {
+		key := keyFor(e.Local, e.Remote, 6)
+		if f := c.flows[key]; f != nil {
 			side := 0
 			if e.Local == f.Key.B {
 				side = 1
 			}
 			f.Health.observeKernel(side, e.TCP)
+		} else if len(c.pendingTCP) < c.maxFlows || !c.pendingTCP[key].seen.IsZero() {
+			if c.pendingTCP == nil {
+				c.pendingTCP = make(map[flowKey]pendingTCPState)
+			}
+			pending := c.pendingTCP[key]
+			side := 0
+			if e.Local == key.B {
+				side = 1
+			}
+			pending.health.observeKernel(side, e.TCP)
+			pending.seen = time.Now()
+			c.pendingTCP[key] = pending
 		}
 	}
 	if e.Operation == "retransmit" {
@@ -859,6 +884,7 @@ func (c *collector) event(e probe.Event) {
 
 func (c *collector) expire(now time.Time) {
 	c.expirePendingIO(now, false)
+	maps.DeleteFunc(c.pendingTCP, func(_ flowKey, pending pendingTCPState) bool { return now.Sub(pending.seen) > 2*time.Second })
 	for key, event := range c.pendingTLS {
 		if now.Sub(event.seen) > 2*time.Second {
 			delete(c.pendingTLS, key)

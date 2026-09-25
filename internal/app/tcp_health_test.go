@@ -65,6 +65,23 @@ func TestKernelTCPStateOfLocalEnds(t *testing.T) {
 	}
 }
 
+func TestKernelTCPStateArrivesBeforeCapturedPacket(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:40000"), netip.MustParseAddrPort("127.0.0.1:8080")
+	c := newTestCollector()
+	c.roles = make(map[flowKey]roles)
+	c.roleSeen = make(map[flowKey]time.Time)
+	c.event(probe.Event{Protocol: 6, Role: "out", Operation: "connect", PID: 7, StartNS: 1, Process: "curl", Local: client, Remote: server})
+	c.event(probe.Event{Protocol: 6, Role: "out", Operation: "send", AppBytes: 10, PID: 7, StartNS: 1, Process: "curl", Local: client, Remote: server, TCP: probe.TCPInfo{RTT: 2 * time.Millisecond}})
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, SYN: true, TCPSeq: 1, IPBytes: 60, Outgoing: true})
+	f := c.flows[keyFor(client, server, 6)]
+	if f.Client.Name != "curl" {
+		t.Fatalf("client = %+v, want curl", f.Client)
+	}
+	if rtt, source := flowRTT(f); rtt != 2*time.Millisecond || source != "kernel" {
+		t.Fatalf("RTT %s from %q, want the earlier kernel sample", rtt, source)
+	}
+}
+
 func TestTCPHealthCountsRepeatedInboundSYNWithoutRTT(t *testing.T) {
 	local := netip.MustParseAddrPort("192.0.2.10:443")
 	remote := netip.MustParseAddrPort("198.51.100.20:40000")

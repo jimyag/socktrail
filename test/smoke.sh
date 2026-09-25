@@ -30,7 +30,7 @@ jq -e 'any(.reports[0].flows[]; (.evidence.hosts["smoke.test"] // 0) > 0)' "$wor
 # curl's connection closes within milliseconds, before its socket events
 # arrive: the process and the kernel's RTT must still reach it.
 jq -e 'any(.reports[0].flows[]; (.evidence.hosts["smoke.test"] // 0) > 0 and .client.name == "curl" and .rtt_source == "kernel")' "$work/snapshot.json" >/dev/null ||
-	{ echo "the HTTP flow lacks curl as its client or the kernel's RTT" >&2; exit 1; }
+	{ jq '.reports[0].flows[] | select((.evidence.hosts["smoke.test"] // 0) > 0) | {client, rtt_source, rtt_us, kernel_tcp}' "$work/snapshot.json" >&2; echo "the HTTP flow lacks curl as its client or the kernel's RTT" >&2; exit 1; }
 jq -e 'any(.reports[0].flows[]; .evidence.sni == "smoke.test" and (.openssl_pids | length) > 0)' "$work/snapshot.json" >/dev/null ||
 	{ echo "no TLS flow named smoke.test with an OpenSSL process" >&2; exit 1; }
 echo "smoke test passed"
