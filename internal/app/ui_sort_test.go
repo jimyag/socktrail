@@ -20,7 +20,7 @@ func TestEveryTableHeaderIsClickableAfterHorizontalScroll(t *testing.T) {
 		main   bool
 	}{
 		{"groups", groupLayout(nil, viewPID, 80), 0, true},
-		{"connections", connectionLayout(&uiRow{}, viewPID, &collector{}), 0, false},
+		{"connections", connectionLayout(&uiRow{}, viewPID, &collector{}, false), 0, false},
 		{"processes", processLayout(nil, nil), 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestColumnSortUsesActualValuesAndKeepsSelectedFlow(t *testing.T) {
 	first := &flow{Key: keyFor(a, target, 6), Initiator: a, Target: target, RX: 10, TX: 90, First: time.Unix(10, 0), Client: participant{PID: 101, StartNS: 1000}}
 	second := &flow{Key: keyFor(b, target, 6), Initiator: b, Target: target, RX: 20, TX: 0, First: time.Unix(20, 0), Client: first.Client}
 	row := &uiRow{label: "101@1000 client", pidID: first.Client.id(), flows: []*flow{first, second}}
-	sortFlows(row.flows, row, sortSpec{}, viewPID, &collector{})
+	sortFlows(row.flows, row, sortSpec{}, viewPID, &collector{}, nil)
 	if row.flows[0] != first {
 		t.Fatal("default connection order changed")
 	}
@@ -83,11 +83,11 @@ func TestColumnSortUsesActualValuesAndKeepsSelectedFlow(t *testing.T) {
 	if u.flowOrder[0] != second || u.selectedFlow != 1 || u.selectedFlowRef != first {
 		t.Fatalf("IP RX sort lost selected flow: order=%v selected=%d", u.flowOrder, u.selectedFlow)
 	}
-	sortFlows(row.flows, row, sortSpec{key: "SOURCE"}, viewPID, &collector{})
+	sortFlows(row.flows, row, sortSpec{key: "SOURCE"}, viewPID, &collector{}, nil)
 	if row.flows[0] != first {
 		t.Fatal("SOURCE sort did not use displayed source addresses")
 	}
-	sortFlows(row.flows, row, sortSpec{key: "FIRST", desc: true}, viewPID, &collector{})
+	sortFlows(row.flows, row, sortSpec{key: "FIRST", desc: true}, viewPID, &collector{}, nil)
 	if row.flows[0] != second {
 		t.Fatal("FIRST sort did not use observation time")
 	}

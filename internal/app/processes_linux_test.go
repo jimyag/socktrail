@@ -131,8 +131,8 @@ func TestServicePageAndProcessFilter(t *testing.T) {
 		{curlRow, viewPID, c.flows[local], "300(curl)"},
 		{&uiRow{flows: []*flow{c.flows[local]}}, viewProtocol, c.flows[local], "300(curl),401(nginx)"},
 	} {
-		layout := connectionLayout(tc.row, tc.mode, c)
-		if got := strings.Fields(connectionLine(layout, tc.f, tc.row, tc.mode, c, " "))[0]; got != tc.want {
+		layout := connectionLayout(tc.row, tc.mode, c, false)
+		if got := strings.Fields(connectionLine(layout, tc.f, tc.row, tc.mode, c, nil, false, " "))[0]; got != tc.want {
 			t.Errorf("%s page: I/O PID of %s is %q, want %q", viewNames[tc.mode], tc.f.Key.A, got, tc.want)
 		}
 	}
@@ -188,13 +188,13 @@ func TestExecutableNameGroupingMergesDifferentPaths(t *testing.T) {
 		t.Fatalf("reused PID inherited the live process executable: %q", label)
 	}
 	u.mode, u.grouping = viewService, byTree
-	u.handleKey("g")
+	u.handleKey("b")
 	if u.grouping != byExecutable {
-		t.Fatalf("g did not reach executable-name grouping: %v", u.grouping)
+		t.Fatalf("b did not reach executable-name grouping: %v", u.grouping)
 	}
-	u.handleKey("g")
+	u.handleKey("b")
 	if u.grouping != byService {
-		t.Fatalf("g did not wrap to service grouping: %v", u.grouping)
+		t.Fatalf("b did not wrap to service grouping: %v", u.grouping)
 	}
 }
 

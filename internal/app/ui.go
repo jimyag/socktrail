@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/geoip"
 	"github.com/jimyag/socktrail/internal/sockstream"
 	"github.com/jimyag/socktrail/internal/tlsprobe"
 
@@ -147,10 +148,17 @@ type terminalUI struct {
 	streamStatus      string
 	streamStats       *sockstream.Statistics
 	natStatus         string
+	geo               *geoip.DB
+	geoDir            string
+	showGeo           bool
+	geoPrompt         bool
+	geoDownload       bool
+	geoLoading        bool
+	geoMessage        string
 	nat               *natTable
 	processes         *processTable
 	scopeFilter       processFilter   // From --process, --pid and --cgroup: fixed for the session.
-	grouping          processGrouping // How the service page groups processes; g cycles it.
+	grouping          processGrouping // How the service page groups processes; b cycles it.
 	scope             *processScope   // scopeFilter's answers for the current render.
 	lastSample        time.Time
 	previous          map[*flow]counters
@@ -257,6 +265,16 @@ func (u *terminalUI) handleKey(key string) bool {
 	if key == "q" { // Quits from help and status too; a filter takes q as text.
 		return true
 	}
+	if u.geoPrompt {
+		switch key {
+		case "enter":
+			u.geoPrompt, u.geoDownload, u.geoLoading = false, true, true
+			u.geoMessage = "Downloading DB-IP Lite country and ASN databases..."
+		case "esc":
+			u.geoPrompt = false
+		}
+		return false
+	}
 	if u.help || u.status {
 		u.help, u.status = false, false
 		return false
@@ -306,11 +324,23 @@ func (u *terminalUI) handleKey(key string) bool {
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
 		u.topTabIndex = int(key[0] - '1')
-	case "g":
+	case "b":
 		if u.mode == viewService {
 			u.grouping = (u.grouping + 1) % processGrouping(len(groupingNames))
 			u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		}
+	case "g":
+		if u.geoLoading {
+			break
+		}
+		if u.geo != nil && u.geo.Available() {
+			u.showGeo = !u.showGeo
+			u.geoMessage = ""
+		} else if u.geoDir != "" {
+			u.geoPrompt = true
+		} else {
+			u.geoMessage = "GeoIP directory unavailable; use --geoip-dir"
 		}
 	case "d":
 		if u.mode == viewInterfaces {
@@ -491,6 +521,9 @@ func (u *terminalUI) rememberProcess() {
 
 func (u *terminalUI) handleInput(input uiInput, c *collector) bool {
 	if input.mouse.action != mouseNone {
+		if u.geoPrompt {
+			return false
+		}
 		u.handleMouse(input.mouse, c)
 		return false
 	}
@@ -907,6 +940,13 @@ func displayedEndpoints(f *flow) (string, string) {
 	return "?" + formatFlowEndpoint(f.Key.A, f.Key.Protocol), "?" + formatFlowEndpoint(f.Key.B, f.Key.Protocol)
 }
 
+func endpointAddresses(f *flow) (netip.Addr, netip.Addr) {
+	if f.Initiator.IsValid() {
+		return f.Initiator.Addr(), f.Target.Addr()
+	}
+	return f.Key.A.Addr(), f.Key.B.Addr()
+}
+
 func flowName(f *flow) string {
 	if f.Key.EtherType != 0 {
 		return l2Description(f)
@@ -1203,7 +1243,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	if u.mode == viewInterfaces {
 		lines = append(lines, fmt.Sprintf("%d interfaces; IP bytes/rates are per interface, not a host total. Enter opens selected interface; i cycles.", len(rows)))
 	} else if u.mode == viewService {
-		lines = append(lines, fmt.Sprintf("GROUPS by %s (g cycles grouping) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
+		lines = append(lines, fmt.Sprintf("GROUPS by %s (b cycles grouping) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
 	} else if u.hostScope && u.mode == viewPID {
 		lines = append(lines, fmt.Sprintf("PID: whole-netns socket bytes | IP detail: one capture copy/flow | Host/SNI %d", namedDomainFlows))
 	} else if u.hostScope && u.mode == viewDomain {
@@ -1242,12 +1282,20 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		}))
 	}
 	lines = append(lines, styleFaint.paint("─ drag to resize ─"+strings.Repeat("─", max(0, width-18))))
-	if u.help {
-		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups (g: service, cgroup, tree, executable name)  d domains  i next interface")
+	if u.geoPrompt {
+		lines = append(lines, styleAccent.paint("GEOIP")+"  Download DB-IP Lite country and ASN databases into "+u.geoDir)
+		lines = append(lines, "Network download; capture continues. Enter: download and enable  Esc: cancel")
+		lines = append(lines, geoip.Attribution)
+	} else if u.help {
+		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups (b: service, cgroup, tree, executable name)  d domains  i next interface")
 		lines = append(lines, "↑↓/jk select  Enter switch focus  Tab/Shift+Tab: top pages or bottom tabs  PgUp/PgDn page  c capture  ←→ columns")
+		lines = append(lines, "g: show/hide GeoIP, or download it when missing; s: rate/total sort  !: status  q: quit")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
 	} else if u.status {
+		if u.geo != nil {
+			lines = append(lines, u.geo.Status())
+		}
 		lines = append(lines, u.tlsProbeStatus)
 		if u.tlsProbeStats != nil {
 			lines = append(lines, fmt.Sprintf("OpenSSL SNI events %d  invalid %d  queue dropped %d", u.tlsProbeStats.Received.Load(), u.tlsProbeStats.Invalid.Load(), u.tlsProbeStats.Dropped.Load()))
@@ -1317,7 +1365,19 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		if strings.HasPrefix(capture, "recording") {
 			capture = styleAlert.paint(capture)
 		}
-		keys := fmt.Sprintf("↑↓ rows  ←→ columns  wheel/Shift+wheel  top:%d/%d detail:%d/%d  /:%s sort:%s s:total c:capture ", u.mainX, max(0, u.mainCanvas-width), u.detailX, max(0, u.detailCanvas-width), u.filter, mainOrder)
+		geoHint := "g:hide GeoIP"
+		switch {
+		case u.geoLoading:
+			geoHint = "GeoIP downloading..."
+		case u.geoMessage != "":
+			geoHint = fit(u.geoMessage, max(20, width/2))
+		case !u.showGeo:
+			geoHint = "g:show GeoIP"
+		}
+		keys := fmt.Sprintf("%s  ↑↓ rows  ←→ columns  wheel/Shift+wheel  top:%d/%d detail:%d/%d  /:%s sort:%s s:total c:capture ", geoHint, u.mainX, max(0, u.mainCanvas-width), u.detailX, max(0, u.detailCanvas-width), u.filter, mainOrder)
+		if u.mode == viewService {
+			keys += "b:group "
+		}
 		lines = append(lines, styleFaint.paint(keys)+capture+styleFaint.paint(" ? q"))
 	}
 	u.draw(lines, width, height)
@@ -1383,7 +1443,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 	*lines = append(*lines, tabs.String()+"  "+styleBold.paint(row.label))
 	switch u.tab {
 	case 0:
-		sortFlows(row.flows, row, u.flowSort, u.mode, c)
+		sortFlows(row.flows, row, u.flowSort, u.mode, c, u.geo)
 		if u.selectedFlowRef != nil {
 			if index := slices.Index(row.flows, u.selectedFlowRef); index >= 0 {
 				u.selectedFlow = index
@@ -1392,12 +1452,14 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.selectedFlow = min(u.selectedFlow, len(row.flows)-1)
 		u.selectedFlowRef = row.flows[u.selectedFlow]
 		u.flowOrder = slices.Clone(row.flows)
-		layout := connectionLayout(row, u.mode, c)
+		selected := row.flows[u.selectedFlow]
+		geoLines := selectedGeoLines(selected, u.geo, u.showGeo)
+		layout := connectionLayout(row, u.mode, c, u.showGeo)
 		u.detailLayout = layout
 		u.detailCanvas = layout.width
 		u.detailX = min(u.detailX, max(0, layout.width-u.screenWidth))
 		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth)))
-		visible := max(1, u.bottomHeight-7) // Rows plus tabs, header, APP, TCP, name and EVIDENCE lines.
+		visible := max(1, u.bottomHeight-7-len(geoLines)) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
 		if u.selectedFlow < start {
 			start = u.selectedFlow
@@ -1409,10 +1471,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		for i := start; i < start+u.flowCount; i++ {
 			f := row.flows[i]
 			*lines = append(*lines, tableRow(layout, u.detailX, u.screenWidth, i == u.selectedFlow, u.focusBottom, func(layout tableLayout, cursor string) string {
-				return connectionLine(layout, f, row, u.mode, c, cursor)
+				return connectionLine(layout, f, row, u.mode, c, u.geo, u.showGeo, cursor)
 			}))
 		}
-		selected := row.flows[u.selectedFlow]
 		app, source := selected.AppProtocol, selected.AppSource
 		if app == "" {
 			app, source = "unknown", "no observed signature"
@@ -1443,6 +1504,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
 			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))
 		*lines = append(*lines, label("EVIDENCE")+strings.TrimPrefix(evidenceLine(selected, c), "EVIDENCE"))
+		*lines = append(*lines, geoLines...)
 		if u.mode == viewPID && row.pidID.PID > 0 {
 			packetLabel := "connection IP"
 			if u.hostScope {
@@ -1584,6 +1646,30 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			*lines = append(*lines, scrollLine("  "+entry, u.detailX, u.screenWidth))
 		}
 	}
+}
+
+func selectedGeoLines(f *flow, db *geoip.DB, show bool) []string {
+	if !show || db == nil {
+		return nil
+	}
+	source, target := endpointAddresses(f)
+	var lines []string
+	for _, endpoint := range []struct {
+		name string
+		ip   netip.Addr
+	}{{"SRC GEO", source}, {"DST GEO", target}} {
+		if place := db.Lookup(endpoint.ip); place != nil {
+			info := place.Country
+			if place.CountryCode != "" {
+				info += " (" + place.CountryCode + ")"
+			}
+			if place.ASN != 0 {
+				info += fmt.Sprintf(" AS%d %s", place.ASN, place.Organization)
+			}
+			lines = append(lines, label(endpoint.name)+" "+endpoint.ip.String()+" "+strings.TrimSpace(info)+" "+styleFaint.paint("(DB-IP)"))
+		}
+	}
+	return lines
 }
 
 func human(n uint64) string {

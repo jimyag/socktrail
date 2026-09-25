@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/geoip"
 	"github.com/jimyag/socktrail/internal/probe"
 )
 
@@ -31,6 +32,60 @@ func TestQuitFromEveryUIState(t *testing.T) {
 				t.Fatal("q did not exit on the first press")
 			}
 		})
+	}
+}
+
+func TestGeoAndGroupingKeys(t *testing.T) {
+	dir := t.TempDir()
+	geo := geoip.Open(dir)
+	defer geo.Close()
+	u := &terminalUI{mode: viewService, geo: geo, geoDir: dir}
+	u.handleKey("b")
+	if u.grouping != byCgroup {
+		t.Fatalf("b did not cycle service grouping: %v", u.grouping)
+	}
+	u.handleKey("g")
+	if !u.geoPrompt || u.geoDownload {
+		t.Fatal("g did not offer download for missing databases")
+	}
+	u.handleKey("s")
+	if u.sortRate {
+		t.Fatal("download prompt let a table key through")
+	}
+	u.handleKey("esc")
+	if u.geoPrompt {
+		t.Fatal("Esc did not cancel download prompt")
+	}
+	u.handleKey("s")
+	if !u.sortRate {
+		t.Fatal("s no longer switches the existing rate sort")
+	}
+	u.handleKey("g")
+	u.handleKey("enter")
+	if u.geoPrompt || !u.geoDownload || !u.geoLoading {
+		t.Fatal("Enter did not request a background download")
+	}
+	if !u.handleKey("q") {
+		t.Fatal("q did not quit during a GeoIP download")
+	}
+}
+
+func TestGeoColumnsMatchBothEndpoints(t *testing.T) {
+	columns := connectionLayout(&uiRow{}, viewPID, &collector{}, true).columns
+	if columns[3].title != "SOURCE" || columns[4].title != "SRC GEO" || columns[5].title != "TARGET" || columns[6].title != "DST GEO" {
+		t.Fatalf("GeoIP columns do not follow their addresses: %+v", columns[:7])
+	}
+	if got := geoCell(&geoip.Location{CountryCode: "US", ASN: 15169, Organization: "Google LLC"}); got != "🇺🇸 AS15169 Google LLC" {
+		t.Fatalf("GeoIP cell = %q", got)
+	}
+	if got := geoCell(&geoip.Location{CountryCode: "AU", ASN: 13335, Organization: "Cloudflare, Inc."}); got != "🇦🇺 AS13335 Cloudflare" {
+		t.Fatalf("GeoIP organization was not shortened: %q", got)
+	}
+	if got := geoCell(&geoip.Location{CountryCode: "DE", ASN: 4294967295, Organization: "A very long organization name"}); displayWidth(got) > 25 {
+		t.Fatalf("GeoIP cell overflows its column: %q", got)
+	}
+	if got := geoCell(nil); got != "-" {
+		t.Fatalf("missing GeoIP cell = %q", got)
 	}
 }
 
@@ -229,8 +284,8 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.HasSuffix(strings.TrimSpace(got), "+1") {
 		t.Fatalf("narrow layout did not count the hidden domain: %q", got)
 	}
-	detail := connectionLayout(row, viewPID, &collector{})
-	line := connectionLine(detail, f, row, viewPID, &collector{}, "▸")
+	detail := connectionLayout(row, viewPID, &collector{}, false)
+	line := connectionLine(detail, f, row, viewPID, &collector{}, nil, false, "▸")
 	if !strings.Contains(line, source.String()) || !strings.Contains(line, target.String()) || !strings.Contains(line, host) {
 		t.Fatalf("connection layout truncated IPv6 endpoints or Host: %q", line)
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/conntrack"
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/geoip"
 	"github.com/jimyag/socktrail/internal/probe"
 	"github.com/jimyag/socktrail/internal/quicinitial"
 	"github.com/jimyag/socktrail/internal/sockstream"
@@ -1038,6 +1039,8 @@ func Run() error {
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
 	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
+	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
+	downloadGeo := flag.Bool("download-geoip-db", false, "download the current DB-IP Lite country and ASN databases, then exit")
 	output := flag.String("output", "text", "snapshot format with --duration: text or json")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
@@ -1047,6 +1050,22 @@ func Run() error {
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
 	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
 	flag.Parse()
+	if *geoDir == "" {
+		var err error
+		*geoDir, err = geoip.DefaultDir()
+		if err != nil && *downloadGeo {
+			return fmt.Errorf("find GeoIP directory: %w", err)
+		}
+	}
+	if *downloadGeo {
+		if err := downloadGeoIP(context.Background(), *geoDir); err != nil {
+			return err
+		}
+		fmt.Printf("DB-IP Lite country and ASN databases saved in %s\n%s\n", *geoDir, geoip.Attribution)
+		return nil
+	}
+	geo := geoip.Open(*geoDir)
+	defer func() { geo.Close() }()
 	autoInterfaces := len(interfaceNames) == 0
 	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" || *recordBefore < 0 {
 		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json] [--record-before 10s]")
@@ -1198,6 +1217,11 @@ func Run() error {
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
 		ui.natStatus, ui.nat = natStatus, nat
+		ui.geo = geo
+		ui.geoDir, ui.showGeo = *geoDir, geo.Available()
+		if !geo.Available() {
+			ui.geoMessage = "GeoIP unavailable; g to download"
+		}
 		ui.processes, ui.scopeFilter = processes, filter
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
@@ -1208,6 +1232,7 @@ func Run() error {
 		}
 		fmt.Println(tlsStatus)
 		fmt.Println(streamStatus)
+		fmt.Println(geo.Status())
 		fmt.Println(natStatus)
 	}
 	currentCollector := func() *collector {
@@ -1224,6 +1249,7 @@ func Run() error {
 	defer ticker.Stop()
 	tickCh := ticker.C
 	var keys <-chan uiInput
+	var geoDone <-chan error
 	if ui != nil {
 		keys = ui.keys
 	}
@@ -1311,6 +1337,12 @@ func Run() error {
 				cancelRun()
 				continue
 			}
+			if ui.geoDownload {
+				ui.geoDownload = false
+				result := make(chan error, 1)
+				geoDone = result
+				go func() { result <- downloadGeoIP(ctx, *geoDir) }()
+			}
 			if ui.captureToggle {
 				ui.captureToggle = false
 				if recording != nil {
@@ -1349,6 +1381,21 @@ func Run() error {
 				}
 			}
 			ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
+		case err := <-geoDone:
+			geoDone = nil
+			reloaded := geoip.Open(*geoDir)
+			geo.Close()
+			geo = reloaded
+			ui.geo, ui.geoLoading = geo, false
+			ui.showGeo = geo.Available()
+			if err != nil {
+				ui.geoMessage = "GeoIP download failed: " + err.Error()
+			} else {
+				ui.geoMessage = "GeoIP loaded; g hides the columns"
+			}
+			if !ui.closed {
+				ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
+			}
 		case batch, ok := <-packets:
 			if !ok {
 				packets = nil
@@ -1480,7 +1527,7 @@ func Run() error {
 			}
 		}
 	} else if *output == "json" {
-		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, Probes: jsonProbes{
+		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, GeoIP: geo.Status(), Probes: jsonProbes{
 			PID:          jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
 			OpenSSL:      jsonProbe{Status: tlsStatus},
 			SocketStream: jsonProbe{Status: streamStatus},
@@ -1500,10 +1547,10 @@ func Run() error {
 		host, _, members = hostCollector(interfaceNames, collectors)
 		if autoInterfaces {
 			hostState.update(host, members)
-			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope)}
+			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo)}
 		} else {
 			for _, name := range interfaceNames {
-				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope))
+				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope, geo))
 			}
 		}
 		snapshot.Filter = filter.String()

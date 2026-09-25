@@ -2,11 +2,14 @@ package app
 
 import (
 	"cmp"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jimyag/socktrail/internal/geoip"
 )
 
 type sortSpec struct {
@@ -20,7 +23,7 @@ func (s *sortSpec) selectColumn(key string) {
 		return
 	}
 	s.key = key
-	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "I/O PID", "DIR", "SOURCE", "TARGET", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
+	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "I/O PID", "DIR", "SOURCE", "SRC GEO", "TARGET", "DST GEO", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
 }
 
 func (s sortSpec) direction(order int) int {
@@ -130,7 +133,21 @@ func flowEndpointForSort(f *flow, source bool) netip.AddrPort {
 	return f.Key.B
 }
 
-func sortFlows(flows []*flow, row *uiRow, spec sortSpec, mode viewMode, c *collector) {
+func sortFlows(flows []*flow, row *uiRow, spec sortSpec, mode viewMode, c *collector, geo *geoip.DB) {
+	var geoKeys map[*flow]string
+	if (spec.key == "SRC GEO" || spec.key == "DST GEO") && geo != nil {
+		geoKeys = make(map[*flow]string, len(flows))
+		for _, f := range flows {
+			source, target := endpointAddresses(f)
+			ip := source
+			if spec.key == "DST GEO" {
+				ip = target
+			}
+			if place := geo.Lookup(ip); place != nil {
+				geoKeys[f] = fmt.Sprintf("%s/%012d/%s", place.CountryCode, place.ASN, place.Organization)
+			}
+		}
+	}
 	slices.SortFunc(flows, func(a, b *flow) int {
 		var order int
 		switch spec.key {
@@ -144,6 +161,8 @@ func sortFlows(flows []*flow, row *uiRow, spec sortSpec, mode viewMode, c *colle
 			order = strings.Compare(a.Direction, b.Direction)
 		case "SOURCE":
 			order = flowEndpointForSort(a, true).Compare(flowEndpointForSort(b, true))
+		case "SRC GEO", "DST GEO":
+			order = strings.Compare(geoKeys[a], geoKeys[b])
 		case "TARGET":
 			order = flowEndpointForSort(a, false).Compare(flowEndpointForSort(b, false))
 		case "PROTO":

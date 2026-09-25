@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jimyag/socktrail/internal/geoip"
 )
 
 type tableColumn struct {
@@ -249,8 +251,9 @@ var connectionColumns = []tableColumn{
 
 // connectionLayout sizes each column to its title or its widest value over
 // all the row's connections, so scrolling keeps the columns in place and
-// short addresses leave room for the columns after them.
-func connectionLayout(row *uiRow, mode viewMode, c *collector) tableLayout {
+// short addresses leave room for the columns after them. GeoIP columns have
+// fixed widths so sizing does not look up every retained connection.
+func connectionLayout(row *uiRow, mode viewMode, c *collector, showGeo bool) tableLayout {
 	columns := slices.Clone(connectionColumns)
 	var values []string // Reused: a group can hold thousands of connections.
 	for _, f := range row.flows {
@@ -258,6 +261,10 @@ func connectionLayout(row *uiRow, mode viewMode, c *collector) tableLayout {
 		for i, value := range values {
 			columns[i].width = max(columns[i].width, displayWidth(value))
 		}
+	}
+	if showGeo {
+		columns = slices.Insert(columns, 4, tableColumn{title: "SRC GEO", width: 25})
+		columns = slices.Insert(columns, 6, tableColumn{title: "DST GEO", width: 25})
 	}
 	return newTableLayout(columns, 0)
 }
@@ -300,8 +307,38 @@ func rowIO(f *flow, row *uiRow, mode viewMode, c *collector) (string, ioBytes) {
 	return strings.Join(names, ","), total
 }
 
-func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, c *collector, cursor string) string {
-	return layout.line(cursor, connectionValues(nil, f, row, mode, c)...)
+func connectionLine(layout tableLayout, f *flow, row *uiRow, mode viewMode, c *collector, geo *geoip.DB, showGeo bool, cursor string) string {
+	values := connectionValues(nil, f, row, mode, c)
+	if showGeo {
+		source, target := endpointAddresses(f)
+		values = slices.Insert(values, 4, geoCell(geo.Lookup(source)))
+		values = slices.Insert(values, 6, geoCell(geo.Lookup(target)))
+	}
+	return layout.line(cursor, values...)
+}
+
+func geoCell(place *geoip.Location) string {
+	if place == nil {
+		return "-"
+	}
+	var parts []string
+	if code := place.CountryCode; len(code) == 2 && code[0] >= 'A' && code[0] <= 'Z' && code[1] >= 'A' && code[1] <= 'Z' {
+		parts = append(parts, string([]rune{rune(0x1F1E6) + rune(code[0]-'A'), rune(0x1F1E6) + rune(code[1]-'A')}))
+	}
+	if place.ASN != 0 {
+		parts = append(parts, "AS"+strconv.FormatUint(uint64(place.ASN), 10))
+	}
+	if place.Organization != "" {
+		org, _, _ := strings.Cut(place.Organization, ",")
+		if displayWidth(org) > 12 {
+			org = fit(org, 11) + "…"
+		}
+		parts = append(parts, org)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return fit(strings.Join(parts, " "), 25)
 }
 
 // processLayout lays out a process list; depths indents a process tree.

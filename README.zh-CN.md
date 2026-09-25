@@ -27,7 +27,9 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 ./socktrail --version
 ```
 
-默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔，显式指定没有数量上限。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看进程分组（`g` 在服务、cgroup、进程树、可执行文件名四种分组间切换），按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/user/usage.md)。
+默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔，显式指定没有数量上限。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看进程分组（`b` 在服务、cgroup、进程树、可执行文件名四种分组间切换），按 `d` 看域名，`0` 看网卡，`g` 显示或隐藏 GeoIP（缺库时可在界面确认下载），`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/user/usage.md)。
+
+可用普通用户执行 `socktrail --download-geoip-db` 下载可选的 [DB-IP Lite](https://db-ip.com/db/lite.php) 国家和 ASN 数据库，默认放在 `$XDG_DATA_HOME/socktrail/geoip`（通常为 `~/.local/share/socktrail/geoip`）。抓包不会自动联网，缺库也能运行；在界面按 `g` 可确认下载并在完成后加载。有库时连接表为来源和目标公网 IP 分别显示国旗、ASN 和组织简称，再按 `g` 可隐藏；连接详情和 JSON 快照保留完整组织名。`--geoip-dir` 可指定其他目录。DB-IP Lite 使用 CC BY 4.0 许可。
 
 不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/user/usage.md#不使用-sudo-运行)。
 

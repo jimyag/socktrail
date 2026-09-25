@@ -18,6 +18,16 @@ sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀
 
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
 
+### 离线 GeoIP / ASN
+
+先用普通用户下载当月的 [DB-IP Lite](https://db-ip.com/db/lite.php) Country 和 ASN MMDB：
+
+```sh
+socktrail --download-geoip-db
+```
+
+默认目录是 `$XDG_DATA_HOME/socktrail/geoip/`；没有设置绝对路径的 `XDG_DATA_HOME` 时为 `~/.local/share/socktrail/geoip/`。通过 `sudo socktrail` 启动时，默认读取发起 `sudo` 的用户在 `~/.local/share/socktrail/geoip/` 下的文件。自定义 XDG 目录、服务部署或手动复制数据库时，用 `--geoip-dir /path/to/dir` 指向包含 `dbip-country-lite.mmdb` 和 `dbip-asn-lite.mmdb` 的目录；下载命令也接受这个参数。正常启动不联网；缺库时在界面按 `g`，确认后后台下载并加载，抓包继续运行。通过 `sudo` 启动时默认目录的下载会以原用户身份执行，避免留下 root 所有的数据库。已加载的 GeoIP 默认显示，再按 `g` 隐藏或重新显示。连接表在每条可见连接的来源和目标旁分别显示国旗、ASN 和组织简称；正常渲染只查询当前屏幕可见行，按 GEO 列排序时会查询该组全部连接。完整组织名在选中连接详情中。JSON 快照只查询输出的连接。缺失、损坏或没有命中时不影响抓包，在 `!` 状态页查看库状态。仅为公网 IP 展示国家代码、ASN 和组织；地理位置是数据库估计值。数据库按月更新，可再次执行下载命令。DB-IP Lite 采用 CC BY 4.0 许可，数据来源 [DB-IP](https://db-ip.com)。
+
 安装了 [Task](https://taskfile.dev/) 后，也可用 `task` 或 `task build` 构建，注入 Git 版本和构建时间（同发布构建）；以普通用户运行 `task install` 会先构建，再使用 `sudo install` 将程序安装到 `/usr/local/bin/socktrail` 并设置下面的 file capabilities。
 
 在仓库根目录直接运行 `go install .` 可安装到 Go 的二进制目录；需要抓包权限时另按下文设置 file capabilities。
@@ -77,7 +87,7 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 ## 页面与接口选择
 
-默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `g` 在四种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
+默认进入整机 PID 页，显示当前网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `b` 在四种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
 - PID 页只算选中的进程，进程分组页只算组内的进程，其他页算所有进程。
 - 父进程接受连接后交给子进程收发时（如 sshd），连接两端的 PID 仍是父进程，`I/O PID` 显示实际收发的子进程。
 
@@ -94,11 +104,11 @@ NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接�
 
 显式选择超过 8 张网卡时，启动前会列出匹配名单和抓包环的最低内存占用，并要求确认。默认在独立的 systemd scope 中设置 512 MiB 总内存上限；普通用户使用自己的 systemd 用户管理器。如果抓包环加上 128 MiB 余量已接近上限，或上限超过系统当前可用内存的一半，会在启动前报错。无交互运行需加 `--yes`。可以用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 明确关闭；关闭后仍需确认或加 `--yes`。受限模式需要 `systemd-run` 和 cgroup v2，无法建立限制时不会自动改为无保护运行。达到上限时内核可能终止 socktrail，录制文件也可能不完整。
 
-详情区默认约占半屏，提供 `conns` 和 `process` 两个标签。界面用终端主题的颜色标出选中行、连接状态和告警，含义见[界面设计](ui-design.md#配色)；设置环境变量 `NO_COLOR` 可以关闭颜色。窗口变宽时主表会展开，底栏的连接表和进程表按内容定宽；窗口变窄时保留完整列数据；用 `←/→` 或 `h/l` 横向滚动当前焦点的表格。可以用鼠标点击顶部视图、主表行、底部标签及连接；点击主表、连接表或进程表的任意列标题按该列排序，再点同一列切换升降序，当前方向标在标题旁。滚轮滚动当前列表，Shift+滚轮或水平滚轮横向滚动鼠标所在表格，拖动横向分隔线调整详情区高度。上半区聚焦时 `Tab` 依次切换顶部页面及可用的范围操作，`Shift+Tab` 回到上一个；按 `Enter` 进入底栏后，这两个键只在 `conns` 和 `process` 间切换，再按 `Enter` 回到上半区（网卡总览中 `Enter` 打开所选网卡）。`/` 过滤，`s` 恢复主表总字节/总速率排序并切换两者，`?` 帮助，`!` 状态，`q` 退出。输入过滤词时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；`Ctrl-C` 任何时候都退出。终端断开时程序会正常退出，并关闭进行中的录制；用 `nohup` 运行快照时挂断信号仍被忽略。
+详情区默认约占半屏，提供 `conns` 和 `process` 两个标签。界面用终端主题的颜色标出选中行、连接状态和告警，含义见[界面设计](ui-design.md#配色)；设置环境变量 `NO_COLOR` 可以关闭颜色。窗口变宽时主表会展开，底栏的连接表和进程表按内容定宽；窗口变窄时保留完整列数据；用 `←/→` 或 `h/l` 横向滚动当前焦点的表格。可以用鼠标点击顶部视图、主表行、底部标签及连接；点击主表、连接表或进程表的任意列标题按该列排序，再点同一列切换升降序，当前方向标在标题旁。滚轮滚动当前列表，Shift+滚轮或水平滚轮横向滚动鼠标所在表格，拖动横向分隔线调整详情区高度。上半区聚焦时 `Tab` 依次切换顶部页面及可用的范围操作，`Shift+Tab` 回到上一个；按 `Enter` 进入底栏后，这两个键只在 `conns` 和 `process` 间切换，再按 `Enter` 回到上半区（网卡总览中 `Enter` 打开所选网卡）。`/` 过滤，`s` 恢复主表总字节/总速率排序并切换两者，`g` 控制 GeoIP，进程分组页用 `b` 切换分组，`?` 帮助，`!` 状态，`q` 退出。输入过滤词时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；`Ctrl-C` 任何时候都退出。终端断开时程序会正常退出，并关闭进行中的录制；用 `nohup` 运行快照时挂断信号仍被忽略。
 
 终端需支持 SGR 鼠标报告；退出时程序关闭鼠标报告并恢复终端。
 
-交互界面正常退出后会打印运行时长、进程 CPU 和 RSS 的平均值与峰值、已处理 IP 包与字节总数、采样峰值速率及丢包数。CPU 的 100% 表示占用一个逻辑核心；内存平均值按采样计算，峰值为进程最大 RSS。多网卡的包数和字节数是各接口观测值之和，同一报文可能重复计算。被 OOM 直接终止时无法打印退出摘要。
+交互界面正常退出后会打印运行时长、进程 CPU 和 RSS 的平均值与峰值、已处理 IP 包与字节总数、按运行时长计算的平均速率、采样峰值速率及丢包数。CPU 的 100% 表示占用一个逻辑核心；内存平均值按采样计算，峰值为进程最大 RSS。多网卡的包数和字节数是各接口观测值之和，同一报文可能重复计算。被 OOM 直接终止时无法打印退出摘要。
 
 ## 进程详情
 
@@ -138,6 +148,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `probes.pid` | PID 探针的 `received`、`kernel_lost`、`dropped`、`invalid` |
 | `probes.openssl`、`probes.socket_stream` | 各自的 `status` 行和同样的计数；OpenSSL 探针不统计 `kernel_lost`，恒为 0 |
 | `probes.nat` | `status`、`lookups`、`translated`、`queue_full`、`failed`、`last_error` |
+| `geoip` | 本地国家库、ASN 库加载状态和 DB-IP 署名 |
 | `reports[]` | 自动选接口时一份 `scope` 为 `OVERVIEW` 的整机报告，否则每个接口一份 |
 | `reports[].*` | `ip_packets`、`ip_bytes`、`capture_delivered`、`capture_dropped`、`truncated_packets`、`expired_flows`（只有单接口报告统计）、`packets_without_flow`、`pid_index_dropped`、`parse_failures`、`https_coverage` |
 | `reports[].flows[]` | 按字节排序的前 `--limit` 条连接，字段见下表 |
@@ -153,6 +164,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `protocol`、`app`、`state`、`direction` | 与文本表格的 PROTO、APP、STATE、DIR 相同 |
 | `interfaces` | 抓到这条连接的采集接口，与文本表格和界面的 IFACE 相同；网桥和它的成员口会同时出现 |
 | `source`、`target`、`initiator_unknown` | 发起方与接收方；TCP 的发起方不确定时 `initiator_unknown` 为 true，两端为观测到的原始顺序 |
+| `source_geo`、`target_geo` | 相应公网地址命中本地 DB-IP Lite 时的 `country_code`、`country`、`asn`、`organization`；未命中时省略 |
 | `rx_bytes`、`tx_bytes`、`packets`、`first_seen`、`last_seen` | 采集点的 IP 字节与报文数 |
 | `syn_rtt_us`、`rtt_us`、`rtt_source` | 抓到的握手时延，以及界面上显示的 RTT 和来源（`kernel` 或 `SYN`），单位微秒 |
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |

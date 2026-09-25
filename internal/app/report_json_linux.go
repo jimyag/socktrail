@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/geoip"
 )
 
 // jsonSnapshot is the --output json document. docs/user/usage.md lists its
@@ -16,6 +17,7 @@ type jsonSnapshot struct {
 	Interfaces []string        `json:"interfaces"`
 	Filter     string          `json:"filter,omitempty"` // The --process, --pid and --cgroup selection, when given.
 	Probes     jsonProbes      `json:"probes"`
+	GeoIP      string          `json:"geoip"`
 	Reports    []jsonReport    `json:"reports"`
 	Processes  []jsonProcessIO `json:"processes"`
 	Services   []jsonService   `json:"services"`
@@ -85,6 +87,8 @@ type jsonFlow struct {
 	Interfaces       []string         `json:"interfaces,omitempty"` // The capture interfaces that saw it.
 	Source           string           `json:"source"`
 	Target           string           `json:"target"`
+	SourceGeo        *geoip.Location  `json:"source_geo,omitempty"`
+	TargetGeo        *geoip.Location  `json:"target_geo,omitempty"`
 	InitiatorUnknown bool             `json:"initiator_unknown,omitempty"`
 	RXBytes          uint64           `json:"rx_bytes"`
 	TXBytes          uint64           `json:"tx_bytes"`
@@ -169,7 +173,7 @@ func processJSON(p participant, processes *processTable) *jsonProcess {
 
 // reportJSON holds the same rows as printReport, the first limit flows by
 // bytes.
-func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope) jsonReport {
+func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope, geo *geoip.DB) jsonReport {
 	flows := reportFlows(c, scope)
 	r := jsonReport{
 		Scope: name, IPPackets: c.packets, IPBytes: c.bytes,
@@ -187,6 +191,10 @@ func reportJSON(c *collector, name string, limit int, processes *processTable, s
 			SYNRTTMicros: f.Health.SynRTT.Microseconds(),
 			Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
 			Name: flowName(f), DomainConflict: f.DomainConflict,
+		}
+		if geo != nil {
+			sourceIP, targetIP := endpointAddresses(f)
+			row.SourceGeo, row.TargetGeo = geo.Lookup(sourceIP), geo.Lookup(targetIP)
 		}
 		if f.Key.EtherType == 0 && f.Key.Protocol == 6 {
 			row.Retransmits, row.RetransmitSource = retransmits(f)

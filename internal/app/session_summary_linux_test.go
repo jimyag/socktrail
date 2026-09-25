@@ -19,8 +19,8 @@ func TestSessionSummaryUsesSampledPeaksAndFinalTotals(t *testing.T) {
 		"socktrail stopped (2s, 2 interfaces)",
 		"avg 40.0%", "peak 60.0%",
 		"avg 150.0 MiB", "peak 250.0 MiB",
-		"total 500", "peak 400/s",
-		"total 2.9 KiB", "peak 2.0 KiB/s",
+		"total 500", "avg 250/s", "peak 400/s",
+		"total 2.9 KiB", "avg 1.5 KiB/s", "peak 2.0 KiB/s",
 		"AF_PACKET 3  PID ring 1",
 		"may count the same packet more than once",
 	} {

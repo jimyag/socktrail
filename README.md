@@ -42,6 +42,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Inspect PID, source IP, destination IP, protocol, domain, and per-interface views in the terminal.
 - Record the next 15 seconds of packets for a selected connection or PID to a PCAPNG file on demand, optionally starting with the frames of the seconds before.
 - Print a timed snapshot as a text report or a JSON document.
+- Optionally enrich a selected connection with offline DB-IP Lite country and ASN data.
 
 ## Build and Run
 
@@ -65,6 +66,7 @@ sudo ./socktrail
 sudo ./socktrail --interface lo
 sudo ./socktrail --interface lo --interface eth0
 sudo ./socktrail --interface eth0 --duration 30s --output json
+./socktrail --download-geoip-db
 ./socktrail --version
 ```
 
@@ -74,7 +76,9 @@ Explicit capture on more than eight interfaces shows the matches and asks for co
 
 To run without `sudo`, install the binary with Linux file capabilities. Network capabilities alone do not cover the eBPF probes; see the [capability setup and limitations](docs/user/usage.md#不使用-sudo-运行).
 
-Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for process groups, where `g` switches between service, cgroup, process tree, and executable basename; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings go to `$XDG_STATE_HOME/socktrail/captures` (usually `~/.local/state/socktrail/captures`) by default and may contain plaintext application data. Use `--capture-dir /tmp/...` for temporary files.
+Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for process groups, where `b` switches between service, cgroup, process tree, and executable basename; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Press `g` to show or hide GeoIP for both endpoints, or to download the databases from inside the TUI when missing. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings go to `$XDG_STATE_HOME/socktrail/captures` (usually `~/.local/state/socktrail/captures`) by default and may contain plaintext application data. Use `--capture-dir /tmp/...` for temporary files.
+
+Run `socktrail --download-geoip-db` as your normal user to install optional [DB-IP Lite](https://db-ip.com/db/lite.php) country and ASN databases in `$XDG_DATA_HOME/socktrail/geoip` (usually `~/.local/share/socktrail/geoip`). Capture never downloads automatically and still works without them; pressing `g` in the TUI offers an explicit download. When enabled, the connection table shows country flag, ASN number, and a short organization name separately for source and target public IPs. The selected connection detail and JSON snapshots retain full names; `--geoip-dir` selects another database directory. DB-IP Lite is licensed under CC BY 4.0.
 
 ## Documentation
 
