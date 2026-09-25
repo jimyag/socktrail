@@ -50,52 +50,86 @@ func TestFilterKeysMatchParser(t *testing.T) {
 	}
 }
 
-func TestCompleteFilter(t *testing.T) {
-	values := map[string][]string{"user": {"alice", "root"}, "proc": {"curl", "curl-helper"}}
+func TestFilterMenu(t *testing.T) {
+	values := map[string][]filterValue{
+		"user": {{"root", 7}, {"alice", 2}},
+		"dir":  {{"outbound", 5}, {"inbound", 0}, {"local", 0}},
+	}
+	words := func(items []filterItem) []string {
+		var out []string
+		for _, item := range items {
+			out = append(out, item.word)
+		}
+		return out
+	}
 	for _, tc := range []struct {
-		input, want string
-		candidates  int
+		input, title string
+		words        []string
 	}{
-		{"us", "user:", 1},
-		{"port:443 !us", "port:443 !user:", 1},
-		{"user:a", "user:alice ", 1},
-		{"user:", "user:", 2},
-		{"proc:c", "proc:curl", 2},
-		{"dir:o", "dir:outbound ", 1},
-		{"DIR:IN", "DIR:inbound ", 1},
-		{"s", "s", 3}, // sport, state, svc.
-		{"zz", "zz", 0},
-		{"nokey:x", "nokey:x", 0},
-		{"", "", len(filterKeys)},
+		{"us", `keys starting with "us"`, []string{"user:"}},
+		{"port:443 !s", `keys starting with "s"`, []string{"sport:", "state:", "svc:"}},
+		{"user:", "user:NAME|UID  effective user of a process", []string{"user:root", "user:alice"}},
+		{"USER:A", "user:NAME|UID  effective user of a process", []string{"USER:alice"}},
+		{"dir:", "dir:NAME  direction of the connection", []string{"dir:outbound", "dir:inbound", "dir:local"}},
+		{"host:", "host:NAME  Host, SNI, proxy target or DNS name; no values seen yet, type one", nil},
+		{"usr:", `unknown key "usr"; keys: port`, nil},
+		{"qq", `no key starts with "qq"`, nil},
 	} {
-		got, candidates := completeFilter(tc.input, values)
-		if got != tc.want || len(candidates) != tc.candidates {
-			t.Errorf("completeFilter(%q) = %q %v, want %q with %d candidates", tc.input, got, candidates, tc.want, tc.candidates)
+		items, title := filterMenu(tc.input, values)
+		if !strings.HasPrefix(title, tc.title) || !slices.Equal(words(items), tc.words) {
+			t.Errorf("filterMenu(%q) = %q %v, want %q %v", tc.input, title, words(items), tc.title, tc.words)
 		}
 	}
+	if items, title := filterMenu("", values); title != filterMenuTitle || len(items) != len(filterKeys) || items[0].label != "port:N" || !strings.Contains(items[7].detail, "outbound") {
+		t.Errorf("empty input menu: %q %+v", title, items)
+	}
+	if items, _ := filterMenu("user:", values); items[0].detail != "7 connections" {
+		t.Errorf("value detail %q", items[0].detail)
+	}
+	if items, _ := filterMenu("dir:", values); items[1].detail != "not on current connections" {
+		t.Errorf("unseen fixed value detail %q", items[1].detail)
+	}
 	for input, want := range map[string]string{
-		"":             "port:N  sport:N",
-		"us":           "user:NAME|UID effective user of a process",
-		"user:":        "user:NAME|UID  effective user of a process  Tab: alice root",
-		"x usr:":       `unknown key "usr"; keys: port`,
-		"qq":           `no key starts with "qq"`,
-		"dir:outbound": "Tab: outbound",
+		"port:443 !us": "port:443 !user:",
+		"user:a":       "user:alice ",
 	} {
-		if hint := filterHint(input, values, 200); !strings.Contains(hint, want) {
-			t.Errorf("filterHint(%q) = %q, want it to contain %q", input, hint, want)
+		items, _ := filterMenu(input, values)
+		if got := acceptFilterItem(input, items[len(items)-1]); got != want {
+			t.Errorf("accept on %q = %q, want %q", input, got, want)
 		}
 	}
 }
 
-// Tab on the filter prompt completes from the values the screen collected.
-func TestFilterPromptTab(t *testing.T) {
-	u := &terminalUI{filterValues: map[string][]string{"user": {"www-data"}}}
+// / opens the menu of every key; ↑↓ move the highlight, Tab takes it, and
+// typing narrows the list again from its top.
+func TestFilterPromptMenu(t *testing.T) {
+	u := &terminalUI{filterValues: map[string][]filterValue{"user": {{"root", 3}, {"www-data", 1}}}}
 	u.handleKey("/")
-	for _, key := range []string{"u", "s", "tab", "w", "tab"} {
+	lines := u.filterMenuLines(120, 60)
+	if len(lines) != len(filterKeys)+3 || !strings.Contains(lines[1], filterMenuTitle) || !strings.Contains(lines[2], "port:N") {
+		t.Fatalf("menu on /:\n%s", strings.Join(lines, "\n"))
+	}
+	for _, key := range []string{"u", "s", "tab", "down", "tab"} {
 		u.handleKey(key)
 	}
 	if u.filter != "user:www-data " || !u.filtering {
 		t.Fatalf("filter %q filtering %v", u.filter, u.filtering)
+	}
+	u.handleKey("up")
+	if u.filterMenuIndex != len(filterKeys)-1 {
+		t.Fatalf("up from the top did not wrap: %d", u.filterMenuIndex)
+	}
+	u.handleKey("p")
+	if u.filterMenuIndex != 0 {
+		t.Fatal("typing did not reset the highlight")
+	}
+	if short := u.filterMenuLines(120, 14); !strings.Contains(short[len(short)-1], "3 of 4 shown") {
+		t.Fatalf("small screen footer: %q", short[len(short)-1])
+	}
+	u.filter = "port:x"
+	u.handleKey("enter")
+	if !u.filtering || !u.filterSubmitted || u.filterError == "" {
+		t.Fatalf("invalid filter applied: %+v", u.filterError)
 	}
 }
 

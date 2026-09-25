@@ -17,7 +17,7 @@ var screenKeys = [][2]string{
 	{"d", "domains"},
 	{"0", "interfaces; Enter opens the selected one, i cycles them"},
 	{"a", "overview of all interfaces merged"},
-	{"/", "filter; Tab completes keys and seen values, Enter applies, Esc clears"},
+	{"/", "filter; a menu lists every key, then the values seen for the typed key with their connection counts; Up and Down select, Tab accepts, Enter applies, Esc clears"},
 	{"s", "sort by total bytes or by rate"},
 	{"g", "show or hide GeoIP, or download it when missing"},
 	{"c", "start or stop a PCAPNG recording of the selected connection or PID"},

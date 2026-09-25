@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,26 +56,45 @@ func filterKeyNames() string {
 }
 
 // filterSyntax is the one-line summary of the filter language.
+// filterMenuTitle heads the filter menu before a word is typed; its footer
+// gives the rest of the syntax.
+const filterMenuTitle = "filter by key:value, or type any word to search connection text"
+
 const filterSyntax = "space-separated conditions must all match; key:value, !key:value negates, * and ? glob; a word without a key searches text"
 
-// filterValues collects the values the connections offer for keys without
-// a fixed list, so the prompt can complete what is actually on screen.
-func filterValues(c *collector, processes *processTable) map[string][]string {
-	sets := make(map[string]map[string]bool)
+// filterValue is a value seen for a filter key and how many connections
+// carry it.
+type filterValue struct {
+	value string
+	count int
+}
+
+// filterValues collects the values the connections offer for each key, and
+// how many connections have each, so the filter menu shows what is on
+// screen. Keys with a fixed list keep it, with zero counts for unseen values.
+func filterValues(c *collector, processes *processTable) map[string][]filterValue {
+	counts := make(map[string]map[string]int)
+	var seen map[string]bool // Values already counted for this connection.
 	add := func(key, value string) {
-		if value == "" || strings.ContainsAny(value, " \t") {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsAny(value, " \t") || seen[key+":"+value] {
 			return // A value with a space cannot be written in a filter.
 		}
-		if sets[key] == nil {
-			sets[key] = make(map[string]bool)
+		seen[key+":"+value] = true
+		if counts[key] == nil {
+			counts[key] = make(map[string]int)
 		}
-		if len(sets[key]) < 500 {
-			sets[key][value] = true
+		if _, ok := counts[key][value]; ok || len(counts[key]) < 500 {
+			counts[key][value]++
 		}
 	}
 	if c != nil {
 		for _, f := range c.allFlows() {
+			seen = make(map[string]bool)
+			add("proto", strings.ToLower(flowProtocol(f)))
 			add("app", strings.ToLower(f.AppProtocol))
+			add("state", f.TCPState)
+			add("dir", f.Direction)
 			for _, name := range interfacesOf(f.Interfaces) {
 				add("iface", name)
 			}
@@ -97,106 +117,99 @@ func filterValues(c *collector, processes *processTable) map[string][]string {
 					add("svc", service)
 				}
 			}
+			add("fail", strconv.FormatBool(f.Health.ConnectResult != 0 || f.ICMPError != ""))
 		}
 	}
-	values := make(map[string][]string, len(sets))
-	for key, set := range sets {
-		for value := range set {
-			values[key] = append(values[key], value)
+	values := make(map[string][]filterValue)
+	for _, k := range filterKeys {
+		for _, v := range k.values {
+			if _, ok := counts[k.name][v]; !ok {
+				values[k.name] = append(values[k.name], filterValue{value: v})
+			}
 		}
-		slices.Sort(values[key])
+	}
+	for key, set := range counts {
+		for value, count := range set {
+			values[key] = append(values[key], filterValue{value, count})
+		}
+		slices.SortFunc(values[key], func(a, b filterValue) int {
+			return cmp.Or(cmp.Compare(b.count, a.count), cmp.Compare(a.value, b.value))
+		})
 	}
 	return values
 }
 
-// completeFilter completes the last word of a filter: a key, or a value of
-// a known key. It returns the new input, the candidates for that word, and
-// a one-line hint about it.
-func completeFilter(input string, values map[string][]string) (string, []string) {
+// filterItem is one line of the filter menu: the word it completes to, and
+// what it means.
+type filterItem struct {
+	word   string // Replaces the word being typed, such as user: or user:alice.
+	label  string
+	detail string
+}
+
+// filterWord splits the input at its last word, and that word's negation.
+func filterWord(input string) (before, negation, word string) {
 	start := strings.LastIndexAny(input, " \t") + 1
-	word := input[start:]
-	prefix := ""
+	before, word = input[:start], input[start:]
 	if strings.HasPrefix(word, "!") {
-		prefix, word = "!", word[1:]
+		negation, word = "!", word[1:]
 	}
-	var candidates []string
+	return before, negation, word
+}
+
+// filterMenu lists what the word being typed can become: the keys it
+// starts, or the values of the key it names. title explains the list.
+func filterMenu(input string, values map[string][]filterValue) (items []filterItem, title string) {
+	_, _, word := filterWord(input)
 	key, value, keyed := strings.Cut(word, ":")
 	if !keyed {
 		for _, k := range filterKeys {
-			if strings.HasPrefix(k.name, strings.ToLower(word)) {
-				candidates = append(candidates, k.name+":")
+			if !strings.HasPrefix(k.name, strings.ToLower(word)) {
+				continue
 			}
-		}
-	} else if k := lookupFilterKey(strings.ToLower(key)); k != nil {
-		for _, v := range slices.Concat(k.values, values[k.name]) {
-			if strings.HasPrefix(strings.ToLower(v), strings.ToLower(value)) && !slices.Contains(candidates, key+":"+v) {
-				candidates = append(candidates, key+":"+v)
+			detail := k.usage
+			if len(k.values) > 0 {
+				detail += " (" + strings.Join(k.values, ", ") + ")"
 			}
+			items = append(items, filterItem{word: k.name + ":", label: k.name + ":" + k.value, detail: detail})
 		}
-	}
-	switch len(candidates) {
-	case 0:
-		return input, nil
-	case 1:
-		completed := candidates[0]
-		if !strings.HasSuffix(completed, ":") {
-			completed += " "
+		if word == "" {
+			return items, filterMenuTitle
 		}
-		return input[:start] + prefix + completed, candidates
-	}
-	common := candidates[0]
-	for _, c := range candidates[1:] {
-		for !strings.HasPrefix(strings.ToLower(c), strings.ToLower(common)) {
-			common = common[:len(common)-1]
+		if len(items) == 0 {
+			return nil, "no key starts with " + strconv.Quote(word) + "; the word searches connection text"
 		}
+		return items, "keys starting with " + strconv.Quote(word)
 	}
-	if len(common) > len(word) {
-		return input[:start] + prefix + common, candidates
+	k := lookupFilterKey(strings.ToLower(key))
+	if k == nil {
+		return nil, "unknown key " + strconv.Quote(key) + "; keys: " + filterKeyNames()
 	}
-	return input, candidates
-}
-
-// filterHint explains the word being typed: the keys it could start, or
-// the key it names and the values seen for it.
-func filterHint(input string, values map[string][]string, width int) string {
-	word := strings.TrimPrefix(input[strings.LastIndexAny(input, " \t")+1:], "!")
-	key, _, keyed := strings.Cut(word, ":")
-	var hint strings.Builder
-	if keyed {
-		k := lookupFilterKey(strings.ToLower(key))
-		if k == nil {
-			return "unknown key " + strconv.Quote(key) + "; keys: " + filterKeyNames()
-		}
-		hint.WriteString(k.name + ":" + k.value + "  " + k.usage)
-		if _, candidates := completeFilter(input, values); len(candidates) > 0 {
-			hint.WriteString("  Tab: ")
-			for i, c := range candidates {
-				_, v, _ := strings.Cut(c, ":")
-				if i > 0 {
-					hint.WriteString(" ")
-				}
-				hint.WriteString(v)
-				if hint.Len() > width {
-					break
-				}
-			}
-		}
-		return hint.String()
-	}
-	for _, k := range filterKeys {
-		if !strings.HasPrefix(k.name, strings.ToLower(word)) {
+	for _, v := range values[k.name] {
+		if !strings.HasPrefix(strings.ToLower(v.value), strings.ToLower(value)) {
 			continue
 		}
-		if hint.Len() > 0 {
-			hint.WriteString("  ")
+		detail := "not on current connections"
+		if v.count == 1 {
+			detail = "1 connection"
+		} else if v.count > 1 {
+			detail = strconv.Itoa(v.count) + " connections"
 		}
-		hint.WriteString(k.name + ":" + k.value)
-		if word != "" {
-			hint.WriteString(" " + k.usage)
-		}
+		items = append(items, filterItem{word: key + ":" + v.value, label: v.value, detail: detail})
 	}
-	if hint.Len() == 0 {
-		return "no key starts with " + strconv.Quote(word) + "; a word without a key searches connection text"
+	title = k.name + ":" + k.value + "  " + k.usage
+	if len(items) == 0 && value == "" {
+		title += "; no values seen yet, type one"
 	}
-	return hint.String()
+	return items, title
+}
+
+// acceptFilterItem replaces the word being typed with a menu item, keeping
+// its negation; a value is followed by a space for the next condition.
+func acceptFilterItem(input string, item filterItem) string {
+	before, negation, _ := filterWord(input)
+	if !strings.HasSuffix(item.word, ":") {
+		return before + negation + item.word + " "
+	}
+	return before + negation + item.word
 }
