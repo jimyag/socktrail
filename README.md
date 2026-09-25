@@ -5,14 +5,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jimyag/socktrail/actions/workflows/check.yaml"><img src="https://github.com/jimyag/socktrail/actions/workflows/check.yaml/badge.svg" alt="Check"></a>
-  <a href="https://github.com/jimyag/socktrail/actions/workflows/kernels.yaml"><img src="https://github.com/jimyag/socktrail/actions/workflows/kernels.yaml/badge.svg" alt="Kernels"></a>
-  <a href="https://github.com/jimyag/socktrail/actions/workflows/release.yaml"><img src="https://github.com/jimyag/socktrail/actions/workflows/release.yaml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/jimyag/socktrail/actions/workflows/check.yaml"><img src="https://img.shields.io/github/actions/workflow/status/jimyag/socktrail/check.yaml?branch=main&amp;label=CI" alt="CI status"></a>
+  <a href="https://github.com/jimyag/socktrail/actions/workflows/kernels.yaml"><img src="https://img.shields.io/github/actions/workflow/status/jimyag/socktrail/kernels.yaml?branch=main&amp;label=Kernel%20matrix" alt="Kernel matrix status"></a>
+  <a href="https://github.com/jimyag/socktrail/releases/latest"><img src="https://img.shields.io/github/v/release/jimyag/socktrail?label=Latest%20release" alt="Latest release version"></a>
 </p>
 
 <p align="center">
   <a href="#why-socktrail">Why socktrail</a> ·
   <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#build-and-run">Build and Run</a> ·
   <a href="#documentation">Documentation</a>
 </p>
@@ -25,7 +26,7 @@
 
 socktrail is a Linux terminal application for inspecting live network traffic. It captures packets from selected interfaces with AF_PACKET and uses eBPF socket probes and the kernel socket table to associate local traffic with processes. The interface shows connections, IP traffic, application protocols, and domain names found in observable HTTP, TLS, QUIC, proxy, and DNS data.
 
-It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8; CI runs the root tests on amd64 and arm64 runners. Container networking has not been validated. See the [validation record](docs/archive/validation.md) and [detailed Chinese guide](README.zh-CN.md) for measurement rules and known limits.
+It is a prototype. It has been tested on a Linux 6.8 host; probe loading and loopback traffic are also checked in virtual machines on x86-64 kernels from 5.10 to 7.0, including CentOS Stream 9 and 10, and on arm64 kernels 6.4 and 6.8; CI runs the root tests on amd64 and arm64 runners. NAT was tested in a local network namespace gateway, and protocol detection was checked against more than ten real services, including Kafka, SQL Server, and gRPC. Container networking has not been validated. See the [validation record](docs/archive/validation.md) for measurement rules and known limits.
 
 ## Why socktrail
 
@@ -43,6 +44,38 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Record the next 15 seconds of packets for a selected connection or PID to a PCAPNG file on demand, optionally starting with the frames of the seconds before.
 - Print a timed snapshot as a text report or a JSON document.
 - Optionally enrich a selected connection with offline DB-IP Lite country and ASN data.
+
+## Screenshots
+
+These screenshots show socktrail processing synthetic traffic in isolated Linux network namespaces. The `10.20.0.0/24` network is private; the public IPs shown were assigned locally inside the demo namespace, and the `.demo.example` domains are synthetic. No personal traffic or external connections are shown.
+
+### PID
+
+![PID view with processes and connection details](docs/assets/screenshots/pid.png)
+
+### Source IP
+
+![Source IP view with private demo addresses](docs/assets/screenshots/source-ip.png)
+
+### Destination IP
+
+![Destination IP view with demo traffic and GeoIP data](docs/assets/screenshots/destination-ip.png)
+
+### Protocol
+
+![Protocol view with HTTP, TLS, DNS, ICMP, and ARP groups](docs/assets/screenshots/protocol.png)
+
+### Process groups
+
+![Process groups by executable name](docs/assets/screenshots/service.png)
+
+### Domains
+
+![Domain view with HTTP and TLS names](docs/assets/screenshots/domains.png)
+
+### Interfaces
+
+![Interface diagnostics for demo0 and loopback](docs/assets/screenshots/interfaces.png)
 
 ## Build and Run
 
