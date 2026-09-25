@@ -18,6 +18,8 @@ sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀
 
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
 
+安装了 [Task](https://taskfile.dev/) 后，也可用 `task` 或 `task build` 构建，注入 Git 版本和构建时间（同发布构建）；以普通用户运行 `task install` 会先构建，再使用 `sudo install` 将程序安装到 `/usr/local/bin/socktrail` 并设置下面的 file capabilities。
+
 ### 不使用 sudo 运行
 
 可以给安装后的可执行文件授予 Linux file capabilities，但仅有网络权限不够：AF_PACKET 抓包需要 `CAP_NET_RAW`，eBPF 探针需要 `CAP_BPF` 和 `CAP_PERFMON`，conntrack NAT 查询需要 `CAP_NET_ADMIN`。例如在 5.11 及更新的内核上：
@@ -37,11 +39,11 @@ sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' 
 
 安装文件应由 root 持有，并限制可执行用户；这些能力允许读取网络流量。替换二进制后需要重新执行 `setcap`。file capabilities 还会受容器 capability bounding set、`nosuid` 挂载和系统安全策略限制。
 
-这组权限可运行核心抓包、socket 探针和 NAT 查询，但不保证能读取其他用户的 `/proc` 信息或挂载 OpenSSL 用户态探针；失败原因可在 `!` 状态页查看。需要完整进程信息或 OpenSSL 探针时使用 `sudo`。`--version` 不需要这些权限。
+这组权限可运行核心抓包、socket 探针和 NAT 查询，但不保证能读取其他用户的 `/proc` 信息或挂载 OpenSSL 用户态探针；失败原因可在 `!` 状态页查看。内核模块 BTF 不允许读取时会提示并跳过可选的 kTLS 探针。需要完整进程信息或 OpenSSL 探针时使用 `sudo`。`--version` 不需要这些权限。
 
 ## 连接录制
 
-在 `conns` 底栏选中一条活动连接，按 `c` 可录制该连接后续 15 秒的原始报文；在 PID 页主表选中 PID 后按 `c`，录制该 PID 后续关联的连接。再按 `c` 提前结束，按 `q` 也会关闭文件。默认写到当前目录的 `socktrail-captures/`，可用 `--capture-dir /path/to/dir` 修改；文件权限为 `0600`，目录新建时为 `0700`，大小最多 64 MiB。状态页 `!` 和退出提示给出 PCAPNG 的绝对路径，可用 `tcpdump -nnr <文件>` 或 Wireshark 打开。
+在 `conns` 底栏选中一条活动连接，按 `c` 可录制该连接后续 15 秒的原始报文；在 PID 页主表选中 PID 后按 `c`，录制该 PID 后续关联的连接。再按 `c` 提前结束，按 `q` 也会关闭文件。默认写到 `$XDG_STATE_HOME/socktrail/captures/`；没有设置绝对路径的 `XDG_STATE_HOME` 时使用 `~/.local/state/socktrail/captures/`。可用 `--capture-dir /path/to/dir` 修改，需要临时文件时可指定 `/tmp` 下的私有目录；文件权限为 `0600`，目录新建时为 `0700`，大小最多 64 MiB。状态页 `!` 和退出提示给出 PCAPNG 的绝对路径，可用 `tcpdump -nnr <文件>` 或 Wireshark 打开。
 
 文件保存**实际捕获到的原始帧**，录制期间抓包环保留完整帧（最长 64 KiB；平时每帧只留前 16 KiB 多一点，按 `c` 时已在环里的少数帧仍是这个长度，文件记下了它们的原始长度，Wireshark 会显示为截断），明文应用数据可能包含在内；只有按 `c` 后才创建。单连接录制选择一个采集接口，可能漏掉走另一接口的反向报文；PID 录制覆盖所有已选接口，同一报文跨接口可在文件内重复出现。PID 和域名注释来自录制时已关联的证据，晚到事件不会回填。录制期间仍需关注状态页的采集丢包。
 
@@ -88,7 +90,7 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接口进、另一个接口出的连接方向标为 `forwarded`；conntrack 结果回来之前（通常不到一秒）两侧会各显示一行。代理、隧道改写的地址仍可能留下多个观测流，所以整机页的 IP 字节是观测值，不能作为精确整机总量。`--interface` 可重复指定、用逗号分隔，也支持带引号的 glob 模式，例如 `--interface 'veth*,br-*,docker*,vnet*,tap*'`；显式指定没有网卡数量上限，模式没有匹配时会报错。用 `ip -br link` 查看名称。交互界面按 `1` PID、`2` 来源 IP、`3` 目标 IP、`4` 协议、`d` 域名切换；多接口时按 `i` 切换接口。
 
-显式选择超过 8 张网卡时，启动前会列出匹配名单和抓包环的最低内存占用，并要求确认。默认在独立的 systemd scope 中设置 512 MiB 总内存上限；如果抓包环加上 128 MiB 余量已接近上限，或上限超过系统当前可用内存的一半，会在启动前报错。无交互运行需加 `--yes`。可以用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 明确关闭；关闭后仍需确认或加 `--yes`。受限模式需要 `systemd-run` 和 cgroup v2，无法建立限制时不会自动改为无保护运行。达到上限时内核可能终止 socktrail，录制文件也可能不完整。
+显式选择超过 8 张网卡时，启动前会列出匹配名单和抓包环的最低内存占用，并要求确认。默认在独立的 systemd scope 中设置 512 MiB 总内存上限；普通用户使用自己的 systemd 用户管理器。如果抓包环加上 128 MiB 余量已接近上限，或上限超过系统当前可用内存的一半，会在启动前报错。无交互运行需加 `--yes`。可以用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 明确关闭；关闭后仍需确认或加 `--yes`。受限模式需要 `systemd-run` 和 cgroup v2，无法建立限制时不会自动改为无保护运行。达到上限时内核可能终止 socktrail，录制文件也可能不完整。
 
 详情区默认约占半屏，提供 `conns` 和 `process` 两个标签。界面用终端主题的颜色标出选中行、连接状态和告警，含义见[界面设计](ui-design.md#配色)；设置环境变量 `NO_COLOR` 可以关闭颜色。窗口变宽时主表会展开，底栏的连接表和进程表按内容定宽；窗口变窄时保留完整列数据；用 `←/→` 或 `h/l` 横向滚动当前焦点的表格。可以用鼠标点击顶部视图、主表行、底部标签及连接；点击主表、连接表或进程表的任意列标题按该列排序，再点同一列切换升降序，当前方向标在标题旁。滚轮滚动当前列表，Shift+滚轮或水平滚轮横向滚动鼠标所在表格，拖动横向分隔线调整详情区高度。`Enter` 切换主表和底栏焦点，`Tab` 切换底栏标签，`/` 过滤，`s` 恢复主表总字节/总速率排序并切换两者，`?` 帮助，`!` 状态，`q` 退出。输入过滤词时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；`Ctrl-C` 任何时候都退出。终端断开时程序会正常退出，并关闭进行中的录制；用 `nohup` 运行快照时挂断信号仍被忽略。
 

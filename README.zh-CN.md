@@ -31,6 +31,8 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 
 不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)。
 
+从源码构建可执行 `task` 或 `task build`，安装可执行 `task install`。构建时注入 Git 版本和构建时间；安装任务会把程序放到 `/usr/local/bin/socktrail`，并设置抓包和 eBPF 所需的 file capabilities。以普通用户执行 `task install`，安装步骤会调用 `sudo`；随后可直接运行 `socktrail` 做基础抓包。需要完整的 OpenSSL 进程 SNI、内核 TLS 探针等功能时运行 `sudo socktrail`。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），需要临时文件时用 `--capture-dir /tmp/...` 指定。
+
 ## 文档
 
 | 主题 | 内容 |

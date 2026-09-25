@@ -14,6 +14,34 @@ import (
 	"github.com/jimyag/socktrail/internal/capture"
 )
 
+func TestDefaultCaptureDirectoryUsesXDGStateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	fallback := filepath.Join(home, ".local", "state", "socktrail", "captures")
+	if got, err := defaultCaptureDir(); err != nil || got != fallback {
+		t.Fatalf("default capture directory = %q, %v; want %q", got, err, fallback)
+	}
+	t.Setenv("XDG_STATE_HOME", "relative-state")
+	if got, err := defaultCaptureDir(); err != nil || got != fallback {
+		t.Fatalf("relative XDG state directory = %q, %v; want %q", got, err, fallback)
+	}
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	session, err := startCapture("", []string{"lo"}, nil, processID{PID: 42}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	want := filepath.Join(home, "state", "socktrail", "captures")
+	if got := filepath.Dir(session.path); got != want {
+		t.Fatalf("capture directory = %q, want %q", got, want)
+	}
+	info, err := os.Stat(want)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("capture directory permissions = %v, %v; want 0700", info, err)
+	}
+}
+
 func TestCaptureSessionFiltersFlowAndWritesReadablePCAPNG(t *testing.T) {
 	source := netip.MustParseAddrPort("127.0.0.1:40000")
 	target := netip.MustParseAddrPort("127.0.0.2:40001")

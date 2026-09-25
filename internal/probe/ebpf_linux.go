@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -62,6 +63,23 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 		delete(spec.Programs, "ktls_recv_exit_old")
 	}
 	objects, err := ebpf.NewCollection(spec)
+	if err != nil && errors.Is(err, ebpf.ErrNotSupported) && strings.Contains(err.Error(), "program ktls_") {
+		// Module BTF may be visible but inaccessible without CAP_SYS_ADMIN.
+		// The core socket probes still work with CAP_BPF and CAP_PERFMON.
+		for name := range spec.Programs {
+			if strings.HasPrefix(name, "ktls_") {
+				delete(spec.Programs, name)
+			}
+		}
+		objects, err = ebpf.NewCollection(spec)
+		if err == nil {
+			notice := "socktrail: kernel TLS probes unavailable; continuing without kTLS socket events"
+			if os.Geteuid() != 0 {
+				notice += "; run with sudo for full kernel TLS observation"
+			}
+			fmt.Fprintln(os.Stderr, notice)
+		}
+	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load embedded eBPF programs (need BTF and CAP_BPF/CAP_PERFMON): %w", err)
 	}

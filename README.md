@@ -55,6 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | 
 
 The installer asks for `sudo` if the destination is not writable. For releases after v0.0.1, it also verifies the build provenance attestation when GitHub CLI 2.49 or later is installed and signed in; otherwise it checks only the SHA-256 checksum. Run the installed binary with `sudo socktrail`, or follow the [file capability setup](docs/usage.md#不使用-sudo-运行).
 
+For a source build, `task` (or `task build`) creates a static binary with the Git version and build time, and `task install` installs it to `/usr/local/bin/socktrail` with the file capabilities needed for packet capture and eBPF. Run `task install` as your normal user; it invokes `sudo` only for installation. Then run `socktrail` without `sudo` for core capture. Use `sudo socktrail` when you need all probes, including OpenSSL process SNI and kernel TLS on hosts that restrict module BTF access.
+
 ```sh
 CGO_ENABLED=0 go build -o socktrail ./cmd/socktrail
 sudo ./socktrail
@@ -70,7 +72,7 @@ Explicit capture on more than eight interfaces shows the matches and asks for co
 
 To run without `sudo`, install the binary with Linux file capabilities. Network capabilities alone do not cover the eBPF probes; see the [capability setup and limitations](docs/usage.md#不使用-sudo-运行).
 
-Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for services, where `g` switches between service, cgroup, and process tree groups; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings are written to `socktrail-captures/` by default and may contain plaintext application data.
+Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for services, where `g` switches between service, cgroup, and process tree groups; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings go to `$XDG_STATE_HOME/socktrail/captures` (usually `~/.local/state/socktrail/captures`) by default and may contain plaintext application data. Use `--capture-dir /tmp/...` for temporary files.
 
 ## Documentation
 

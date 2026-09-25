@@ -1,0 +1,35 @@
+version: '3'
+
+vars:
+  GIT_TAG:
+    sh: git describe --tags --always --dirty
+  BUILD_TIME:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+
+tasks:
+  default:
+    desc: Build socktrail
+    deps: [build]
+
+  build:
+    desc: Build a static Linux binary
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - >-
+        go build -trimpath -buildvcs=true
+        -ldflags="-s -w -X github.com/jimmicro/version.GitTag={{.GIT_TAG}} -X github.com/jimmicro/version.BuildTime={{.BUILD_TIME}}"
+        -o socktrail ./cmd/socktrail
+
+  install:
+    desc: Install socktrail with capture and eBPF capabilities
+    deps: [build]
+    cmds:
+      - sudo install -o root -g "$(id -gn)" -m 0750 ./socktrail /usr/local/bin/socktrail
+      - |
+        caps=cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin
+        case "$(uname -r)" in
+          5.10.*) caps="$caps,cap_sys_resource" ;;
+        esac
+        sudo setcap "$caps+ep" /usr/local/bin/socktrail
+      - getcap /usr/local/bin/socktrail

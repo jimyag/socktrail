@@ -190,7 +190,11 @@ func prepareCaptureMemory(names []string, setting string, yes bool) (handled boo
 	if err != nil {
 		return false, err
 	}
-	args := []string{"--scope", "--quiet", "--collect", "--same-dir", "-p", fmt.Sprintf("MemoryMax=%d", limit), exe}
+	args := []string{"--scope", "--quiet", "--collect", "--same-dir"}
+	if os.Geteuid() != 0 {
+		args = append(args, "--user")
+	}
+	args = append(args, "-p", fmt.Sprintf("MemoryMax=%d", limit), exe)
 	args = append(args, os.Args[1:]...)
 	cmd := exec.Command("systemd-run", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

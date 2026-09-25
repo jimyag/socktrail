@@ -1037,7 +1037,7 @@ func run() error {
 	debugPID := flag.Bool("debug-pid-events", false, "print raw PID association events to stderr")
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
-	captureDir := flag.String("capture-dir", "socktrail-captures", "directory for on-demand 15-second PCAPNG recordings")
+	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
 	output := flag.String("output", "text", "snapshot format with --duration: text or json")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
@@ -1102,6 +1102,9 @@ func run() error {
 		tlsEvents, tlsDone, tlsStats, path, err = tlsprobe.Start(probeCtx, stat.Ino)
 		if err != nil {
 			tlsStatus = "OpenSSL process probe unavailable: " + err.Error()
+			if os.Geteuid() != 0 && errors.Is(err, os.ErrPermission) {
+				tlsStatus += "; run with sudo for full OpenSSL SNI observation"
+			}
 		} else {
 			tlsStatus = "OpenSSL process SNI probe active: " + path
 		}

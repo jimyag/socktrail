@@ -66,6 +66,18 @@ type captureSession struct {
 	label      string
 }
 
+func defaultCaptureDir() (string, error) {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if !filepath.IsAbs(stateHome) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("find home directory for captures: %w", err)
+		}
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "socktrail", "captures"), nil
+}
+
 func startCapture(dir string, interfaces []string, selected *flow, pid processID, collectors map[string]*collector) (*captureSession, error) {
 	if pid.PID == 0 && selected == nil {
 		return nil, fmt.Errorf("select an active connection first")
@@ -93,6 +105,13 @@ func startCapture(dir string, interfaces []string, selected *flow, pid processID
 			return nil, fmt.Errorf("selected connection is no longer active")
 		}
 		interfaces = []string{chosenInterface}
+	}
+	if dir == "" {
+		var err error
+		dir, err = defaultCaptureDir()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create capture directory: %w", err)
