@@ -136,4 +136,4 @@ DNS 提示取 UDP 53 应答中提问名对应的 A/AAAA 地址（包括 CNAME �
 - DNS over TLS 和 DNS over QUIC 根据目标 853 端口标记为 DoT/DoQ；DNS over HTTPS 根据 443 端口和已知的服务名（可用 `--doh-list` 扩充）标记为 DoH。这是流量分类，不代表看到了其中的 DNS 查询。
 - 逐请求的域名和 HTTPS 请求数（经 TLS 的 HTTP/2、HTTP/3）：只能靠读明文。明文 HTTP/2 已按请求计数。
 - 客户端没发 SNI、服务端用 TLS 1.3：证书在加密的握手消息里，只有 DNS 提示可用。
-- OpenSSL 探针不覆盖 Go TLS、静态链接的 TLS 库、其他 TLS 库以及不经已挂调用路径的握手。
+- OpenSSL 探针不覆盖 Go TLS、静态链接的 TLS 库、其他 TLS 库以及不经已挂调用路径的握手。这些库的明文 SNI 由默认开启的 socket 层读取（`--socket-sniff`）覆盖，与所用 TLS 库无关；为它们另加进程内探针，唯一能多拿到的是真实 ECH 的内层域名，所以暂不实现，等有实际排查需求再评估 Go crypto/tls 探针。

@@ -649,6 +649,7 @@
 | [bcc](https://github.com/iovisor/bcc) | tcpconnlat、tcplife、tcpsynbl、solisten、gethostlatency | 第 1、2、7、10、16 项 |
 | [DnsTrace](https://github.com/furkanonder/DnsTrace) | 按进程的 DNS 查询 | 第 10 项 |
 | [witr](https://github.com/pranshuparmar/witr) | 进程、端口的来源链 | 第 13 项 |
+| [ecapture](https://github.com/gojue/ecapture) | OpenSSL、GnuTLS、NSS、Go TLS 的 uprobe | 不做：socket 层读取已覆盖各 TLS 库的明文 SNI，其他库的探针只多得真实 ECH 内层域名；Go TLS 探针需按版本维护结构偏移，等有需求再评估 |
 | [tcping](https://github.com/pouriyajamshidi/tcping)、[NextTrace](https://github.com/nxtrace/NTrace-core)、[nettools](https://github.com/baidu/nettools) | TCP 探测、MTR、链路质量探测 | 第 15 项，只做显式触发；长期拨测不做 |
 | [kyanos](https://github.com/hengyoush/kyanos) | L7 请求时延、内核各阶段耗时、TLS 解密。域名只来自解密后 HTTP/1.x 请求的 Host 头，不解析 SNI | 不读明文，不做。域名方面，SNI、协议升级后的 SNI 和按进程关联的 DNS 能覆盖按域名访问的连接（第 17 项）。明文协议的请求时延要成对匹配请求和应答，等第 1、2 项稳定后再评估 |
 | [oryx](https://github.com/pythops/oryx) | eBPF 抓包 TUI、防火墙 | 防火墙会修改网络，不做 |
