@@ -30,9 +30,9 @@ const (
 )
 
 type httpParser struct {
-	state     httpState
 	buffer    []byte
 	remaining uint64
+	state     httpState
 	h2c       bool // The last request asked to upgrade to cleartext HTTP/2.
 }
 

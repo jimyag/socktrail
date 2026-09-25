@@ -47,11 +47,12 @@ func (p *tlsParser) feed(data []byte, evidence *Evidence) error {
 		if len(p.handshake) < 4+messageLen {
 			continue
 		}
-		sni, ech, alpn, err := parseClientHello(p.handshake[4 : 4+messageLen])
+		hello, err := parseClientHello(p.handshake[4 : 4+messageLen])
 		if err != nil {
 			return err
 		}
-		evidence.SNI, evidence.NoSNI, evidence.ECH, evidence.ALPN = sni, sni == "", ech, alpn
+		evidence.SNI, evidence.NoSNI, evidence.ECH, evidence.ALPN = hello.sni, hello.sni == "", hello.ech, hello.alpn
+		evidence.JA4 = new(hello.ja4.fingerprint('t'))
 		p.done = true
 		p.record, p.handshake = nil, nil
 		return nil
@@ -98,85 +99,119 @@ func (c *cursor) uint16() (int, error) {
 	return int(binary.BigEndian.Uint16(b)), nil
 }
 
-func parseClientHello(data []byte) (string, bool, []string, error) {
+// helloFields is what a ClientHello says about its destination and the
+// client software.
+type helloFields struct {
+	sni  string
+	ech  bool
+	alpn []string
+	ja4  ja4Fields
+}
+
+func parseClientHello(data []byte) (helloFields, error) {
+	var hello helloFields
 	c := cursor{data: data}
-	if _, err := c.take(34); err != nil { // Legacy version and random.
-		return "", false, nil, err
+	version, err := c.uint16()
+	if err != nil {
+		return hello, err
+	}
+	hello.ja4.version = uint16(version)   //nolint:gosec // G115: uint16 read from two bytes.
+	if _, err := c.take(32); err != nil { // Random.
+		return hello, err
 	}
 	sessionLen, err := c.uint8()
 	if err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	if _, err := c.take(sessionLen); err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	cipherLen, err := c.uint16()
 	if err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	if cipherLen == 0 || cipherLen%2 != 0 {
-		return "", false, nil, fmt.Errorf("invalid TLS cipher suite list")
+		return hello, fmt.Errorf("invalid TLS cipher suite list")
 	}
-	if _, err := c.take(cipherLen); err != nil {
-		return "", false, nil, err
+	ciphers, err := c.take(cipherLen)
+	if err != nil {
+		return hello, err
 	}
+	hello.ja4.ciphers = uint16List(ciphers)
 	compressionLen, err := c.uint8()
 	if err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	if _, err := c.take(compressionLen); err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	// TLS 1.2 permits ClientHello to omit the extensions field entirely.
 	if c.off == len(c.data) {
-		return "", false, nil, nil
+		return hello, nil
 	}
 	extensionsLen, err := c.uint16()
 	if err != nil {
-		return "", false, nil, err
+		return hello, err
 	}
 	extensions, err := c.take(extensionsLen)
 	if err != nil || c.off != len(c.data) {
-		return "", false, nil, fmt.Errorf("invalid TLS extensions length")
+		return hello, fmt.Errorf("invalid TLS extensions length")
 	}
 	ec := cursor{data: extensions}
-	var sni string
 	var hasSNI bool
-	var ech bool
-	var alpn []string
 	for ec.off < len(ec.data) {
 		kind, err := ec.uint16()
 		if err != nil {
-			return "", false, nil, err
+			return hello, err
 		}
 		length, err := ec.uint16()
 		if err != nil {
-			return "", false, nil, err
+			return hello, err
 		}
 		body, err := ec.take(length)
 		if err != nil {
-			return "", false, nil, err
+			return hello, err
 		}
+		hello.ja4.extensions = append(hello.ja4.extensions, uint16(kind)) //nolint:gosec // G115: uint16 read from two bytes.
 		switch kind {
 		case 0:
 			if hasSNI {
-				return "", false, nil, fmt.Errorf("duplicate SNI extension")
+				return hello, fmt.Errorf("duplicate SNI extension")
 			}
 			hasSNI = true
-			sni, err = parseSNI(body)
+			hello.sni, err = parseSNI(body)
 			if err != nil {
-				return "", false, nil, err
+				return hello, err
+			}
+		case 13: // signature_algorithms
+			if len(body) >= 2 && int(binary.BigEndian.Uint16(body)) == len(body)-2 && len(body)%2 == 0 {
+				hello.ja4.signatures = uint16List(body[2:])
 			}
 		case 16:
-			alpn, err = parseALPN(body)
+			hello.alpn, err = parseALPN(body)
 			if err != nil {
-				return "", false, nil, err
+				return hello, err
+			}
+			if len(body) > 3 && int(body[2]) > 0 && 3+int(body[2]) <= len(body) {
+				hello.ja4.alpn = body[3 : 3+int(body[2])]
+			}
+		case 43: // supported_versions
+			if len(body) >= 1 && int(body[0]) == len(body)-1 && len(body)%2 == 1 {
+				hello.ja4.versions = uint16List(body[1:])
 			}
 		case 0xfe0d:
-			ech = true
+			hello.ech = true
 		}
 	}
-	return sni, ech, alpn, nil
+	return hello, nil
+}
+
+func uint16List(b []byte) []uint16 {
+	values := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		values = append(values, binary.BigEndian.Uint16(b[i:]))
+	}
+	return values
 }
 
 func parseSNI(data []byte) (string, error) {

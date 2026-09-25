@@ -107,7 +107,7 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 ### 按连接条件过滤
 
-在界面按 `/`，或启动时传 `--filter 'port:443 dir:outbound proc:curl'`。空格分隔的条件必须同时满足；`!` 取反，例如 `!iface:lo`。不带键的词沿用原来的子串搜索；值包含 `*` 时按通配符匹配。可用的键：`port`（任一端）、`sport`、`dport`、`ip`（地址或 CIDR）、`proto`、`app`、`state`、`dir`、`iface`、`proc`、`pid`、`svc`、`user`（有效用户名或 UID）、`host`、`asn`、`cc`、`fail:true|false`。`sport` 和 `dport` 指已识别的发起端与目标端；方向未知时不能匹配。`asn`、`cc` 需要相应的离线 GeoIP 数据库。
+在界面按 `/`，或启动时传 `--filter 'port:443 dir:outbound proc:curl'`。空格分隔的条件必须同时满足；`!` 取反，例如 `!iface:lo`。不带键的词沿用原来的子串搜索；值包含 `*` 时按通配符匹配。可用的键：`port`（任一端）、`sport`、`dport`、`ip`（地址或 CIDR）、`proto`、`app`、`state`、`dir`、`iface`、`proc`、`pid`、`svc`、`user`（有效用户名或 UID）、`host`、`ja4`（TLS 客户端指纹，常配合通配符，如 `ja4:t13d*`）、`asn`、`cc`、`fail:true|false`。`sport` 和 `dport` 指已识别的发起端与目标端；方向未知时不能匹配。`asn`、`cc` 需要相应的离线 GeoIP 数据库。
 
 界面过滤后，主表只保留有匹配连接的行，底栏只列出这些连接；只含进程 socket I/O、没有连接的行仍可用普通文本搜索。输入有误时底栏显示原因，保留输入供修改。`--filter` 过滤文本、JSON 快照的连接和域名汇总、以及实时 NDJSON；快照的采集总量、进程 socket I/O 和服务总量仍表示整个采集范围。
 
@@ -213,7 +213,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
 | `dns` | DNS 流的查询、应答、失败次数和最近 8 次查询；每条记录含名字、类型、应答码、前 4 个地址、RTT 与时间 |
 | `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |
-| `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`proxy_authority`、`upgrade`、`encrypted_dns`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
+| `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`ja4`、`proxy`、`proxy_via`、`proxy_client`、`proxy_authority`、`upgrade`、`encrypted_dns`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
 | `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |
 
 `evidence.kind=dns_process` 表示名字来自同一进程在最近 5 分钟内、且仍在应答 TTL 内的 DNS 查询；`evidence.dns` 是查询名。带 ECH 时 `evidence.sni` 仍保留线上可见的外层名。

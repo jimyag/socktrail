@@ -104,7 +104,7 @@ func keyedCondition(key, value string) (condition, error) {
 		return func(f *flow, _ *collector, _ *processTable, _ *geoip.DB, _ string) bool {
 			return (f.Health.ConnectResult != 0 || f.ICMPError != "") == want
 		}, nil
-	case "proto", "app", "state", "dir", "iface", "proc", "svc", "user", "host", "cc":
+	case "proto", "app", "state", "dir", "iface", "proc", "svc", "user", "host", "ja4", "cc":
 		match, err := filterString(value)
 		if err != nil {
 			return nil, err
@@ -175,6 +175,12 @@ func stringCondition(key string, match func(string) bool) condition {
 			if f.Domain != nil {
 				e := f.Domain.Evidence()
 				return match(e.Label()) || match(e.SNI) || match(e.Proxy) || match(e.DNS)
+			}
+		case "ja4":
+			if f.Domain != nil {
+				if e := f.Domain.Evidence(); e.JA4 != nil {
+					return match(*e.JA4)
+				}
 			}
 		case "cc":
 			for _, addr := range []netip.Addr{f.Key.A.Addr(), f.Key.B.Addr()} {

@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,7 +143,7 @@ func TestTLS13ReportsVersionAndEncryptedCertificate(t *testing.T) {
 	if e.TLSVersion != "TLS 1.3" || len(e.Certificate) != 0 || e.Label() != "TLS no SNI" {
 		t.Fatalf("evidence %+v", e)
 	}
-	if detail := e.Detail(); detail != "server chose TLS 1.3; no SNI, and TLS 1.3 encrypts the server certificate" {
+	if detail := e.Detail(); e.JA4 == nil || !strings.HasPrefix(*e.JA4, "t13i") || detail != "server chose TLS 1.3; no SNI, and TLS 1.3 encrypts the server certificate; JA4 "+*e.JA4 {
 		t.Fatalf("detail %q", detail)
 	}
 }

@@ -42,6 +42,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Group processes by systemd service or container, cgroup, process tree, executable basename, or user, and show only chosen processes with `--process`, `--pid` (with descendants), `--cgroup`, or `--container`.
 - Show local Docker container and Compose service names, plus Kubernetes Pod names when kubelet log links are available; unreadable metadata falls back to the short container ID.
 - Use conntrack data to merge observed flows across NAT address changes when a mapping is available.
+- Compute the JA4 fingerprint of each TLS and QUIC ClientHello, which identifies the client TLS library and settings; filter on it with `ja4:`.
 - Extract visible HTTP Host, TLS and QUIC SNI, proxy targets, and DNS name hints. Encrypted HTTP request names and real ECH inner names are not available from packet capture.
 - Inspect PID, source IP, destination IP, protocol, domain, and per-interface views in the terminal.
 - Record the next 15 seconds of packets for a selected connection or PID to a PCAPNG file on demand, optionally starting with the frames of the seconds before.

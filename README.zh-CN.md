@@ -41,6 +41,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 将本机 TCP/UDP socket 关联到进程，并把进程 socket RX/TX 与采集的 IP 字节分开显示。
 - 按 systemd 服务或容器、cgroup、进程树、可执行文件名或用户分组；可用 `--process`、`--pid`（含子孙进程）、`--cgroup` 或 `--container` 只看指定进程。
 - 有 conntrack 映射时，合并 NAT 地址改写前后观测到的连接。
+- 为每个 TLS 和 QUIC ClientHello 计算 JA4 指纹，区分客户端所用的 TLS 库和配置；可用 `ja4:` 过滤。
 - 提取可见的 HTTP Host、TLS 和 QUIC SNI、代理目标与 DNS 域名提示。抓包无法看到加密的 HTTP 请求域名和真实的 ECH 内层域名。
 - 在终端查看 PID、来源 IP、目标 IP、协议、域名和单网卡视图。
 - 按需为选中的连接或 PID 录制之后 15 秒的 PCAPNG，也可包含按键前数秒的帧。
