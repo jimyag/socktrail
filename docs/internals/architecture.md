@@ -93,7 +93,7 @@ OpenSSL 用户态探针默认尝试启用；不可用时继续抓包，但顶部
 
 容器显示名在服务键确定后按容器 ID 查本地文件：Docker 读取 `config.v2.json` 的名称和 Compose 标签，支持 `/etc/docker/daemon.json` 的 `data-root`；containerd/CRI 读取 `/var/log/containers` 的 kubelet 日志链接来得到容器、Pod 和 namespace。最多缓存 4096 个 ID，找不到的 30 秒后重试；不可读时显示短 ID。这个查找只补名称，不改变 cgroup 服务键或跨网络命名空间的 PID 范围。
 
-`--process`、`--pid`、`--cgroup` 只影响显示：报文要先和进程对上才知道属于谁，所以抓包和事件照常全量处理，界面、快照和 JSON 在输出时按进程过滤，每次输出缓存每个进程的判断结果。
+`--process`、`--pid`、`--cgroup`、`--container` 只影响显示：报文要先和进程对上才知道属于谁，所以抓包和事件照常全量处理，界面、快照和 JSON 在输出时按进程过滤，每次输出缓存每个进程的判断结果。
 
 ## 内核 socket 表补全进程
 

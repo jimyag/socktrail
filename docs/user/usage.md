@@ -76,6 +76,7 @@ sudo ./socktrail --process nginx            # 按进程名，可用通配符，�
 sudo ./socktrail --pid 1234                 # 这个进程和它所有的子孙进程
 sudo ./socktrail --cgroup nginx.service     # cgroup 路径里某一级的名字，可用通配符，如 'docker-*'
 sudo ./socktrail --cgroup /system.slice     # cgroup 路径前缀：所有系统服务
+sudo ./socktrail --container web             # 容器名、Compose 服务名、Pod 名或至少 12 位的容器 ID 前缀
 sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 ```
 
@@ -83,6 +84,7 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 - 进程名是内核里的任务名，最多 15 字节：超过 15 字节的名字（如 `systemd-resolved`）按前 15 字节比较。任务名可以被进程自己修改，需要可靠地限定时用 `--cgroup` 或 `--pid`。
 - `--pid` 按父子关系判断：子孙进程在进程开始收发网络数据时，从内核事件取得它的父进程，再从 `/proc` 补齐中间没有网络活动的祖先。中间某个进程在这之前就已退出时，链条会断开。
 - `--cgroup` 带 `/` 时是路径前缀，按目录边界比较（`/system.slice/nginx` 不匹配 `nginx.service`）；不带 `/` 时和路径里任意一级目录名比较。
+- `--container` 按本地 Docker/Pod 元数据匹配名称，也支持通配符；ID 前缀至少 12 位。无法读取元数据时仍可用 ID 前缀匹配，但 bridge 容器的 PID 不在当前网络命名空间内，过滤器无法凭报文推断它。
 - 过滤只影响显示：抓包和事件照常全量处理，因为报文要先和进程对上才知道属于谁。没有进程的连接（转发流量、还没从 socket 表补上进程的连接）和入站扫描汇总因此不显示。顶部标出 `ONLY process=…`。
 
 ## 页面与接口选择
@@ -144,7 +146,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | 字段 | 内容 |
 | --- | --- |
 | `version`、`netns`、`interfaces` | 格式版本（目前为 1）、网络命名空间 inode、采集的接口 |
-| `filter` | 给了 `--process`、`--pid` 或 `--cgroup` 时的过滤条件；有过滤时下面各项只含选中的进程 |
+| `filter` | 给了 `--process`、`--pid`、`--cgroup` 或 `--container` 时的过滤条件；有过滤时下面各项只含选中的进程 |
 | `probes.pid` | PID 探针的 `received`、`kernel_lost`、`dropped`、`invalid` |
 | `probes.openssl`、`probes.socket_stream` | 各自的 `status` 行和同样的计数；OpenSSL 探针不统计 `kernel_lost`，恒为 0 |
 | `probes.nat` | `status`、`lookups`、`translated`、`queue_full`、`failed`、`last_error` |
@@ -184,7 +186,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 
 ## 实时 JSON 与 LOG
 
-`--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按现有 `--process`、`--pid`、`--cgroup` 限定范围。
+`--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按 `--process`、`--pid`、`--cgroup`、`--container` 限定范围。
 
 ```sh
 sudo socktrail --output ndjson | jq -c 'select(.changes | index("name")) | {id,source,target,name,client,server}'

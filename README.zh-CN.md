@@ -37,7 +37,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 采集 IPv4、IPv6、ARP 和其他以太网流量。自动选择最多八张接口；显式指定 `--interface` 没有数量上限，也可包含回环和 tun 接口。
 - 将 TCP、UDP、ICMP 和其他流量归入连接或会话，显示应用协议提示、连接状态、RTT、拥塞窗口、重传（本机 socket 使用与 `ss -ti` 类似的内核值）、DNS 响应时间和 ICMP 错误。
 - 将本机 TCP/UDP socket 关联到进程，并把进程 socket RX/TX 与采集的 IP 字节分开显示。
-- 按 systemd 服务或容器、cgroup、进程树、可执行文件名分组；可用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 只看指定进程。
+- 按 systemd 服务或容器、cgroup、进程树、可执行文件名分组；可用 `--process`、`--pid`（含子孙进程）、`--cgroup` 或 `--container` 只看指定进程。
 - 有 conntrack 映射时，合并 NAT 地址改写前后观测到的连接。
 - 提取可见的 HTTP Host、TLS 和 QUIC SNI、代理目标与 DNS 域名提示。抓包无法看到加密的 HTTP 请求域名和真实的 ECH 内层域名。
 - 在终端查看 PID、来源 IP、目标 IP、协议、域名和单网卡视图。

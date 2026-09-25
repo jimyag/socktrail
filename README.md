@@ -37,7 +37,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Capture IPv4, IPv6, ARP, and other Ethernet traffic. Automatic selection uses up to eight interfaces; explicit `--interface` selection has no count limit and can include loopback and tun interfaces.
 - Group TCP, UDP, ICMP, and other flows; show application protocol hints, connection state, RTT, congestion window and retransmissions (the kernel's values for local sockets, like `ss -ti`), DNS response time, and ICMP errors.
 - Associate local TCP/UDP sockets with processes and show socket RX/TX separately from captured IP bytes.
-- Group processes by systemd service or container, cgroup, process tree, or executable basename, and show only chosen processes with `--process`, `--pid` (with descendants), or `--cgroup`.
+- Group processes by systemd service or container, cgroup, process tree, or executable basename, and show only chosen processes with `--process`, `--pid` (with descendants), `--cgroup`, or `--container`.
 - Show local Docker container and Compose service names, plus Kubernetes Pod names when kubelet log links are available; unreadable metadata falls back to the short container ID.
 - Use conntrack data to merge observed flows across NAT address changes when a mapping is available.
 - Extract visible HTTP Host, TLS and QUIC SNI, proxy targets, and DNS name hints. Encrypted HTTP request names and real ECH inner names are not available from packet capture.

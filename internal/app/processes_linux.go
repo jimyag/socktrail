@@ -378,12 +378,15 @@ func (t *processTable) treeOrder(processes []participant) ([]participant, map[pr
 // processFilter selects processes by name, by PID with all their
 // descendants, or by cgroup; a process that meets any of them is selected.
 type processFilter struct {
-	names   patternList
-	pids    pidList
-	cgroups patternList
+	names      patternList
+	pids       pidList
+	cgroups    patternList
+	containers patternList
 }
 
-func (f processFilter) active() bool { return len(f.names)+len(f.pids)+len(f.cgroups) > 0 }
+func (f processFilter) active() bool {
+	return len(f.names)+len(f.pids)+len(f.cgroups)+len(f.containers) > 0
+}
 
 func (f processFilter) String() string {
 	var parts []string
@@ -395,6 +398,9 @@ func (f processFilter) String() string {
 	}
 	if len(f.cgroups) > 0 {
 		parts = append(parts, "cgroup="+f.cgroups.String())
+	}
+	if len(f.containers) > 0 {
+		parts = append(parts, "container="+f.containers.String())
 	}
 	return strings.Join(parts, " ")
 }
@@ -467,6 +473,21 @@ func cgroupMatches(pattern, path string) bool {
 	return false
 }
 
+func containerMatches(pattern, id string, info *containerInfo) bool {
+	if len(pattern) >= 12 && strings.HasPrefix(id, pattern) {
+		return true
+	}
+	if info == nil {
+		return false
+	}
+	for _, name := range []string{info.Name, info.Pod, info.ComposeService} {
+		if matched, _ := pathpkg.Match(pattern, name); name != "" && matched {
+			return true
+		}
+	}
+	return false
+}
+
 // matches reports whether the filter selects a process.
 func (t *processTable) matches(f processFilter, id processID, name string) bool {
 	m := t.meta(id)
@@ -482,6 +503,20 @@ func (t *processTable) matches(f processFilter, id processID, name string) bool 
 		for _, pattern := range f.cgroups {
 			if cgroupMatches(pattern, path) {
 				return true
+			}
+		}
+		if len(f.containers) > 0 {
+			containerID, _ := containerIdentity(path)
+			if containerID != "" {
+				var info *containerInfo
+				if t.containers != nil {
+					info, _ = t.containers.lookup(path)
+				}
+				for _, pattern := range f.containers {
+					if containerMatches(pattern, containerID, info) {
+						return true
+					}
+				}
 			}
 		}
 	}

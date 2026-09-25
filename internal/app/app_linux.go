@@ -1168,6 +1168,7 @@ func Run() error {
 	flag.Var(&filter.names, "process", "show only these processes: names or globs, comma-separated; the kernel keeps 15 bytes of a name")
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
 	flag.Var(&filter.cgroups, "cgroup", "show only processes in these cgroups: a path prefix such as /system.slice, or a glob on one directory such as nginx.service or 'docker-*'")
+	flag.Var(&filter.containers, "container", "show only containers by name, Compose service, Pod, or 12+ character ID prefix (repeat or comma-separate)")
 	flag.Parse()
 	extraDoHNames = nil
 	for name := range strings.SplitSeq(*dohList, ",") {

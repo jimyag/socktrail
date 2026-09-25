@@ -64,4 +64,17 @@ func TestContainerNamesFromLocalMetadata(t *testing.T) {
 	if row := processJSON(process, table); row.Container == nil || row.Container.Name != "web" || row.Service != "web (compose demo/api)" {
 		t.Fatalf("process JSON = %+v", row)
 	}
+	for pattern, want := range map[string]bool{
+		"web": true, "api": true, dockerID[:12]: true, "other": false, "a": false,
+	} {
+		filter := processFilter{containers: patternList{pattern}}
+		if got := table.matches(filter, process.id(), process.Name); got != want {
+			t.Errorf("--container %q matches Docker process = %t, want %t", pattern, got, want)
+		}
+	}
+	podProcess := participant{PID: 124, StartNS: 456, Name: "sidecar"}
+	table.procs[podProcess.id()] = &processMeta{Cgroup: podPath}
+	if !table.matches(processFilter{containers: patternList{"site"}}, podProcess.id(), podProcess.Name) {
+		t.Fatal("--container did not match the Pod name")
+	}
 }
