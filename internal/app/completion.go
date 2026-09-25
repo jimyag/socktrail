@@ -12,6 +12,7 @@ import (
 // with one of the kinds file, dir, interface and netns.
 var completionArgs = map[string][]string{
 	"interface":    {"interface"},
+	"filter":       {"filter"},
 	"netns":        {"netns"},
 	"read":         {"file"},
 	"log-file":     {"file"},
@@ -68,6 +69,19 @@ func writeCompletion(w io.Writer, shell string, flags *flag.FlagSet) error {
 	return err
 }
 
+// filterWords are the filter conditions a shell can complete without the
+// live connections: each key, and each fixed value.
+func filterWords() []string {
+	var words []string
+	for _, k := range filterKeys {
+		words = append(words, k.name+":")
+		for _, v := range k.values {
+			words = append(words, k.name+":"+v)
+		}
+	}
+	return words
+}
+
 // Shell commands that list completion candidates of a kind.
 const (
 	listInterfaces = "ls /sys/class/net 2>/dev/null"
@@ -76,9 +90,12 @@ const (
 
 func writeBashCompletion(w *strings.Builder, list []completionFlag) {
 	fmt.Fprintln(w, "# bash completion for socktrail; load with: source <(socktrail --completion bash)")
+	// bash-completion keeps a colon inside the word; readline replaces only
+	// the part after it, so candidates lose what comes before it.
+	fmt.Fprintln(w, `_socktrail_colon() { declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions "$cur"; }`)
 	fmt.Fprintln(w, "_socktrail() {")
 	fmt.Fprintln(w, `	local cur prev words cword`)
-	fmt.Fprintln(w, `	_init_completion -n = 2>/dev/null || { cur=${COMP_WORDS[COMP_CWORD]}; prev=${COMP_WORDS[COMP_CWORD-1]}; }`)
+	fmt.Fprintln(w, `	_init_completion -n =: 2>/dev/null || { cur=${COMP_WORDS[COMP_CWORD]}; prev=${COMP_WORDS[COMP_CWORD-1]}; }`)
 	var booleans []string
 	for _, f := range list {
 		if f.boolean {
@@ -105,10 +122,14 @@ func writeBashCompletion(w *strings.Builder, list []completionFlag) {
 			reply = `compgen -W "$(` + listInterfaces + `)" -- "$cur"`
 		case "netns":
 			reply = `compgen -W "$(` + listNetNS + `)" -- "$cur"`
+		case "filter":
+			// The word keeps its colon, and completing a key leaves room for its value.
+			fmt.Fprintf(w, "\t%s|-%s) compopt -o nospace 2>/dev/null; COMPREPLY=($(compgen -W \"%s\" -- \"$cur\")); _socktrail_colon; return ;;\n", f.name, f.name, strings.Join(filterWords(), " "))
+			continue
 		default:
 			reply = `compgen -W "` + strings.Join(f.values, " ") + `" -- "$cur"`
 		}
-		fmt.Fprintf(w, "\t%s|-%s) COMPREPLY=($(%s)); return ;;\n", f.name, f.name, reply)
+		fmt.Fprintf(w, "\t%s|-%s) COMPREPLY=($(%s)); _socktrail_colon; return ;;\n", f.name, f.name, reply)
 	}
 	var names []string
 	for _, f := range list {
@@ -148,6 +169,8 @@ func writeZshCompletion(w *strings.Builder, list []completionFlag) {
 			action = "_net_interfaces"
 		case "netns":
 			action = "{compadd -- $(" + listNetNS + ")}"
+		case "filter":
+			action = "{compadd -S '' -- " + strings.Join(filterWords(), " ") + "}"
 		default:
 			if f.values != nil {
 				action = "(" + strings.Join(f.values, " ") + ")"
@@ -178,6 +201,13 @@ func writeFishCompletion(w *strings.Builder, list []completionFlag) {
 			line += " -a '(" + listInterfaces + ")'"
 		case "netns":
 			line += " -a '(" + quote(listNetNS) + ")'"
+		case "filter": // One line per candidate, each with its own description.
+			for _, k := range filterKeys {
+				fmt.Fprintf(w, "complete -c socktrail -l filter -x -a '%s:' -d '%s'\n", k.name, quote(k.usage))
+				for _, v := range k.values {
+					fmt.Fprintf(w, "complete -c socktrail -l filter -x -a '%s:%s' -d '%s'\n", k.name, v, quote(k.usage))
+				}
+			}
 		default:
 			if f.values != nil {
 				line += " -a '" + strings.Join(f.values, " ") + "'"

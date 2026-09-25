@@ -150,6 +150,8 @@ type terminalUI struct {
 	filterApplied     string
 	filterConditions  []condition
 	filterError       string
+	filterValues      map[string][]string // Values seen for filter keys, for Tab completion.
+	filterValuesAt    time.Time
 	sortRate          bool
 	help              bool
 	status            bool
@@ -276,6 +278,9 @@ func (u *terminalUI) handleKey(key string) bool {
 			}
 		case "esc":
 			u.filtering, u.filter = false, ""
+		case "tab":
+			u.filter, _ = completeFilter(u.filter, u.filterValues)
+			u.filterError = ""
 		case "backspace":
 			if len(u.filter) > 0 {
 				u.filter = u.filter[:len(u.filter)-1]
@@ -474,7 +479,7 @@ func (u *terminalUI) handleKey(key string) bool {
 	case "right", "l":
 		u.scrollColumns(max(4, u.screenWidth/4), u.focusBottom)
 	case "/":
-		u.filtering = true
+		u.filtering, u.filterValuesAt = true, time.Time{}
 	case "s":
 		u.sortRate = !u.sortRate
 		u.mainSort = sortSpec{}
@@ -1457,6 +1462,8 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		}
 		lines = append(lines, geoHelp+"; s: rate/total sort  !: status  q: quit")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
+		lines = append(lines, "/ filter: "+filterSyntax+"; Tab completes; man page: socktrail --man")
+		lines = append(lines, "  keys: "+filterKeyNames())
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
 	} else if u.status {
 		if u.geo != nil {
@@ -1530,6 +1537,12 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, "")
 	}
 	if u.filtering {
+		if time.Since(u.filterValuesAt) >= time.Second {
+			u.filterValues, u.filterValuesAt = filterValues(c, u.processes), time.Now()
+		}
+		if len(lines) > 0 {
+			lines[len(lines)-1] = styleFaint.paint(fit(filterHint(u.filter, u.filterValues, width), width))
+		}
 		prompt := styleAccent.paint("/") + u.filter + styleFaint.paint("_")
 		if u.filterError != "" {
 			prompt += "  " + styleAlert.paint(u.filterError)

@@ -45,7 +45,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 提取可见的 HTTP Host、TLS 和 QUIC SNI、代理目标与 DNS 域名提示。抓包无法看到加密的 HTTP 请求域名和真实的 ECH 内层域名。
 - 在终端查看 PID、来源 IP、目标 IP、协议、域名和单网卡视图。
 - 按需为选中的连接或 PID 录制之后 15 秒的 PCAPNG，也可包含按键前数秒的帧。
-- 用 `~/.config/socktrail/config` 保存默认参数，用 `--completion` 生成 bash、zsh 或 fish 补全脚本。
+- 用 `~/.config/socktrail/config` 保存默认参数，用 `--completion` 生成 bash、zsh 或 fish 补全脚本，用 `socktrail --man | man -l -` 阅读完整手册。`socktrail -h` 列出全部过滤键，界面里按 `/` 过滤时 `Tab` 可补全键名和取值。
 - 输出限时文本快照或 JSON 文档。
 - 按连接变化实时输出 NDJSON，并在 `6 LOG` 页查看最近的变化。
 - 在 `7 PORTS` 页查看 TCP/UDP 监听端口、所属进程、accept 队列和失败尝试。

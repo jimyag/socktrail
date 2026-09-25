@@ -111,7 +111,7 @@ func keyedCondition(key, value string) (condition, error) {
 		}
 		return stringCondition(key, match), nil
 	default:
-		return nil, fmt.Errorf("unknown filter key %q", key)
+		return nil, fmt.Errorf("unknown filter key %q; keys: %s", key, filterKeyNames())
 	}
 }
 

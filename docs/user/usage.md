@@ -41,9 +41,19 @@ filter 'dir:outbound !iface:lo'
 
 命令行优先：命令行给出的参数不再读取文件中的同名项；可重复参数由命令行整体替换，不与文件中的值合并。`config`、`completion`、`version` 和 `download-geoip-db` 不能写进文件。未知参数、缺少值或值不合法时启动失败，并报出文件名和行号。socktrail 常以 root 运行，文件由它决定读写哪些路径，所以文件必须是普通文件，属于当前用户、root 或发起 `sudo` 的用户，且组和其他用户不可写，否则拒绝读取。
 
+### 手册
+
+`socktrail --man` 输出 roff 格式的 man 手册，内容由程序的参数、过滤键和界面按键生成，与当前版本一致，不需要抓包权限。直接阅读：
+
+```sh
+socktrail --man | man -l -
+```
+
+`task install` 会同时把手册安装到 `/usr/local/share/man/man1/socktrail.1`，之后可直接 `man socktrail`。
+
 ### Shell 补全
 
-`socktrail --completion bash|zsh|fish` 输出补全脚本，不需要抓包权限。脚本按程序自身的参数生成：补全参数名，`--interface` 补全 `/sys/class/net` 下的网卡，`--netns` 补全 `/run/netns` 下的名字以及 `pid:`、`container:`，`--output`、`--memory-limit` 补全可选值，文件和目录参数补全路径；布尔参数可补全 `=true` 或 `=false`。
+`socktrail --completion bash|zsh|fish` 输出补全脚本，不需要抓包权限。脚本按程序自身的参数生成：补全参数名，`--interface` 补全 `/sys/class/net` 下的网卡，`--netns` 补全 `/run/netns` 下的名字以及 `pid:`、`container:`，`--output`、`--memory-limit` 补全可选值，`--filter` 补全过滤键名和固定取值（如 `dir:outbound`），文件和目录参数补全路径；布尔参数可补全 `=true` 或 `=false`。
 
 ```sh
 source <(socktrail --completion bash)                     # 写进 ~/.bashrc 长期生效
@@ -136,6 +146,8 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 ### 按连接条件过滤
 
 在界面按 `/`，或启动时传 `--filter 'port:443 dir:outbound proc:curl'`。空格分隔的条件必须同时满足；`!` 取反，例如 `!iface:lo`。不带键的词沿用原来的子串搜索；值包含 `*` 时按通配符匹配。可用的键：`port`（任一端）、`sport`、`dport`、`ip`（地址或 CIDR）、`proto`、`app`、`state`、`dir`、`iface`、`proc`、`pid`、`svc`、`user`（有效用户名或 UID）、`host`、`ja4`（TLS 客户端指纹，常配合通配符，如 `ja4:t13d*`）、`asn`、`cc`、`fail:true|false`。`sport` 和 `dport` 指已识别的发起端与目标端；方向未知时不能匹配。`asn`、`cc` 需要相应的离线 GeoIP 数据库。
+
+输入过滤词时，提示符上方一行随输入变化：还没输入键名时列出所有键；输入了键名的开头时列出匹配的键及其说明；输入了 `键:` 之后显示这个键的说明和当前连接里出现过的取值。按 `Tab` 补全当前这个词：唯一匹配时补全，键名后自动加 `:`，取值后自动加空格；多个匹配时补到共同前缀。键名补全来自内置列表；`proto`、`state`、`dir`、`fail` 有固定取值；`app`、`iface`、`proc`、`svc`、`user`、`host`、`ja4` 的取值取自当前连接，每秒刷新，含空格的取值无法写进过滤词，所以不列出。输入未知键时提示行和错误信息都会列出全部可用键。`socktrail -h` 在参数说明后列出全部过滤键，`?` 帮助页也有一份；shell 补全（见[Shell 补全](#shell-补全)）可以补全 `--filter` 的键名和固定取值。
 
 界面过滤后，主表只保留有匹配连接的行，底栏只列出这些连接；只含进程 socket I/O、没有连接的行仍可用普通文本搜索。输入有误时底栏显示原因，保留输入供修改。`--filter` 过滤文本、JSON 快照的连接和域名汇总、以及实时 NDJSON；快照的采集总量、进程 socket I/O 和服务总量仍表示整个采集范围。
 

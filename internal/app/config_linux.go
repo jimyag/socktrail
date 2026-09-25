@@ -20,7 +20,7 @@ const configNone = "none"
 
 // Flags a configuration file cannot set: they choose the file, or run a
 // one-off action and exit.
-var unconfigurable = map[string]bool{"config": true, "completion": true, "version": true, "download-geoip-db": true, "help": true, "h": true}
+var unconfigurable = map[string]bool{"config": true, "completion": true, "man": true, "version": true, "download-geoip-db": true, "help": true, "h": true}
 
 // defaultConfigPath is $XDG_CONFIG_HOME/socktrail/config, or
 // ~/.config/socktrail/config. Under sudo it is the invoking user's file, as
