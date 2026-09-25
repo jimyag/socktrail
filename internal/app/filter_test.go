@@ -21,6 +21,8 @@ func TestStructuredFilter(t *testing.T) {
 	t.Cleanup(func() { captureInterfaces = previousInterfaces })
 	f.Interfaces.add(0)
 	processes := newProcessTable(t.TempDir())
+	processes.procs[processID{PID: 123}] = &processMeta{Name: "curl", UID: 1000, UIDChecked: true}
+	processes.userNames[1000] = "alice"
 	for _, tc := range []struct {
 		query string
 		want  bool
@@ -33,6 +35,8 @@ func TestStructuredFilter(t *testing.T) {
 		{"proc:curl pid:123", true},
 		{"iface:eth* host:example.org", true},
 		{"svc:unknown", true},
+		{"user:alice user:1000 user:al*", true},
+		{"user:root", false},
 		{"asn:64500 cc:US", false},
 		{"proc:wget", false},
 		{"!port:80 !dir:inbound", true},

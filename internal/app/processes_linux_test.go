@@ -209,6 +209,10 @@ func TestExecutableNameGroupingMergesDifferentPaths(t *testing.T) {
 		t.Fatalf("b did not reach executable-name grouping: %v", u.grouping)
 	}
 	u.handleKey("b")
+	if u.grouping != byUser {
+		t.Fatalf("b did not reach user grouping: %v", u.grouping)
+	}
+	u.handleKey("b")
 	if u.grouping != byService {
 		t.Fatalf("b did not wrap to service grouping: %v", u.grouping)
 	}
@@ -274,6 +278,59 @@ func TestReadCgroupPath(t *testing.T) {
 		}
 		if got := readCgroupPath(dir); got != want {
 			t.Errorf("cgroup file %q: %q, want %q", content, got, want)
+		}
+	}
+}
+
+// Processes group by their effective user: the second UID of the status
+// file, named by the passwd database or by number; a process whose PID was
+// reused or that exited has no known user.
+func TestProcessUserGrouping(t *testing.T) {
+	root := t.TempDir()
+	web := fakeProc(t, root, 100, 1, "nginx", "/system.slice/nginx.service")
+	shell := fakeProc(t, root, 200, 1, "bash", "/user.slice/user-1000.slice/session-3.scope")
+	orphan := fakeProc(t, root, 300, 1, "app", "/system.slice/app.service")
+	for pid, uids := range map[int]string{100: "0\t33\t33\t33", 200: "1000\t1000\t1000\t1000", 300: "4242\t4242\t4242\t4242"} {
+		status := fmt.Sprintf("Name:\tx\nUmask:\t0022\nState:\tS (sleeping)\nUid:\t%s\nGid:\t0\t0\t0\t0\n", uids)
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprint(pid), "status"), []byte(status), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lookups := 0
+	restore := lookupUserName
+	lookupUserName = func(uid int) string {
+		lookups++
+		return map[int]string{33: "www-data", 1000: "alice"}[uid]
+	}
+	t.Cleanup(func() { lookupUserName = restore })
+	table := newProcessTable(root)
+	for _, tc := range []struct {
+		id         processID
+		key, label string
+	}{
+		{web, "user:33", "www-data"},
+		{shell, "user:1000", "alice"},
+		{web, "user:33", "www-data"},
+		{processID{PID: web.PID, StartNS: web.StartNS + 1_000_000_000}, "user:", "unknown user"},
+		{processID{PID: 999}, "user:", "unknown user"},
+	} {
+		if key, label := table.group(tc.id, "", byUser); key != tc.key || label != tc.label {
+			t.Fatalf("group(%v) = %q %q, want %q %q", tc.id, key, label, tc.key, tc.label)
+		}
+	}
+	if lookups != 2 {
+		t.Fatalf("user names were looked up %d times, want once per UID", lookups)
+	}
+	lookupUserName = restore
+	if uid, name := table.user(orphan); uid != 4242 || name == "" {
+		t.Fatalf("user without a passwd entry = %d %q", uid, name)
+	}
+	if uid, _ := newProcessTable("").user(web); uid != -1 {
+		t.Fatalf("offline table read a user from /proc: %d", uid)
+	}
+	for _, status := range []string{"", "Uid:\n", "Uid:\t1\n", "Uid:\t1\tx\n"} {
+		if uid := parseStatusUID([]byte(status)); uid != -1 {
+			t.Fatalf("parseStatusUID(%q) = %d, want -1", status, uid)
 		}
 	}
 }

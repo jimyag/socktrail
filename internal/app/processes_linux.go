@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/user"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
@@ -33,6 +34,8 @@ type processMeta struct {
 	Name           string
 	ExecutableName string
 	ExeChecked     bool
+	UID            int       // Effective user ID; -1 when unknown.
+	UIDChecked     bool      // Whether UID was read from /proc.
 	Parent         processID // Zero for PID 1, or when unknown.
 	Cgroup         string    // Its cgroup v2 path, such as /system.slice/nginx.service; empty when unknown.
 	CgroupID       uint64
@@ -46,11 +49,12 @@ type processTable struct {
 	procs      map[processID]*processMeta
 	cgroups    map[uint64]string // Paths of the cgroup IDs events carried, learned from /proc.
 	containers *containerNames
+	userNames  map[int]string // User names by UID, looked up once.
 	expired    time.Time
 }
 
 func newProcessTable(procRoot string) *processTable {
-	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string), containers: newContainerNames()}
+	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string), containers: newContainerNames(), userNames: make(map[int]string)}
 }
 
 // observe records the process of a socket event whose start time
@@ -65,6 +69,7 @@ func (t *processTable) observe(e probe.Event) {
 		if e.Process != "" {
 			if m.Name != e.Process {
 				m.ExecutableName, m.ExeChecked = "", false
+				m.UIDChecked = false // A set-user-ID executable changes it.
 			}
 			m.Name = e.Process // exec changes the name, not the identity.
 		}
@@ -294,9 +299,10 @@ const (
 	byCgroup
 	byTree
 	byExecutable
+	byUser
 )
 
-var groupingNames = [...]string{"service", "cgroup", "process tree", "executable name"}
+var groupingNames = [...]string{"service", "cgroup", "process tree", "executable name", "user"}
 
 // group returns the selected group for a process.
 func (t *processTable) group(id processID, name string, by processGrouping) (string, string) {
@@ -317,6 +323,12 @@ func (t *processTable) group(id processID, name string, by processGrouping) (str
 			name = "unknown executable"
 		}
 		return "executable:" + name, name
+	case byUser:
+		uid, user := t.user(id)
+		if uid < 0 {
+			return "user:", "unknown user"
+		}
+		return "user:" + strconv.Itoa(uid), user
 	case byCgroup:
 		path := t.cgroupOf(m)
 		if path == "" {
@@ -335,6 +347,85 @@ func (t *processTable) group(id processID, name string, by processGrouping) (str
 	}
 	key, label, _ := t.serviceFor(t.cgroupOf(m))
 	return "service:" + key, label
+}
+
+// user returns a live process's effective user ID and name, reading /proc
+// once per process; -1 and an empty name when unknown, as for a process
+// that exited before socktrail looked.
+func (t *processTable) user(id processID) (int, string) {
+	m := t.meta(id)
+	if m == nil {
+		return -1, ""
+	}
+	if !m.UIDChecked {
+		m.UID, m.UIDChecked = t.readUID(id), true
+	}
+	if m.UID < 0 {
+		return -1, ""
+	}
+	name, ok := t.userNames[m.UID]
+	if !ok {
+		name = lookupUserName(m.UID)
+		if len(t.userNames) < maxCgroups {
+			t.userNames[m.UID] = name
+		}
+	}
+	return m.UID, name
+}
+
+// lookupUserName names a UID from the passwd database, falling back to the
+// number, as ps does. Containers' users are named by the host's database.
+var lookupUserName = func(uid int) string {
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return strconv.Itoa(uid)
+}
+
+// readUID reads the effective UID of the process's Uid line in
+// /proc/PID/status, or -1 when the PID is gone or reused.
+func (t *processTable) readUID(id processID) int {
+	if id.PID <= 0 || t.procRoot == "" { // An offline recording has no /proc.
+		return -1
+	}
+	dir := filepath.Join(t.procRoot, strconv.Itoa(id.PID))
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
+	status, err := os.ReadFile(filepath.Join(dir, "status"))
+	if err != nil {
+		return -1
+	}
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return -1
+	}
+	_, ticks, err := parseProcessStat(stat)
+	clockTicks, clockErr := systemClockTicks()
+	if err != nil || clockErr != nil || !processStartMatches(id.StartNS, ticks, clockTicks) {
+		return -1
+	}
+	return parseStatusUID(status)
+}
+
+// parseStatusUID returns the effective UID of a status file: the second of
+// the real, effective, saved and filesystem IDs on its Uid line.
+func parseStatusUID(status []byte) int {
+	for line := range strings.Lines(string(status)) {
+		rest, ok := strings.CutPrefix(line, "Uid:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) < 2 {
+			return -1
+		}
+		uid, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			return -1
+		}
+		return int(uid)
+	}
+	return -1
 }
 
 func (t *processTable) executableName(id processID) string {

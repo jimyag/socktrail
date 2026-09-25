@@ -104,7 +104,7 @@ func keyedCondition(key, value string) (condition, error) {
 		return func(f *flow, _ *collector, _ *processTable, _ *geoip.DB, _ string) bool {
 			return (f.Health.ConnectResult != 0 || f.ICMPError != "") == want
 		}, nil
-	case "proto", "app", "state", "dir", "iface", "proc", "svc", "host", "cc":
+	case "proto", "app", "state", "dir", "iface", "proc", "svc", "user", "host", "cc":
 		match, err := filterString(value)
 		if err != nil {
 			return nil, err
@@ -154,10 +154,15 @@ func stringCondition(key string, match func(string) bool) condition {
 			return match(f.Direction)
 		case "iface":
 			return slices.ContainsFunc(interfacesOf(f.Interfaces), match)
-		case "proc", "svc":
+		case "proc", "svc", "user":
 			for _, p := range flowProcesses(f, c) {
 				if key == "proc" && match(p.Name) {
 					return true
+				}
+				if key == "user" && processes != nil {
+					if uid, name := processes.user(p.id()); uid >= 0 && (match(name) || match(strconv.Itoa(uid))) {
+						return true
+					}
 				}
 				if key == "svc" && processes != nil {
 					_, name := processes.group(p.id(), p.Name, byService)

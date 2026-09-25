@@ -12,7 +12,7 @@
 | PID | 执行 socket I/O 的 PID 与进程启动时间 | 该 PID 在各采集接口关联的连接；每条连接的观测 IP 字节与该 PID 的 socket 字节分别显示 |
 | 来源 IP、目标 IP | 观测到的连接发起端和目标端；来源页上，向本机发起过被拒或无应答连接尝试的来源在行名后附 `tried N ports: refused …, unanswered …`，流被淘汰后这一行仍保留；目标页的 `CONN50`、`CONN95` 是当前成功出站 TCP 建连时延分位数 | 匹配连接的双端地址、协议、域名证据与本机 PID |
 | 协议 | TCP、UDP、ICMPv4/ICMPv6、SCTP、GRE 等 IP 协议，以及 ARP、LLDP 等按 EtherType 区分的非 IP 帧；有负载证据时进一步按应用协议标签分组 | 匹配的连接、UDP 会话、ICMP 流或帧 |
-| 进程分组 | 默认按 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`；可读本地元数据时显示 Docker/Compose 或 Pod 名，否则显示短 ID）；`b` 切换为完整 cgroup 路径、进程树或可执行文件名（只取 `exe` 路径最后一段）。收发量是组内进程的 socket 字节之和 | 组内进程参与的连接，`I/O PID` 只列组内的进程，父进程接受连接后交给子进程收发时，这里是子进程；`process` 标签按父子关系缩进列出组内进程，详情显示 ANCESTRY 来源链、CGROUP 和 CONTAINER |
+| 进程分组 | 默认按 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`；可读本地元数据时显示 Docker/Compose 或 Pod 名，否则显示短 ID）；`b` 切换为完整 cgroup 路径、进程树、可执行文件名（只取 `exe` 路径最后一段）或有效用户。收发量是组内进程的 socket 字节之和 | 组内进程参与的连接，`I/O PID` 只列组内的进程，父进程接受连接后交给子进程收发时，这里是子进程；`process` 标签按父子关系缩进列出组内进程，详情显示 ANCESTRY 来源链、USER、CGROUP 和 CONTAINER |
 | LOG | 最近 5000 次连接变化；`b` 按变化类型、进程或失败原因＋进程＋目标分组，默认按最近事件时间排序 | 变化涉及的连接及其当前或最后一次观测详情；失败分组逐条列出失败记录 |
 | PORTS | 当前 TCP/UDP 监听 socket 与无监听者的连接尝试，列出绑定地址、进程、服务、活动连接、accept 次数、队列及失败尝试 | 所选端口的活动入站连接 |
 | 域名 | HTTP/1.1 Host、明文 HTTP/2 `:authority`、TCP/QUIC ClientHello SNI、无 SNI 时 TLS 1.2 及以下的证书名（标 `[cert]`）、CONNECT/SOCKS4/SOCKS5 代理目标、已关联 socket 的 OpenSSL 进程 SNI 或 DNS 应答提示；没有名字的按原因分组；`LOCAL` 列显示被访问的入站本机地址或出站源地址，最多两个后接 `+N` | 该域名分组的连接与本机 PID；HTTP 请求数与 TLS/QUIC 连接数不混用 |
@@ -38,7 +38,7 @@ PORTS 页单独使用 `PROTO`、`BIND`、`PORT`、`PROCESS`、`SERVICE`、`ACTIV
 - `↑/↓` 或 `j/k` 选择行；`←/→` 或 `h/l` 横向滚动当前焦点的表格。
 - `Enter` 在主表和底栏间切换焦点；网卡总览中从主表按 `Enter` 打开所选网卡。主表聚焦时 `Tab` 依次切换顶部页面与可用的范围操作，`Shift+Tab` 回到上一个；底栏聚焦时两键在 `conns`、`process` 间正反切换。
 - 鼠标点击主表、连接表和进程表的列标题排序，再点同一列切换升降序；方向箭头显示在标题旁。横向滚动后仍可点击可见列。点击表格行、底栏标签和进程行，滚轮纵向移动；PageUp/PageDown 翻动当前聚焦的主表或连接表，在 `process` 页翻动环境变量。Shift+滚轮或水平滚轮滚动鼠标所在表格的列。拖动横向分隔线改变底栏高度。
-- `5` 打开进程分组页，`b` 在服务、cgroup、进程树、可执行文件名四种分组间切换。`g` 在所有页面显示或隐藏 GeoIP；缺库时打开下载确认。以 `--process`、`--pid`、`--cgroup` 或 `--container` 启动时各页只显示选中的进程及其连接，顶部标出 `ONLY …`。
+- `5` 打开进程分组页，`b` 在服务、cgroup、进程树、可执行文件名、用户五种分组间切换。`g` 在所有页面显示或隐藏 GeoIP；缺库时打开下载确认。以 `--process`、`--pid`、`--cgroup` 或 `--container` 启动时各页只显示选中的进程及其连接，顶部标出 `ONLY …`。
 - `/` 支持普通子串和结构化条件（如 `port:443 dir:outbound proc:curl`），多个条件取交集，`!` 取反；底栏连接随主表一起过滤。输入时 `q` 是普通字符，`Enter` 确认、`Esc` 清除；错误条件在底栏提示并保留输入。`s` 恢复主表总字节/总速率排序并切换两者；`0` 打开或关闭网卡诊断总览；`i` 从合并视图进入当前网卡，之后每按一次换下一张；`a` 返回整机视图；`?` 查看帮助，`!` 查看采集状态，`q` 退出，`Ctrl-C` 在任何状态下都退出。
 
 ## 配色

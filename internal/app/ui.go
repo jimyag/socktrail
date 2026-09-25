@@ -1843,7 +1843,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			cgroup := u.processes.cgroupOf(u.processes.meta(p.id()))
 			_, service, container := u.processes.serviceFor(cgroup)
 			detailLines = append(detailLines,
-				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID),
+				label("STARTED")+" "+info.started+"   "+label("PARENT PID")+" "+strconv.Itoa(info.parentPID)+userText(u.processes, p.id()),
 				label("EXECUTABLE")+" "+info.executable,
 				label("WORKDIR")+"    "+info.workingDir,
 				label("COMMAND")+"    "+info.command,
@@ -1941,4 +1941,18 @@ func sortName(byRate bool) string {
 		return "rate"
 	}
 	return "bytes"
+}
+
+// userText labels a process's effective user for its detail line, or is
+// empty when /proc no longer tells.
+func userText(processes *processTable, id processID) string {
+	uid, name := processes.user(id)
+	if uid < 0 {
+		return ""
+	}
+	text := "   " + label("USER") + " " + name
+	if name != strconv.Itoa(uid) {
+		text += styleFaint.paint(" (" + strconv.Itoa(uid) + ")")
+	}
+	return text
 }

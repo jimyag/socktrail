@@ -107,13 +107,13 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 ### 按连接条件过滤
 
-在界面按 `/`，或启动时传 `--filter 'port:443 dir:outbound proc:curl'`。空格分隔的条件必须同时满足；`!` 取反，例如 `!iface:lo`。不带键的词沿用原来的子串搜索；值包含 `*` 时按通配符匹配。可用的键：`port`（任一端）、`sport`、`dport`、`ip`（地址或 CIDR）、`proto`、`app`、`state`、`dir`、`iface`、`proc`、`pid`、`svc`、`host`、`asn`、`cc`、`fail:true|false`。`sport` 和 `dport` 指已识别的发起端与目标端；方向未知时不能匹配。`asn`、`cc` 需要相应的离线 GeoIP 数据库。
+在界面按 `/`，或启动时传 `--filter 'port:443 dir:outbound proc:curl'`。空格分隔的条件必须同时满足；`!` 取反，例如 `!iface:lo`。不带键的词沿用原来的子串搜索；值包含 `*` 时按通配符匹配。可用的键：`port`（任一端）、`sport`、`dport`、`ip`（地址或 CIDR）、`proto`、`app`、`state`、`dir`、`iface`、`proc`、`pid`、`svc`、`user`（有效用户名或 UID）、`host`、`asn`、`cc`、`fail:true|false`。`sport` 和 `dport` 指已识别的发起端与目标端；方向未知时不能匹配。`asn`、`cc` 需要相应的离线 GeoIP 数据库。
 
 界面过滤后，主表只保留有匹配连接的行，底栏只列出这些连接；只含进程 socket I/O、没有连接的行仍可用普通文本搜索。输入有误时底栏显示原因，保留输入供修改。`--filter` 过滤文本、JSON 快照的连接和域名汇总、以及实时 NDJSON；快照的采集总量、进程 socket I/O 和服务总量仍表示整个采集范围。
 
 ## 页面与接口选择
 
-默认进入整机 PID 页，显示所选网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `b` 在四种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
+默认进入整机 PID 页，显示所选网络命名空间的进程 socket 收发量与跨接口识别的连接、Host/SNI。按 `5` 打开进程分组页：默认按进程所在的 systemd 服务或容器（cgroup 路径里最内层的 `.service` 或 `.scope`）分组，行上的收发量是组内进程的 socket 字节之和；按 `b` 在五种分组间切换：服务、完整的 cgroup 路径、进程树（一个进程和它在同一服务里的子孙进程，如 nginx 的主进程和 worker，或终端里的 shell 和它启动的命令）、可执行文件名（取 `/proc/<pid>/exe` 的最后一段，`/usr/bin/curl` 与 `/test/curl` 归为同一组；进程已退出或不可读时回退到内核进程名）、用户（`/proc/<pid>/status` 中的有效 UID，用本机 passwd 数据库解析为用户名，查不到时显示数字；容器进程的 UID 同样按宿主机数据库命名；进程已退出时归入 unknown user）。各页底栏的连接表列完全相同。第一列 `I/O PID` 是在这条连接上有收发的进程，`PID RX`、`PID TX` 是这些进程的 socket 字节：
 - PID 页只算选中的进程，进程分组页只算组内的进程，其他页算所有进程。
 - 父进程接受连接后交给子进程收发时（如 sshd），连接两端的 PID 仍是父进程，`I/O PID` 显示实际收发的子进程。
 
