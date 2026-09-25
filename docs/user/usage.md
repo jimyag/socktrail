@@ -15,6 +15,7 @@ sudo ./socktrail --interface br0,dae0
 sudo ./socktrail --netns pid:12345 --interface eth0
 sudo ./socktrail --netns container:0123456789ab --interface lo
 sudo ./socktrail --netns team-a --netns team-b --interface lo
+sudo ./socktrail --netns pid:12345 --interface eth0 --drops
 sudo ./socktrail --openssl-probe=false  # 禁用默认开启的系统 OpenSSL 探针
 sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀读取
 sudo ./socktrail --drops                 # 按需采集内核丢包原因
@@ -119,6 +120,8 @@ sudo ./socktrail --process curl --pid 1234 --duration 30s --output json
 
 不指定 `--interface` 时，程序在当前网络命名空间内选择最多 8 张处于 UP 且 RUNNING 状态的接口：先按名称选择 `/sys/class/net/<name>/device` 下有设备入口的物理网卡，再用 loopback、宿主网桥、隧道等主机级虚拟接口补足；默认跳过容器 veth、Docker 子网桥和 VM tap。超过 8 张时会在标准错误输出提示未选中的名称，已选的 8 张继续采集。自动选择只决定从哪里采集报文，不要求在主页面选网卡。相同五元组和 TCP 代次的跨接口观测在整机页合为一条连接，只取一个采集点的 IP 字节，优先保留已识别的 Host/SNI。
 `--netns` 可重复指定路径、`/run/netns` 中的名字、`pid:PID` 或 `container:ID`（至少 12 位十六进制前缀）；指定后只采集列出的命名空间。每个 `--interface` 名称或 glob 都在每个目标命名空间中匹配，必须在每个命名空间都有匹配；不指定接口时每个命名空间各自自动选择最多 8 张。跨命名空间的同名接口会带上命名空间名前缀，例如 `team-a:eth0`。
+
+`--interface lo` 只让连接视图看到各命名空间的回环报文，不会采集 Pod `eth0` 上的连接；排查 Pod 出入站流量应选其 `eth0`，启动后按 `0` 核对实际采集接口，JSON 快照的 `interfaces` 也会列出它们。若同时开启 `--drops`，顶部丢包总量仍包含所选命名空间的其他接口，因此不能把总量全归因于 `lo` 上的连接。宿主机和 Pod 的接口名不同且一个显式模式不能在两边都匹配时，分别启动两次采集。
 
 NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接口进、另一个接口出的连接方向标为 `forwarded`；conntrack 结果回来之前（通常不到一秒）两侧会各显示一行。代理、隧道改写的地址仍可能留下多个观测流，所以整机页的 IP 字节是观测值，不能作为精确整机总量。`--interface` 可重复指定、用逗号分隔，也支持带引号的 glob 模式，例如 `--interface 'veth*,br-*,docker*,vnet*,tap*'`；显式指定没有网卡数量上限，模式没有匹配时会报错。用 `ip -br link` 查看名称。交互界面按 `1` PID、`2` 来源 IP、`3` 目标 IP、`4` 协议、`d` 域名切换；多接口时按 `i` 切换接口。
 

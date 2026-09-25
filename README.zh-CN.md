@@ -114,6 +114,7 @@ sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 不指定 `--interface` 时，socktrail 最多选择八张运行中的接口：先选物理网卡，再选回环、隧道和宿主网桥。容器 veth、Docker 网桥和虚拟机 tap 需要显式指定 `--interface`；它接受重复参数、逗号分隔的名称，以及 `'veth*,br-*,vnet*'` 等 glob 模式。显式选择不受网卡数量限制。可用 `ip -br link` 查找接口名称。
 `--netns` 可选择一个或多个网络命名空间；省略时只采集当前命名空间。每个 `--interface` 模式都在所选的每个命名空间内匹配，并且必须在那里存在；接口标签加上命名空间名前缀。`container:ID` 用至少 12 位的十六进制容器 ID 前缀查找可见进程。
 请把示例 ID 和 PID 换成目标容器或 Pod 进程的实际值。
+`--interface lo` 只采集回环连接，即使同时指定多个 `--netns` 也是如此。排查 Pod 出入站流量应选择其 `eth0`，并在 `0` 页面或 JSON 的 `interfaces` 中核对实际采集接口。开启 `--drops` 时，全局丢包总量仍覆盖所选命名空间的所有接口，包括没有抓包的接口。
 
 显式选择超过八张接口时，程序会列出匹配项并请求确认。默认在内存上限为 512 MiB 的 systemd scope 中运行。非交互运行可加 `--yes`，用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 关闭限制。如果无法使用 systemd，受限模式会在抓包前报错。
 
