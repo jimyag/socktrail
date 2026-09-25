@@ -30,11 +30,13 @@ const (
 // hierarchy. Events carry both for a process doing socket I/O; /proc fills
 // in its ancestors, which may never touch the network.
 type processMeta struct {
-	Name     string
-	Parent   processID // Zero for PID 1, or when unknown.
-	Cgroup   string    // Its cgroup v2 path, such as /system.slice/nginx.service; empty when unknown.
-	CgroupID uint64
-	seen     time.Time
+	Name           string
+	ExecutableName string
+	ExeChecked     bool
+	Parent         processID // Zero for PID 1, or when unknown.
+	Cgroup         string    // Its cgroup v2 path, such as /system.slice/nginx.service; empty when unknown.
+	CgroupID       uint64
+	seen           time.Time
 }
 
 // processTable remembers the processes of socket events and their
@@ -60,6 +62,9 @@ func (t *processTable) observe(e probe.Event) {
 	if m := t.procs[id]; m != nil {
 		m.seen = time.Now()
 		if e.Process != "" {
+			if m.Name != e.Process {
+				m.ExecutableName, m.ExeChecked = "", false
+			}
 			m.Name = e.Process // exec changes the name, not the identity.
 		}
 		return
@@ -226,17 +231,32 @@ const (
 	byService processGrouping = iota
 	byCgroup
 	byTree
+	byExecutable
 )
 
-var groupingNames = [...]string{"service", "cgroup", "process tree"}
+var groupingNames = [...]string{"service", "cgroup", "process tree", "executable name"}
 
-// group returns the group of a process: its service, its cgroup, or the
-// root of its process tree within its service.
+// group returns the selected group for a process.
 func (t *processTable) group(id processID, name string, by processGrouping) (string, string) {
 	m := t.meta(id)
-	path := t.cgroupOf(m)
 	switch by {
+	case byExecutable:
+		if m != nil && !m.ExeChecked {
+			m.ExecutableName = t.executableName(id)
+			m.ExeChecked = true
+		}
+		if m != nil && m.ExecutableName != "" {
+			name = m.ExecutableName
+		} else if name == "" && m != nil {
+			name = m.Name
+		}
+		name = filepath.Base(name)
+		if name == "." {
+			name = "unknown executable"
+		}
+		return "executable:" + name, name
 	case byCgroup:
+		path := t.cgroupOf(m)
 		if path == "" {
 			return "cgroup:", "unknown cgroup"
 		}
@@ -251,8 +271,29 @@ func (t *processTable) group(id processID, name string, by processGrouping) (str
 		}
 		return "tree:" + pidGroupKey(root), pidGroupLabel(participant{PID: root.PID, StartNS: root.StartNS, Name: name})
 	}
-	key, label := serviceOf(path)
+	key, label := serviceOf(t.cgroupOf(m))
 	return "service:" + key, label
+}
+
+func (t *processTable) executableName(id processID) string {
+	if id.PID <= 0 {
+		return ""
+	}
+	dir := filepath.Join(t.procRoot, strconv.Itoa(id.PID))
+	target, err := os.Readlink(filepath.Join(dir, "exe"))
+	if err != nil {
+		return ""
+	}
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return ""
+	}
+	_, ticks, err := parseProcessStat(stat)
+	clockTicks, clockErr := systemClockTicks()
+	if err != nil || clockErr != nil || !processStartMatches(id.StartNS, ticks, clockTicks) {
+		return ""
+	}
+	return filepath.Base(strings.TrimSuffix(target, " (deleted)"))
 }
 
 // treeRoot climbs from a process to its farthest ancestor in the same

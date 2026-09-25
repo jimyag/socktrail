@@ -36,7 +36,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Capture IPv4, IPv6, ARP, and other Ethernet traffic across up to eight selected interfaces, including loopback and tun interfaces.
 - Group TCP, UDP, ICMP, and other flows; show application protocol hints, connection state, RTT, congestion window and retransmissions (the kernel's values for local sockets, like `ss -ti`), DNS response time, and ICMP errors.
 - Associate local TCP/UDP sockets with processes and show socket RX/TX separately from captured IP bytes.
-- Group processes by systemd service or container, by cgroup, or by process tree, and show only chosen processes with `--process`, `--pid` (with descendants), or `--cgroup`.
+- Group processes by systemd service or container, cgroup, process tree, or executable basename, and show only chosen processes with `--process`, `--pid` (with descendants), or `--cgroup`.
 - Use conntrack data to merge observed flows across NAT address changes when a mapping is available.
 - Extract visible HTTP Host, TLS and QUIC SNI, proxy targets, and DNS name hints. Encrypted HTTP request names and real ECH inner names are not available from packet capture.
 - Inspect PID, source IP, destination IP, protocol, domain, and per-interface views in the terminal.
@@ -72,7 +72,7 @@ Explicit capture on more than eight interfaces shows the matches and asks for co
 
 To run without `sudo`, install the binary with Linux file capabilities. Network capabilities alone do not cover the eBPF probes; see the [capability setup and limitations](docs/usage.md#不使用-sudo-运行).
 
-Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for services, where `g` switches between service, cgroup, and process tree groups; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings go to `$XDG_STATE_HOME/socktrail/captures` (usually `~/.local/state/socktrail/captures`) by default and may contain plaintext application data. Use `--capture-dir /tmp/...` for temporary files.
+Press `1`–`4` for PID, source IP, destination IP, and protocol views; `5` for process groups, where `g` switches between service, cgroup, process tree, and executable basename; `d` for domains; `0` for interface diagnostics; `?` for help; and `q` to quit. Select a connection or PID and press `c` to start or stop a PCAPNG recording; start with `--record-before 10s` to include the ten seconds before the key press. Recordings go to `$XDG_STATE_HOME/socktrail/captures` (usually `~/.local/state/socktrail/captures`) by default and may contain plaintext application data. Use `--capture-dir /tmp/...` for temporary files.
 
 ## Documentation
 

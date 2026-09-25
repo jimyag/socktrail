@@ -1203,7 +1203,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	if u.mode == viewInterfaces {
 		lines = append(lines, fmt.Sprintf("%d interfaces; IP bytes/rates are per interface, not a host total. Enter opens selected interface; i cycles.", len(rows)))
 	} else if u.mode == viewService {
-		lines = append(lines, fmt.Sprintf("SERVICES by %s (g: service, cgroup, process tree) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
+		lines = append(lines, fmt.Sprintf("GROUPS by %s (g cycles grouping) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
 	} else if u.hostScope && u.mode == viewPID {
 		lines = append(lines, fmt.Sprintf("PID: whole-netns socket bytes | IP detail: one capture copy/flow | Host/SNI %d", namedDomainFlows))
 	} else if u.hostScope && u.mode == viewDomain {
@@ -1243,8 +1243,8 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	}
 	lines = append(lines, styleFaint.paint("─ drag to resize ─"+strings.Repeat("─", max(0, width-18))))
 	if u.help {
-		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 services (g groups by service, cgroup or process tree)  d domains  i next interface")
-		lines = append(lines, "↑↓/jk select  Enter focus details  Tab conns/process  PgUp/PgDn page  c capture  ←→ columns")
+		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups (g: service, cgroup, tree, executable name)  d domains  i next interface")
+		lines = append(lines, "↑↓/jk select  Enter switch focus  Tab/Shift+Tab: top pages or bottom tabs  PgUp/PgDn page  c capture  ←→ columns")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
 	} else if u.status {

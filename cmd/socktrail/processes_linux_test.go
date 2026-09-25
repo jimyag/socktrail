@@ -150,6 +150,54 @@ func TestServicePageAndProcessFilter(t *testing.T) {
 	}
 }
 
+func TestExecutableNameGroupingMergesDifferentPaths(t *testing.T) {
+	root := t.TempDir()
+	first := fakeProc(t, root, 301, 1, "curl", "/user.slice/session-1.scope")
+	second := fakeProc(t, root, 302, 1, "renamed", "/user.slice/session-2.scope")
+	other := fakeProc(t, root, 303, 1, "wget", "/user.slice/session-2.scope")
+	for pid, target := range map[int]string{301: "/usr/bin/curl", 302: "/test/curl (deleted)", 303: "/usr/bin/wget"} {
+		if err := os.Symlink(target, filepath.Join(root, fmt.Sprint(pid), "exe")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestCollector()
+	c.pidIO = map[processID]processIO{
+		first:  {Name: "curl", ioBytes: ioBytes{RX: 10, TX: 2}},
+		second: {Name: "renamed", ioBytes: ioBytes{RX: 20, TX: 3}},
+		other:  {Name: "wget", ioBytes: ioBytes{RX: 4, TX: 5}},
+	}
+	for i, p := range []struct {
+		id   processID
+		name string
+	}{{first, "curl"}, {second, "renamed"}, {other, "wget"}} {
+		source := netip.MustParseAddrPort(fmt.Sprintf("192.0.2.%d:5000", i+1))
+		target := netip.MustParseAddrPort("198.51.100.1:443")
+		key := keyFor(source, target, 6)
+		c.flows[key] = &flow{Key: key, Client: participant{PID: p.id.PID, StartNS: p.id.StartNS, Name: p.name}}
+	}
+	u := &terminalUI{processes: newProcessTable(root), grouping: byExecutable}
+	rows := make(map[string]*uiRow)
+	for _, row := range u.rows(c, viewService) {
+		rows[row.label] = row
+	}
+	if len(rows) != 2 || rows["curl"] == nil || rows["wget"] == nil || rows["curl"].rx != 30 || rows["curl"].tx != 5 || len(rows["curl"].members) != 2 || len(rows["curl"].flows) != 2 {
+		t.Fatalf("executable groups did not merge curl paths: %+v", rows)
+	}
+	stale := processID{PID: first.PID, StartNS: first.StartNS + 1_000_000_000}
+	if _, label := u.processes.group(stale, "old process", byExecutable); label != "old process" {
+		t.Fatalf("reused PID inherited the live process executable: %q", label)
+	}
+	u.mode, u.grouping = viewService, byTree
+	u.handleKey("g")
+	if u.grouping != byExecutable {
+		t.Fatalf("g did not reach executable-name grouping: %v", u.grouping)
+	}
+	u.handleKey("g")
+	if u.grouping != byService {
+		t.Fatalf("g did not wrap to service grouping: %v", u.grouping)
+	}
+}
+
 func TestProcessAndCgroupPatterns(t *testing.T) {
 	for _, tc := range []struct {
 		pattern, name string

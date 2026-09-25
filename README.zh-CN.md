@@ -27,7 +27,7 @@ sudo ./socktrail --interface br0 --duration 30s --output json
 ./socktrail --version
 ```
 
-默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看服务（`g` 在服务、cgroup、进程树三种分组间切换），按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/usage.md)。
+默认自动选择最多 8 张运行中的宿主接口；可以重复指定 `--interface` 或用逗号分隔。按 `1`—`4` 切换 PID、来源 IP、目标 IP、协议页，按 `5` 看进程分组（`g` 在服务、cgroup、进程树、可执行文件名四种分组间切换），按 `d` 看域名，`0` 看网卡，`?` 看帮助，`q` 退出。用 `--process`、`--pid`（含子孙进程）或 `--cgroup` 可以只看指定的进程。本机 TCP 连接的 RTT、拥塞窗口和重传取自内核，与 `ss -ti` 一致。选中连接或 PID 后按 `c` 可录制接下来 15 秒的 PCAPNG，以 `--record-before 10s` 启动时文件还包含按键前 10 秒的帧；文件可能包含明文应用数据。`--duration` 输出限时快照，加 `--output json` 输出 JSON。其他参数、交互和录制边界见 [使用指南](docs/usage.md)。
 
 不想每次使用 `sudo` 时，可给安装后的二进制设置 file capabilities；仅授予网络权限不足以加载 eBPF。命令和限制见[无 sudo 运行说明](docs/usage.md#不使用-sudo-运行)。
 
