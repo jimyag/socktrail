@@ -29,12 +29,13 @@ const (
 	viewDomain
 	viewInterfaces
 	viewService
+	viewLog
 )
 
 var (
-	viewNames  = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES"}
+	viewNames  = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES", "LOG"}
 	tabNames   = [...]string{"conns", "process"}
-	topTabKeys = [...]string{"1", "2", "3", "4", "5", "d", "0", "a", "i"}
+	topTabKeys = [...]string{"1", "2", "3", "4", "5", "6", "d", "0", "a", "i"}
 )
 
 type (
@@ -55,6 +56,9 @@ type uiRow struct {
 	rxRate, txRate       uint64
 	tcp, udp, icmp, reqs uint64
 	unknownPID           uint64
+	lastEvent            time.Time
+	localAddresses       map[netip.Addr]struct{}
+	inbound, outbound    uint64
 }
 
 func pidGroupLabel(p participant) string {
@@ -160,6 +164,8 @@ type terminalUI struct {
 	geoLoading        bool
 	geoMessage        string
 	nat               *natTable
+	hostState         *hostViewState
+	logGrouping       uint8
 	processes         *processTable
 	scopeFilter       processFilter   // From --process, --pid and --cgroup: fixed for the session.
 	grouping          processGrouping // How the service page groups processes; b cycles it.
@@ -201,6 +207,7 @@ type terminalUI struct {
 	processInfoID     processID
 	processInfo       processDetails
 	processInfoAt     time.Time
+	showEnvSecrets    bool
 	topLine           string
 	drawnLines        []string
 	renderedWidth     int
@@ -295,7 +302,7 @@ func (u *terminalUI) handleKey(key string) bool {
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
 		u.topTabIndex = topPageIndex(u.mode)
 	case "i":
-		if len(u.interfaces) > 1 {
+		if len(u.interfaces) > 1 && u.mode != viewLog {
 			// From the overview, i opens the current interface; then it moves on.
 			if !u.hostScope || u.mode == viewInterfaces {
 				u.interfaceName = u.interfaces[(slices.Index(u.interfaces, u.interfaceName)+1)%len(u.interfaces)]
@@ -307,7 +314,7 @@ func (u *terminalUI) handleKey(key string) bool {
 			if u.mode == viewInterfaces {
 				u.selectedGroup = "iface:" + u.interfaceName
 			}
-			u.topTabIndex = 8
+			u.topTabIndex = 9
 		}
 	case "a":
 		u.hostScope = true
@@ -316,14 +323,17 @@ func (u *terminalUI) handleKey(key string) bool {
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
-		u.topTabIndex = 7
-	case "1", "2", "3", "4", "5":
+		u.topTabIndex = 8
+	case "1", "2", "3", "4", "5", "6":
 		if u.mode == viewInterfaces {
 			u.hostScope = true
 		}
 		u.mode = viewMode(key[0] - '1')
 		if key == "5" {
 			u.mode = viewService
+		} else if key == "6" {
+			u.mode = viewLog
+			u.hostScope = true
 		}
 		u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 		u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
@@ -333,6 +343,14 @@ func (u *terminalUI) handleKey(key string) bool {
 			u.grouping = (u.grouping + 1) % processGrouping(len(groupingNames))
 			u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
 			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		} else if u.mode == viewLog {
+			u.logGrouping = (u.logGrouping + 1) % 3
+			u.selected, u.scroll, u.selectedFlow, u.focusBottom = 0, 0, 0, false
+			u.selectedGroup, u.selectedFlowRef, u.selectedProcessID = "", nil, processID{}
+		}
+	case "E":
+		if u.focusBottom && u.tab == 1 {
+			u.showEnvSecrets = !u.showEnvSecrets
 		}
 	case "g":
 		if u.geoLoading {
@@ -461,10 +479,12 @@ func topPageIndex(mode viewMode) int {
 		return 3
 	case viewService:
 		return 4
-	case viewDomain:
+	case viewLog:
 		return 5
-	case viewInterfaces:
+	case viewDomain:
 		return 6
+	case viewInterfaces:
+		return 7
 	default:
 		return 0
 	}
@@ -479,7 +499,7 @@ func (u *terminalUI) topTabKey(direction int) string {
 				continue
 			}
 		case "i":
-			if len(u.interfaces) < 2 {
+			if len(u.interfaces) < 2 || u.mode == viewLog {
 				continue
 			}
 		}
@@ -608,6 +628,7 @@ func (u *terminalUI) handleMouse(m mouseInput, c *collector) {
 			{"3 DST", "3"},
 			{"4 PROTO", "4"},
 			{"5 SVC", "5"},
+			{"6 LOG", "6"},
 			{"d DOMAINS", "d"},
 			{"0 IFACES", "0"},
 			{"a overview", "a"},
@@ -747,7 +768,42 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 	add := func(label string, f *flow, ownBytes bool) {
 		addWithKey(label, label, f, ownBytes)
 	}
-	if mode == viewInterfaces {
+	if mode == viewLog && u.hostState != nil {
+		seen := make(map[string]map[uint64]bool)
+		for _, change := range u.hostState.recentChanges {
+			f := change.Flow
+			if !scope.flow(f, c) {
+				continue
+			}
+			var group string
+			switch u.logGrouping {
+			case 1:
+				owner := f.Client
+				if f.Direction == "inbound" || owner.PID <= 0 {
+					owner = f.Server
+				}
+				group = formatPIDBrief(owner)
+			case 2:
+				if f.End != flowFailed {
+					continue
+				}
+				group = "failed " + endpointGroup(f.Target)
+			default:
+				group = strings.Join(change.Changes, "+")
+			}
+			if seen[group] == nil {
+				seen[group] = make(map[uint64]bool)
+			}
+			if seen[group][change.ID] {
+				continue
+			}
+			seen[group][change.ID] = true
+			row := addWithKey(group, group, f, true)
+			if change.At.After(row.lastEvent) {
+				row.lastEvent = change.At
+			}
+		}
+	} else if mode == viewInterfaces {
 		for _, name := range u.interfaces {
 			ifaceCollector := u.collectors[name]
 			if ifaceCollector == nil {
@@ -821,7 +877,19 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 				add(label, f, true)
 			case viewDomain:
 				if f.Domain != nil && f.Domain.Evidence().Listed() {
-					add(f.Domain.Evidence().Label(), f, true)
+					row := addWithKey(f.Domain.Evidence().Label(), f.Domain.Evidence().Label(), f, true)
+					switch f.Direction {
+					case "inbound":
+						row.inbound++
+					case "outbound":
+						row.outbound++
+					}
+					if local := flowLocalAddress(f); local.IsValid() {
+						if row.localAddresses == nil {
+							row.localAddresses = make(map[netip.Addr]struct{})
+						}
+						row.localAddresses[local] = struct{}{}
+					}
 				}
 			}
 		}
@@ -909,7 +977,7 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		addSummary("expired PID socket I/O detail", c.expiredPIDIO.RX, c.expiredPIDIO.TX)
 	} else if mode == viewDomain {
 		addSummary("expired domain detail", c.expiredDomainRX, c.expiredDomainTX)
-	} else if mode != viewInterfaces {
+	} else if mode != viewInterfaces && mode != viewLog {
 		addSummary("expired connection detail", c.expiredRX, c.expiredTX)
 		addSummary("unindexed packets", c.unindexedRX, c.unindexedTX)
 	}
@@ -1258,6 +1326,9 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	lines = append(lines, styled)
 	if u.mode == viewInterfaces {
 		lines = append(lines, fmt.Sprintf("%d interfaces; IP bytes/rates are per interface, not a host total. Enter opens selected interface; i cycles.", len(rows)))
+	} else if u.mode == viewLog {
+		groups := [...]string{"change type", "process", "failure"}
+		lines = append(lines, fmt.Sprintf("Recent connection changes by %s (b cycles); last 5000 events, newest first", groups[u.logGrouping]))
 	} else if u.mode == viewService {
 		lines = append(lines, fmt.Sprintf("GROUPS by %s (b cycles grouping) | RX/TX: socket bytes of the group's processes | flows %d", groupingNames[u.grouping], len(c.allFlows())))
 	} else if u.hostScope && u.mode == viewPID {
@@ -1303,7 +1374,8 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		lines = append(lines, "Network download; capture continues. Enter: download and enable  Esc: cancel")
 		lines = append(lines, geoip.Attribution)
 	} else if u.help {
-		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups (b: service, cgroup, tree, executable name)  d domains  i next interface")
+		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups  6 log  d domains  i next interface")
+		lines = append(lines, "b: cycle grouping in service/log pages; E: reveal/hide environment secrets in process details")
 		lines = append(lines, "↑↓/jk select  Enter switch focus  Tab/Shift+Tab: top pages or bottom tabs  PgUp/PgDn page  c capture  ←→ columns")
 		lines = append(lines, "g: show/hide GeoIP, or download it when missing; s: rate/total sort  !: status  q: quit")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
@@ -1391,8 +1463,15 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			geoHint = "g:show GeoIP"
 		}
 		keys := fmt.Sprintf("%s  ↑↓ rows  ←→ columns  wheel/Shift+wheel  top:%d/%d detail:%d/%d  /:%s sort:%s s:total c:capture ", geoHint, u.mainX, max(0, u.mainCanvas-width), u.detailX, max(0, u.detailCanvas-width), u.filter, mainOrder)
-		if u.mode == viewService {
+		if u.mode == viewService || u.mode == viewLog {
 			keys += "b:group "
+		}
+		if u.focusBottom && u.tab == 1 {
+			if u.showEnvSecrets {
+				keys += "E:secrets visible "
+			} else {
+				keys += "E:secrets hidden "
+			}
 		}
 		lines = append(lines, styleFaint.paint(keys)+capture+styleFaint.paint(" ? q"))
 	}
@@ -1410,7 +1489,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		}
 	}
 	if len(rows) == 0 {
-		if u.mode == viewDomain && u.filter == "" {
+		if u.mode == viewLog {
+			notice("", "No matching connection changes yet.", "New connections appear after the 2-second PID correlation window.", "", "")
+		} else if u.mode == viewDomain && u.filter == "" {
 			if u.hostScope {
 				notice("", "No HTTP, TLS, QUIC, proxy or DNS name evidence on captured host interfaces yet.",
 					"Names come from requests and handshakes captured after start, or later DNS answers.", "", "")
@@ -1623,7 +1704,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.processEnvCount = min(u.processEnvTotal, max(0, u.bottomHeight-1-(1+visible)-len(detailLines)))
 		u.processEnvScroll = min(u.processEnvScroll, max(0, u.processEnvTotal-u.processEnvCount))
 		if info.errorText == "" {
-			envLine := label("ENVIRONMENT") + styleFaint.paint(fmt.Sprintf(" (exec snapshot) %d-%d/%d; PgUp/PgDn or wheel", min(u.processEnvTotal, u.processEnvScroll+1), u.processEnvScroll+u.processEnvCount, u.processEnvTotal))
+			envLine := label("ENVIRONMENT") + styleFaint.paint(fmt.Sprintf(" (exec snapshot) %d-%d/%d; PgUp/PgDn or wheel; E toggles secrets", min(u.processEnvTotal, u.processEnvScroll+1), u.processEnvScroll+u.processEnvCount, u.processEnvTotal))
 			if info.truncated {
 				envLine += " " + styleYellow.paint("[truncated at 2 MiB]")
 			}
@@ -1633,7 +1714,8 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		for _, line := range detailLines {
 			u.detailCanvas = max(u.detailCanvas, displayWidth(line))
 		}
-		for _, line := range info.environment {
+		for _, raw := range info.environment {
+			line := environmentEntry(raw, u.showEnvSecrets)
 			u.detailCanvas = max(u.detailCanvas, displayWidth(line)+2)
 		}
 		u.detailX = min(u.detailX, max(0, u.detailCanvas-u.screenWidth))
@@ -1653,7 +1735,8 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			*lines = append(*lines, scrollLine(line, u.detailX, u.screenWidth))
 		}
 		u.processEnvY = len(*lines)
-		for _, entry := range info.environment[u.processEnvScroll:min(len(info.environment), u.processEnvScroll+u.processEnvCount)] {
+		for _, raw := range info.environment[u.processEnvScroll:min(len(info.environment), u.processEnvScroll+u.processEnvCount)] {
+			entry := environmentEntry(raw, u.showEnvSecrets)
 			if key, value, ok := strings.Cut(entry, "="); ok {
 				entry = styleCyan.paint(key) + "=" + value
 			}

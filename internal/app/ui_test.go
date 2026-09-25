@@ -136,7 +136,7 @@ func TestPageKeysMoveFocusedTableByVisibleRows(t *testing.T) {
 
 func TestTabFollowsFocusedArea(t *testing.T) {
 	u := &terminalUI{mode: viewPID, hostScope: true, interfaces: []string{"eth0", "lo"}, interfaceName: "eth0"}
-	for _, want := range []viewMode{viewSource, viewTarget, viewProtocol, viewService, viewDomain, viewInterfaces, viewDomain, viewDomain, viewPID} {
+	for _, want := range []viewMode{viewSource, viewTarget, viewProtocol, viewService, viewLog, viewDomain, viewInterfaces, viewDomain, viewDomain, viewPID} {
 		u.handleKey("tab")
 		if u.mode != want || u.focusBottom {
 			t.Fatalf("top Tab: mode=%v, focusBottom=%t; want mode=%v", u.mode, u.focusBottom, want)
@@ -167,7 +167,7 @@ func TestTabFollowsFocusedArea(t *testing.T) {
 	if u.mode != viewService {
 		t.Fatalf("top Tab ignored a direct page selection: mode=%v", u.mode)
 	}
-	single := &terminalUI{mode: viewInterfaces, returnMode: viewPID, hostScope: true, interfaces: []string{"lo"}, topTabIndex: 6}
+	single := &terminalUI{mode: viewInterfaces, returnMode: viewPID, hostScope: true, interfaces: []string{"lo"}, topTabIndex: 7}
 	single.handleKey("tab") // a overview
 	single.handleKey("tab") // Skip unavailable i and wrap to PID.
 	if single.mode != viewPID || !single.hostScope {
@@ -189,6 +189,41 @@ func TestTabFollowsFocusedArea(t *testing.T) {
 	reverse.handleKey("shift-tab") // 0 IFACES
 	if reverse.mode != viewInterfaces {
 		t.Fatalf("Shift+Tab did not reach previous page: mode=%v", reverse.mode)
+	}
+}
+
+func TestLogPageGroupsRecentChanges(t *testing.T) {
+	now := time.Now()
+	a := netip.MustParseAddrPort("192.0.2.1:40000")
+	b := netip.MustParseAddrPort("198.51.100.1:443")
+	f := &flow{Key: keyFor(a, b, 6), Client: participant{PID: 42, StartNS: 1, Name: "curl"}, Direction: "outbound"}
+	state := &hostViewState{recentChanges: []flowChange{{ID: 1, Flow: f, Changes: []string{"new"}, At: now}}}
+	u := &terminalUI{mode: viewPID, hostScope: true, hostState: state}
+	u.handleKey("6")
+	if u.mode != viewLog || !u.hostScope {
+		t.Fatalf("6 did not open the merged LOG page: mode=%v scope=%t", u.mode, u.hostScope)
+	}
+	c := &collector{}
+	if rows := u.rows(c, viewLog); len(rows) != 1 || rows[0].label != "new" || rows[0].lastEvent != now {
+		t.Fatalf("LOG change groups = %+v", rows)
+	}
+	u.handleKey("b")
+	if rows := u.rows(c, viewLog); len(rows) != 1 || rows[0].label != "42(curl)" {
+		t.Fatalf("LOG process groups = %+v", rows)
+	}
+}
+
+func TestDomainLocalAddressesFitWithRemainder(t *testing.T) {
+	row := &uiRow{localAddresses: map[netip.Addr]struct{}{
+		netip.MustParseAddr("10.0.0.1"): {},
+		netip.MustParseAddr("10.0.0.2"): {},
+		netip.MustParseAddr("10.0.0.3"): {},
+	}}
+	if got := localAddressCell(row, 38); got != "10.0.0.1,10.0.0.2,+1" {
+		t.Fatalf("LOCAL column = %q", got)
+	}
+	if got := localAddressCell(row, 14); got != "10.0.0.1,+2" {
+		t.Fatalf("narrow LOCAL column = %q", got)
 	}
 }
 

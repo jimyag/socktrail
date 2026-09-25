@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"time"
@@ -80,6 +81,9 @@ type jsonReport struct {
 }
 
 type jsonFlow struct {
+	ID               uint64           `json:"id,omitzero"`
+	End              string           `json:"end,omitempty"`
+	Changes          []string         `json:"changes,omitempty"`
 	Protocol         string           `json:"protocol"`
 	App              string           `json:"app,omitempty"`
 	State            string           `json:"state,omitempty"`
@@ -103,6 +107,7 @@ type jsonFlow struct {
 	KernelTCP        []jsonKernelTCP  `json:"kernel_tcp,omitempty"`
 	Client           *jsonProcess     `json:"client,omitempty"`
 	Server           *jsonProcess     `json:"server,omitempty"`
+	IO               []jsonProcessIO  `json:"io,omitempty"`
 	Name             string           `json:"name,omitempty"`
 	Detail           string           `json:"detail,omitempty"`
 	Evidence         *domain.Evidence `json:"evidence,omitempty"`
@@ -139,12 +144,15 @@ type jsonProcessIO struct {
 }
 
 type jsonDomain struct {
-	Label        string `json:"label"`
-	Connections  uint64 `json:"connections"`
-	RXBytes      uint64 `json:"rx_bytes"`
-	TXBytes      uint64 `json:"tx_bytes"`
-	HTTPRequests uint64 `json:"http_requests"`
-	UnknownPID   uint64 `json:"unknown_pid"`
+	Label          string   `json:"label"`
+	Connections    uint64   `json:"connections"`
+	RXBytes        uint64   `json:"rx_bytes"`
+	TXBytes        uint64   `json:"tx_bytes"`
+	HTTPRequests   uint64   `json:"http_requests"`
+	UnknownPID     uint64   `json:"unknown_pid"`
+	Inbound        uint64   `json:"inbound"`
+	Outbound       uint64   `json:"outbound"`
+	LocalAddresses []string `json:"local_addresses,omitempty"`
 }
 
 type jsonAttempt struct {
@@ -173,7 +181,7 @@ func processJSON(p participant, processes *processTable) *jsonProcess {
 
 // reportJSON holds the same rows as printReport, the first limit flows by
 // bytes.
-func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope, geo *geoip.DB) jsonReport {
+func reportJSON(c *collector, name string, limit int, processes *processTable, scope *processScope, geo *geoip.DB, ids map[*flow]uint64) jsonReport {
 	flows := reportFlows(c, scope)
 	r := jsonReport{
 		Scope: name, IPPackets: c.packets, IPBytes: c.bytes,
@@ -183,48 +191,17 @@ func reportJSON(c *collector, name string, limit int, processes *processTable, s
 		Flows: []jsonFlow{}, Domains: []jsonDomain{}, InboundAttempts: []jsonAttempt{},
 	}
 	for _, f := range flows[:min(limit, len(flows))] {
-		source, target := displayedEndpoints(f)
-		row := jsonFlow{
-			Protocol: flowProtocol(f), App: f.AppProtocol, State: flowState(f), Direction: f.Direction, Interfaces: interfacesOf(f.Interfaces),
-			Source: strings.TrimPrefix(source, "?"), Target: strings.TrimPrefix(target, "?"), InitiatorUnknown: strings.HasPrefix(source, "?"),
-			RXBytes: f.RX, TXBytes: f.TX, Packets: f.Packets, FirstSeen: f.First, LastSeen: f.Last,
-			SYNRTTMicros: f.Health.SynRTT.Microseconds(),
-			Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
-			Name: flowName(f), DomainConflict: f.DomainConflict,
-		}
-		if geo != nil {
-			sourceIP, targetIP := endpointAddresses(f)
-			row.SourceGeo, row.TargetGeo = geo.Lookup(sourceIP), geo.Lookup(targetIP)
-		}
-		if f.Key.EtherType == 0 && f.Key.Protocol == 6 {
-			row.Retransmits, row.RetransmitSource = retransmits(f)
-			rtt, source := flowRTT(f)
-			row.RTTMicros, row.RTTSource = rtt.Microseconds(), source
-			for _, side := range kernelSides(f) {
-				k, local := f.Health.Kernel[side], f.Key.A
-				if side == 1 {
-					local = f.Key.B
-				}
-				row.KernelTCP = append(row.KernelTCP, jsonKernelTCP{local.String(), k.RTT.Microseconds(), k.RTTVar.Microseconds(), k.Cwnd, k.SegsOut, k.Retransmits})
-			}
-		}
-		if f.Domain != nil {
-			e := f.Domain.Evidence()
-			row.Evidence, row.Detail = &e, e.Detail()
-		}
-		for id := range f.TLSActors {
-			row.OpenSSLPIDs = append(row.OpenSSLPIDs, id.PID)
-		}
-		slices.Sort(row.OpenSSLPIDs)
-		if f.NAT != nil {
-			row.NAT = f.NAT.String()
-		}
-		r.Flows = append(r.Flows, row)
+		r.Flows = append(r.Flows, jsonFlowFor(f, ids[f], processes, geo))
 	}
 	totals, labels := domainSummary(flows)
 	for _, label := range labels {
 		t := totals[label]
-		r.Domains = append(r.Domains, jsonDomain{label, t.Connections, t.RX, t.TX, t.Requests, t.UnknownPID})
+		row := jsonDomain{Label: label, Connections: t.Connections, RXBytes: t.RX, TXBytes: t.TX, HTTPRequests: t.Requests, UnknownPID: t.UnknownPID, Inbound: t.Inbound, Outbound: t.Outbound}
+		for addr := range t.Local {
+			row.LocalAddresses = append(row.LocalAddresses, addr.String())
+		}
+		slices.Sort(row.LocalAddresses)
+		r.Domains = append(r.Domains, row)
 	}
 	for _, source := range attemptSources(c.attempts) {
 		if scope != nil {
@@ -234,6 +211,60 @@ func reportJSON(c *collector, name string, limit int, processes *processTable, s
 		r.InboundAttempts = append(r.InboundAttempts, jsonAttempt{source.String(), len(a.Ports), a.Refused, a.Unanswered})
 	}
 	return r
+}
+
+func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jsonFlow {
+	source, target := displayedEndpoints(f)
+	row := jsonFlow{
+		ID: id, End: f.End.String(),
+		Protocol: flowProtocol(f), App: f.AppProtocol, State: flowState(f), Direction: f.Direction, Interfaces: interfacesOf(f.Interfaces),
+		Source: strings.TrimPrefix(source, "?"), Target: strings.TrimPrefix(target, "?"), InitiatorUnknown: strings.HasPrefix(source, "?"),
+		RXBytes: f.RX, TXBytes: f.TX, Packets: f.Packets, FirstSeen: f.First, LastSeen: f.Last,
+		SYNRTTMicros: f.Health.SynRTT.Microseconds(),
+		Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
+		Name: flowName(f), DomainConflict: f.DomainConflict,
+	}
+	if geo != nil {
+		sourceIP, targetIP := endpointAddresses(f)
+		row.SourceGeo, row.TargetGeo = geo.Lookup(sourceIP), geo.Lookup(targetIP)
+	}
+	if f.Key.EtherType == 0 && f.Key.Protocol == 6 {
+		row.Retransmits, row.RetransmitSource = retransmits(f)
+		rtt, source := flowRTT(f)
+		row.RTTMicros, row.RTTSource = rtt.Microseconds(), source
+		for _, side := range kernelSides(f) {
+			k, local := f.Health.Kernel[side], f.Key.A
+			if side == 1 {
+				local = f.Key.B
+			}
+			row.KernelTCP = append(row.KernelTCP, jsonKernelTCP{local.String(), k.RTT.Microseconds(), k.RTTVar.Microseconds(), k.Cwnd, k.SegsOut, k.Retransmits})
+		}
+	}
+	if f.Domain != nil {
+		e := f.Domain.Evidence()
+		row.Evidence, row.Detail = &e, e.Detail()
+	}
+	for actorID, io := range f.IO {
+		actor := participant{PID: actorID.PID, StartNS: actorID.StartNS}
+		for _, known := range []participant{f.Client, f.Server, f.TLSActors[actorID]} {
+			if known.id() == actorID && known.PID > 0 {
+				actor = known
+				break
+			}
+		}
+		row.IO = append(row.IO, jsonProcessIO{jsonProcess: *processJSON(actor, processes), RXBytes: io.RX, TXBytes: io.TX})
+	}
+	slices.SortFunc(row.IO, func(a, b jsonProcessIO) int {
+		return cmp.Or(cmp.Compare(a.PID, b.PID), cmp.Compare(a.StartNS, b.StartNS))
+	})
+	for id := range f.TLSActors {
+		row.OpenSSLPIDs = append(row.OpenSSLPIDs, id.PID)
+	}
+	slices.Sort(row.OpenSSLPIDs)
+	if f.NAT != nil {
+		row.NAT = f.NAT.String()
+	}
+	return row
 }
 
 // processesJSON lists PID socket I/O like printPIDIO.

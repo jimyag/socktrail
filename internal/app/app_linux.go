@@ -117,6 +117,34 @@ type wildcardKey struct {
 	Role      string
 }
 
+type flowEnd uint8
+
+const (
+	flowOngoing flowEnd = iota
+	flowFin
+	flowReset
+	flowFailed
+	flowIdle
+	flowEvicted
+)
+
+func (e flowEnd) String() string {
+	switch e {
+	case flowFin:
+		return "fin"
+	case flowReset:
+		return "reset"
+	case flowFailed:
+		return "failed"
+	case flowIdle:
+		return "idle"
+	case flowEvicted:
+		return "evicted"
+	default:
+		return ""
+	}
+}
+
 func mergeParticipant(old, next participant) participant {
 	if old.PID == 0 || old.id() == next.id() {
 		return next
@@ -138,14 +166,12 @@ type flow struct {
 	Domain           *domain.Stream // Strongest of the evidence below; see chooseDomain.
 	WireDomain       *domain.Stream // TCP client stream: HTTP, TLS or proxy tunnel.
 	WireClient       netip.AddrPort // Endpoint whose bytes WireDomain parses.
-	Preexisting      bool           // Open before capture began, so its handshake was never visible.
 	Interfaces       interfaceSet   // Capture interfaces that observed this flow.
 	SocketDomain     *domain.Stream // The same client bytes read at the socket layer.
 	QUICDomain       *domain.Stream
 	ProcessDomain    *domain.Stream
 	DNSDomain        *domain.Stream
 	TLSActors        map[processID]participant
-	DomainConflict   bool
 	QUIC             *quicinitial.Tracker
 	ICMP             *icmpState // ICMP flows only; allocated with their first message, as are the next.
 	ICMPError        string     // Latest ICMP error that quoted this flow's packets.
@@ -156,14 +182,17 @@ type flow struct {
 	AppSource        string
 	Health           tcpHealth
 	SYNSeq           uint32
-	SYNSeen          bool
-	SynAck           bool // The target answered the SYN; an RST before it refused the attempt.
 	TCPState         string
-	FinA, FinB       bool
-	Closed           bool
 	ClientWildcard   *wildcardKey
 	ServerWildcard   *wildcardKey
 	NAT              *natEntry // Set when a NAT rewrote the connection's tuple.
+	Preexisting      bool      // Open before capture began, so its handshake was never visible.
+	DomainConflict   bool
+	SYNSeen          bool
+	SynAck           bool // The target answered the SYN; an RST before it refused the attempt.
+	FinA, FinB       bool
+	Closed           bool
+	End              flowEnd
 }
 
 type collector struct {
@@ -1064,12 +1093,15 @@ func Run() error {
 	limit := flag.Int("limit", 30, "number of flows to print")
 	port := flag.Uint("port", 0, "only index wire flows containing this port; PID socket I/O remains netns-wide")
 	debugPID := flag.Bool("debug-pid-events", false, "print raw PID association events to stderr")
+	showEnvSecrets := flag.Bool("show-env-secrets", false, "show credential-like environment values in process details (default: hidden)")
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
 	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
 	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
 	downloadGeo := flag.Bool("download-geoip-db", false, "download the current DB-IP Lite country and ASN databases, then exit")
-	output := flag.String("output", "text", "snapshot format with --duration: text or json")
+	output := flag.String("output", "text", "output format: text or json snapshots with --duration, or live ndjson")
+	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in ndjson output")
+	logFile := flag.String("log-file", "", "write connection changes to a 0600 NDJSON file while the interactive screen runs")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
@@ -1095,13 +1127,16 @@ func Run() error {
 	geo := geoip.Open(*geoDir)
 	defer func() { geo.Close() }()
 	autoInterfaces := len(interfaceNames) == 0
-	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" || *recordBefore < 0 {
-		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json] [--record-before 10s]")
+	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" && *output != "ndjson" || *recordBefore < 0 || *refresh <= 0 {
+		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json|ndjson] [--refresh 60s] [--record-before 10s]")
 	}
 	if *output == "json" && *duration == 0 {
 		return fmt.Errorf("--output json needs --duration: it formats the snapshot")
 	}
-	if *recordBefore > 0 && *duration > 0 {
+	if *logFile != "" && (*duration != 0 || *output != "text") {
+		return fmt.Errorf("--log-file requires the interactive screen")
+	}
+	if *recordBefore > 0 && (*duration > 0 || *output == "ndjson") {
 		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
 	}
 	var err error
@@ -1113,7 +1148,7 @@ func Run() error {
 		return err
 	}
 	captureInterfaces = interfaceNames
-	if *duration == 0 && *debugPID {
+	if *duration == 0 && *output != "ndjson" && *debugPID {
 		return fmt.Errorf("--debug-pid-events requires --duration to keep the interactive screen readable")
 	}
 	info, err := os.Stat("/proc/self/ns/net")
@@ -1235,12 +1270,14 @@ func Run() error {
 	var hostState hostViewState
 	hostState.update(host, members)
 	var ui *terminalUI
-	if *duration == 0 {
+	if *duration == 0 && *output != "ndjson" {
 		ui, err = openUI(interfaceNames, stat.Ino, collectors)
 		if err != nil {
 			return err
 		}
 		defer ui.close()
+		ui.showEnvSecrets = *showEnvSecrets
+		ui.hostState = &hostState
 		ui.tlsProbeStatus = tlsStatus
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
@@ -1264,12 +1301,30 @@ func Run() error {
 		fmt.Println(natStatus)
 	}
 	currentCollector := func() *collector {
+		if ui.mode == viewLog {
+			return host
+		}
 		if ui.hostScope && ui.mode != viewInterfaces {
 			return host
 		}
 		return collectors[ui.interfaceName]
 	}
 	var summary sessionSummary
+	var streamEncoder *json.Encoder
+	var lastOutput map[uint64]time.Time
+	if *output == "ndjson" {
+		streamEncoder = json.NewEncoder(os.Stdout)
+	} else if *logFile != "" {
+		writer, err := openChangeLog(*logFile)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = writer.Close() }()
+		streamEncoder = json.NewEncoder(writer)
+	}
+	if streamEncoder != nil {
+		lastOutput = make(map[uint64]time.Time)
+	}
 	if ui != nil {
 		summary.sample(collectors)
 	}
@@ -1343,19 +1398,53 @@ func Run() error {
 			if time.Since(sockets.read) >= socketTableInterval {
 				sockets.refresh(collectors, time.Now())
 			}
-			if ui != nil && !ui.closed {
-				ui.sampleAll(collectors, time.Now())
+			if ui != nil && !ui.closed || streamEncoder != nil {
+				if ui != nil && !ui.closed {
+					ui.sampleAll(collectors, time.Now())
+				}
 				var sources map[*flow]*flow
 				oldHost := host
 				host, sources, members = hostCollector(interfaceNames, collectors)
 				replacements := hostState.update(host, members)
-				for _, previous := range oldHost.allFlows() {
-					delete(ui.rates, previous)
+				if streamEncoder != nil {
+					scope := newProcessScope(processes, filter)
+					for _, change := range hostState.lastChanges {
+						if !scope.flow(change.Flow, host) {
+							continue
+						}
+						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
+						row.Changes = change.Changes
+						if err := streamEncoder.Encode(row); err != nil {
+							return fmt.Errorf("write ndjson: %w", err)
+						}
+						lastOutput[change.ID] = time.Now()
+					}
+					for id, f := range hostState.displayed {
+						if last := lastOutput[id]; f.End != flowOngoing || last.IsZero() || time.Since(last) < *refresh || !scope.flow(f, host) {
+							continue
+						}
+						row := jsonFlowFor(f, id, processes, geo)
+						row.Changes = []string{"refresh"}
+						if err := streamEncoder.Encode(row); err != nil {
+							return fmt.Errorf("write ndjson refresh: %w", err)
+						}
+						lastOutput[id] = time.Now()
+					}
+					for id := range lastOutput {
+						if hostState.displayed[id] == nil {
+							delete(lastOutput, id)
+						}
+					}
 				}
-				for merged, source := range sources {
-					ui.rates[replacements[merged]] = ui.rates[source]
+				if ui != nil && !ui.closed {
+					for _, previous := range oldHost.allFlows() {
+						delete(ui.rates, previous)
+					}
+					for merged, source := range sources {
+						ui.rates[replacements[merged]] = ui.rates[source]
+					}
+					ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
 				}
-				ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
 			}
 		case input := <-keys:
 			if ui.handleInput(input, currentCollector()) {
@@ -1575,10 +1664,10 @@ func Run() error {
 		host, _, members = hostCollector(interfaceNames, collectors)
 		if autoInterfaces {
 			hostState.update(host, members)
-			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo)}
+			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo, hostState.displayedIDs())}
 		} else {
 			for _, name := range interfaceNames {
-				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope, geo))
+				snapshot.Reports = append(snapshot.Reports, reportJSON(collectors[name], name, *limit, processes, scope, geo, nil))
 			}
 		}
 		snapshot.Filter = filter.String()
@@ -1587,6 +1676,8 @@ func Run() error {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(snapshot)
+	} else if *output == "ndjson" {
+		return nil
 	} else {
 		scope := newProcessScope(processes, filter)
 		if filter.active() {
@@ -1734,6 +1825,20 @@ type domainTotals struct {
 	RX, TX      uint64
 	Requests    uint64
 	UnknownPID  uint64
+	Inbound     uint64
+	Outbound    uint64
+	Local       map[netip.Addr]struct{}
+}
+
+func flowLocalAddress(f *flow) netip.Addr {
+	switch f.Direction {
+	case "inbound":
+		return f.Target.Addr()
+	case "outbound":
+		return f.Initiator.Addr()
+	default:
+		return netip.Addr{}
+	}
 }
 
 // domainSummary totals the flows per domain page row and returns the row
@@ -1751,6 +1856,18 @@ func domainSummary(flows []*flow) (map[string]*domainTotals, []string) {
 			totals[e.Label()] = row
 		}
 		row.Connections++
+		switch f.Direction {
+		case "inbound":
+			row.Inbound++
+		case "outbound":
+			row.Outbound++
+		}
+		if local := flowLocalAddress(f); local.IsValid() {
+			if row.Local == nil {
+				row.Local = make(map[netip.Addr]struct{})
+			}
+			row.Local[local] = struct{}{}
+		}
 		row.RX += f.RX
 		row.TX += f.TX
 		if f.Client.PID == 0 && f.Server.PID == 0 {

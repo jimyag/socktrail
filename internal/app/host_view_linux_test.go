@@ -146,3 +146,62 @@ func TestHostViewKeepsIdentityWhenPreferredInterfaceChanges(t *testing.T) {
 		t.Fatalf("flow was not retired once with the latest single-point value: bytes=%d flows=%d", host.expiredTX, host.expiredFlows)
 	}
 }
+
+func TestHostViewRecordsClosedConnectionOnce(t *testing.T) {
+	defer func(names []string) { captureInterfaces = names }(captureInterfaces)
+	captureInterfaces = []string{"br0", "eno1"}
+	now := time.Now()
+	a := netip.MustParseAddrPort("192.0.2.1:40000")
+	b := netip.MustParseAddrPort("198.51.100.1:443")
+	key := keyFor(a, b, 6)
+	first := &flow{Key: key, First: now.Add(-time.Second), Last: now, Closed: true, TCPState: "reset"}
+	first.Interfaces.add(0)
+	second := &flow{Key: key, First: now.Add(-time.Second), Last: now, Closed: true, TCPState: "reset"}
+	second.Interfaces.add(1)
+	collectors := map[string]*collector{
+		"br0":  {flows: map[flowKey]*flow{key: first}},
+		"eno1": {flows: map[flowKey]*flow{key: second}},
+	}
+	var state hostViewState
+	for _, at := range []time.Time{now.Add(time.Second), now.Add(2 * time.Second), now.Add(3 * time.Second)} {
+		host, _, members := hostCollector(captureInterfaces, collectors)
+		state.updateAt(host, members, at)
+		if got, want := len(state.history), min(1, int(at.Sub(now)/time.Second-1)); got != want {
+			t.Fatalf("at %s: history length = %d, want %d", at, got, want)
+		}
+	}
+	if state.history[0].End != flowReset || len(interfacesOf(state.history[0].Interfaces)) != 2 || state.historyIDs[0] == 0 {
+		t.Fatalf("final connection was not merged once: end=%s interfaces=%v id=%d", state.history[0].End, interfacesOf(state.history[0].Interfaces), state.historyIDs[0])
+	}
+	clear(collectors["br0"].flows)
+	clear(collectors["eno1"].flows)
+	host, _, members := hostCollector(captureInterfaces, collectors)
+	state.updateAt(host, members, now.Add(4*time.Second))
+	if len(state.history) != 1 {
+		t.Fatalf("closed connection entered history twice: %d", len(state.history))
+	}
+}
+
+func TestHostViewRecordsIdleAndBoundsHistory(t *testing.T) {
+	now := time.Now()
+	a := netip.MustParseAddrPort("192.0.2.1:40000")
+	b := netip.MustParseAddrPort("198.51.100.1:443")
+	key := keyFor(a, b, 6)
+	f := &flow{Key: key, First: now, Last: now}
+	collectors := map[string]*collector{"eth0": {flows: map[flowKey]*flow{key: f}}}
+	var state hostViewState
+	host, _, members := hostCollector([]string{"eth0"}, collectors)
+	state.updateAt(host, members, now)
+	clear(collectors["eth0"].flows)
+	host, _, members = hostCollector([]string{"eth0"}, collectors)
+	state.updateAt(host, members, now.Add(6*time.Minute))
+	if len(state.history) != 1 || state.history[0].End != flowIdle {
+		t.Fatalf("idle connection history = %+v", state.history)
+	}
+	for id := uint64(2); id <= maxFlowHistory+1; id++ {
+		state.remember(id, &flow{})
+	}
+	if len(state.history) != maxFlowHistory || state.historyIDs[0] != maxFlowHistory+1 {
+		t.Fatalf("history ring did not evict oldest: length=%d first=%d", len(state.history), state.historyIDs[0])
+	}
+}

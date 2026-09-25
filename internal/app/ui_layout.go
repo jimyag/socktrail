@@ -213,6 +213,9 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 		{title: "LAST", width: 8},
 		{title: "HOST/SNI OR PEER", width: 42},
 	}
+	if mode == viewDomain {
+		columns = slices.Insert(columns, len(columns)-1, tableColumn{title: "LOCAL", width: 38})
+	}
 	base := newTableLayout(columns, 0)
 	extra := max(0, viewport-base.width)
 	ifaceNeed := max(0, fullIfaceWidth-base.columns[1].width)
@@ -225,18 +228,51 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 
 func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) string {
 	first, last := flowTimes(row.flows)
+	if mode == viewLog {
+		last = displayTime(row.lastEvent)
+	}
 	separator := ", "
 	if mode == viewDomain {
 		separator = "; "
 	}
 	ifaces := fitItems(interfacesOf(row.ifaces), ",", layout.columns[1].width)
 	hint := fitItems(groupHintValues(row, mode), separator, layout.columns[len(layout.columns)-1].width)
-	return layout.line(cursor,
+	values := []string{
 		row.label, ifaces, human(row.rxRate), human(row.txRate), human(row.rx), human(row.tx),
 		strconv.FormatUint(row.tcp, 10), strconv.FormatUint(row.udp, 10), strconv.FormatUint(row.icmp, 10),
 		strconv.FormatUint(row.reqs, 10), strconv.FormatUint(row.unknownPID, 10), strconv.Itoa(len(row.flows)),
-		first, last, hint,
-	)
+		first, last,
+	}
+	if mode == viewDomain {
+		values = append(values, localAddressCell(row, layout.columns[len(layout.columns)-2].width))
+	}
+	return layout.line(cursor, append(values, hint)...)
+}
+
+func localAddressValues(row *uiRow) []string {
+	values := make([]string, 0, len(row.localAddresses))
+	for addr := range row.localAddresses {
+		values = append(values, addr.String())
+	}
+	slices.Sort(values)
+	return values
+}
+
+func localAddressCell(row *uiRow, width int) string {
+	values := localAddressValues(row)
+	for shown := min(2, len(values)); shown >= 0; shown-- {
+		cell := strings.Join(values[:shown], ",")
+		if shown < len(values) {
+			if shown > 0 {
+				cell += ","
+			}
+			cell += "+" + strconv.Itoa(len(values)-shown)
+		}
+		if displayWidth(cell) <= width {
+			return cell
+		}
+	}
+	return ""
 }
 
 // connectionColumns are the connection table's columns, the same on every

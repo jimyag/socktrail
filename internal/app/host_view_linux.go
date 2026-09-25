@@ -23,15 +23,65 @@ type hostViewState struct {
 	flowIDs       map[*flow]uint64
 	active        map[uint64]hostFlowTotal
 	displayed     map[uint64]*flow
+	history       []*flow // Bounded ring of final merged connection snapshots.
+	historyIDs    []uint64
+	historyNext   int
+	lastChanges   []flowChange
+	recentChanges []flowChange
+	recentNext    int
+	changeKeys    map[uint64]flowChangeKey
+	firstObserved map[uint64]time.Time
+	pendingNames  map[uint64]pendingFlowName
 	expired       ioBytes
 	expiredDomain ioBytes
 	expiredFlows  uint64
+}
+
+const maxFlowHistory = 5000
+
+func (s *hostViewState) remember(id uint64, f *flow) {
+	if len(s.history) < maxFlowHistory {
+		s.history = append(s.history, f)
+		s.historyIDs = append(s.historyIDs, id)
+		return
+	}
+	s.history[s.historyNext] = f
+	s.historyIDs[s.historyNext] = id
+	s.historyNext = (s.historyNext + 1) % maxFlowHistory
+}
+
+func (s *hostViewState) displayedIDs() map[*flow]uint64 {
+	ids := make(map[*flow]uint64, len(s.displayed))
+	for id, f := range s.displayed {
+		ids[f] = id
+	}
+	return ids
+}
+
+func endReason(f *flow, now time.Time) flowEnd {
+	if f.End != flowOngoing {
+		return f.End
+	}
+	if f.Closed {
+		if f.TCPState == "reset" {
+			return flowReset
+		}
+		return flowFin
+	}
+	if now.Sub(f.Last) > 5*time.Minute {
+		return flowIdle
+	}
+	return flowEvicted
 }
 
 // update retains single-point totals when the corresponding interface flow
 // detail expires. Member pointers keep the identity stable if another
 // interface later becomes the preferred observation for the same flow.
 func (s *hostViewState) update(host *collector, members map[*flow][]*flow) map[*flow]*flow {
+	return s.updateAt(host, members, time.Now())
+}
+
+func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now time.Time) map[*flow]*flow {
 	if s.flowIDs == nil {
 		s.flowIDs = make(map[*flow]uint64)
 	}
@@ -64,8 +114,15 @@ func (s *hostViewState) update(host *collector, members map[*flow][]*flow) map[*
 		shown := s.displayed[id]
 		if shown == nil {
 			shown = merged
+		} else if shown.End != flowOngoing {
+			merged.End = shown.End
+			shown = merged // Keep the recorded final snapshot immutable.
 		} else {
 			*shown = *merged
+		}
+		if shown.End == flowOngoing && shown.Closed && now.Sub(shown.Last) >= lateEventWindow {
+			shown.End = endReason(shown, now)
+			s.remember(id, shown)
 		}
 		newDisplayed[id] = shown
 		replacements[merged] = shown
@@ -82,8 +139,22 @@ func (s *hostViewState) update(host *collector, members map[*flow][]*flow) map[*
 			s.expiredDomain.RX += old.RX
 			s.expiredDomain.TX += old.TX
 		}
+		if shown := s.displayed[id]; shown != nil && shown.End == flowOngoing {
+			shown.End = endReason(shown, now)
+			s.remember(id, shown)
+		}
 	}
+	oldDisplayed := s.displayed
 	s.flowIDs, s.active, s.displayed = newIDs, newActive, newDisplayed
+	s.lastChanges = s.detectChanges(newDisplayed, oldDisplayed, now)
+	for _, change := range s.lastChanges {
+		if len(s.recentChanges) < maxFlowHistory {
+			s.recentChanges = append(s.recentChanges, change)
+		} else {
+			s.recentChanges[s.recentNext] = change
+			s.recentNext = (s.recentNext + 1) % maxFlowHistory
+		}
+	}
 	host.expiredRX, host.expiredTX = s.expired.RX, s.expired.TX
 	host.expiredDomainRX, host.expiredDomainTX = s.expiredDomain.RX, s.expiredDomain.TX
 	host.expiredFlows = s.expiredFlows

@@ -23,7 +23,7 @@ func (s *sortSpec) selectColumn(key string) {
 		return
 	}
 	s.key = key
-	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "I/O PID", "DIR", "SOURCE", "SRC GEO", "TARGET", "DST GEO", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
+	s.desc = !slices.Contains([]string{"GROUP", "IFACE", "LOCAL", "I/O PID", "DIR", "SOURCE", "SRC GEO", "TARGET", "DST GEO", "PROTO", "STATE", "DOMAIN / ICMP", "ORIGIN PID", "TARGET PID", "HOST/SNI OR PEER", "PID", "PROCESS"}, key)
 }
 
 func (s sortSpec) direction(order int) int {
@@ -91,17 +91,27 @@ func sortGroups(rows []*uiRow, mode viewMode, spec sortSpec, sortRate bool) {
 		case "FIRST":
 			order = rowTime(a, true).Compare(rowTime(b, true))
 		case "LAST":
-			order = rowTime(a, false).Compare(rowTime(b, false))
+			if mode == viewLog {
+				order = a.lastEvent.Compare(b.lastEvent)
+			} else {
+				order = rowTime(a, false).Compare(rowTime(b, false))
+			}
 		case "HOST/SNI OR PEER":
 			order = strings.Compare(groupHint(a, mode), groupHint(b, mode))
 		case "IFACE":
 			order = strings.Compare(interfaceList(a.ifaces, 2), interfaceList(b.ifaces, 2))
+		case "LOCAL":
+			order = strings.Compare(strings.Join(localAddressValues(a), ","), strings.Join(localAddressValues(b), ","))
 		default:
-			av, bv := a.rx+a.tx, b.rx+b.tx
-			if sortRate {
-				av, bv = a.rxRate+a.txRate, b.rxRate+b.txRate
+			if mode == viewLog {
+				order = -a.lastEvent.Compare(b.lastEvent)
+			} else {
+				av, bv := a.rx+a.tx, b.rx+b.tx
+				if sortRate {
+					av, bv = a.rxRate+a.txRate, b.rxRate+b.txRate
+				}
+				order = -cmp.Compare(av, bv)
 			}
-			order = -cmp.Compare(av, bv)
 		}
 		if spec.key != "" {
 			order = spec.direction(order)

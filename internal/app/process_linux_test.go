@@ -6,7 +6,39 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestEnvironmentSecretsHiddenUntilExplicitReveal(t *testing.T) {
+	for _, entry := range []string{`"API_TOKEN"="abc"`, `"PASSWORD"="abc"`, `"AUTH_COOKIE"="abc"`} {
+		if got := environmentEntry(entry, false); strings.Contains(got, "abc") || !strings.Contains(got, "••••(3)") {
+			t.Fatalf("secret was visible: %q", got)
+		}
+		if got := environmentEntry(entry, true); got != entry {
+			t.Fatalf("explicit reveal changed value: %q", got)
+		}
+	}
+	if got := environmentEntry(`"PATH"="/usr/bin"`, false); got != `"PATH"="/usr/bin"` {
+		t.Fatalf("ordinary value was hidden: %q", got)
+	}
+	id := processID{PID: 123, StartNS: 456}
+	c := &collector{pidIO: map[processID]processIO{id: {Name: "worker"}}}
+	u := &terminalUI{
+		mode: viewPID, tab: 1, focusBottom: true, screenWidth: 100, bottomHeight: 20,
+		processInfoID: id, processInfoAt: time.Now(), processInfo: processDetails{environment: []string{`"API_TOKEN"="abc"`}},
+	}
+	var lines []string
+	u.renderBottom(&lines, u.rows(c, viewPID), c)
+	if page := strings.Join(lines, "\n"); strings.Contains(page, "abc") || !strings.Contains(page, "••••(3)") {
+		t.Fatalf("default process page revealed secret: %q", page)
+	}
+	u.handleKey("E")
+	lines = nil
+	u.renderBottom(&lines, u.rows(c, viewPID), c)
+	if page := strings.Join(lines, "\n"); !strings.Contains(page, "abc") {
+		t.Fatalf("E did not reveal secret: %q", page)
+	}
+}
 
 func testProcessStat(startTicks uint64) string {
 	fields := make([]string, 20)

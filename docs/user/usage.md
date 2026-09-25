@@ -114,7 +114,7 @@ NAT 改写过的连接按 conntrack 给出的原始元组合并，从一个接�
 
 查看单个进程时，按 `1` 进入 PID 页，用 `/` 输入完整 PID 并回车；也可直接点击该 PID 行。默认的 `conns` 底栏列出该 PID 关联的 TCP/UDP 连接，包含来源、目标、协议、状态、Host/SNI 和连接 IP 字节；选中连接后显示**该 PID**在此连接上的 socket RX/TX。按 `Enter` 聚焦底栏后可用方向键逐条查看，也可以用鼠标点击或滚轮切换连接。PageUp/PageDown 会在当前聚焦的主列表或连接列表中翻页。
 
-切到 `process` 标签可看进程启动时间、父 PID、可执行文件、工作目录、命令行和环境变量；多个进程用方向键或点击列表选择，环境变量用 PageUp/PageDown 或鼠标滚轮滚动。启动信息来自 `/proc`，只有进程仍在运行且启动标识匹配时才可读取；权限不足或进程退出会显示原因。环境变量显示的是 `/proc/<pid>/environ` 提供的启动时快照，可能包含凭据，仅显示在终端，不写入日志。PID 汇总可能包含未匹配到已采集连接的 socket I/O，因此连接观测 IP 字节不能直接与 PID socket 字节相加或要求相等。
+切到 `process` 标签可看进程启动时间、父 PID、可执行文件、工作目录、命令行和环境变量；多个进程用方向键或点击列表选择，环境变量用 PageUp/PageDown 或鼠标滚轮滚动。启动信息来自 `/proc`，只有进程仍在运行且启动标识匹配时才可读取；权限不足或进程退出会显示原因。环境变量显示的是 `/proc/<pid>/environ` 提供的启动时快照。键名包含 token、secret、passw、pwd、key、credential、auth、cookie、session 或 private 的值默认遮蔽为 `••••(字节数)`；在进程标签中按 `E` 可临时显示原文，或用 `--show-env-secrets` 从启动时显示。原文只显示在终端，不写入日志。PID 汇总可能包含未匹配到已采集连接的 socket I/O，因此连接观测 IP 字节不能直接与 PID socket 字节相加或要求相等。
 
 交互界面把进程显示为 `PID 进程名`，例如 `1224 tailscaled`。同一 PID 在观测期内被复用时，历史行会显示 `#1`、`#2` 以便区分；内部仍以 PID 和进程启动标识分别统计。启动日期可在 `process` 详情页查看。非交互式快照保留完整 `PID@启动纳秒`，便于核对原始身份。启动时间与 `/proc/<pid>/stat` 同一基准（开机后经过的时间，挂起期间也计入），并按内核时钟节拍（通常 10 ms）取整，这样 eBPF 事件和 socket 表找到的同一进程归为一行。
 
@@ -152,7 +152,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `reports[]` | 自动选接口时一份 `scope` 为 `OVERVIEW` 的整机报告，否则每个接口一份 |
 | `reports[].*` | `ip_packets`、`ip_bytes`、`capture_delivered`、`capture_dropped`、`truncated_packets`、`expired_flows`（只有单接口报告统计）、`packets_without_flow`、`pid_index_dropped`、`parse_failures`、`https_coverage` |
 | `reports[].flows[]` | 按字节排序的前 `--limit` 条连接，字段见下表 |
-| `reports[].domains[]` | 域名页的行：`label`、`connections`、`rx_bytes`、`tx_bytes`、`http_requests`、`unknown_pid` |
+| `reports[].domains[]` | 域名页的行：`label`、`connections`、`rx_bytes`、`tx_bytes`、`http_requests`、`unknown_pid`、`inbound`、`outbound`、`local_addresses`；本机地址取入站连接的目标或出站连接的来源 |
 | `reports[].inbound_attempts[]` | 被拒或无应答的入站尝试：`source`、`ports`、`refused`、`unanswered` |
 | `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
 | `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
@@ -161,6 +161,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 
 | 字段 | 内容 |
 | --- | --- |
+| `id`、`end` | 自动合并的整机视图中，`id` 是本次运行内的稳定连接 ID；`end` 表示已确认结束的连接，目前取值为 `fin`、`reset`、`idle` 或 `evicted`。显式按单接口输出的快照暂不分配整机 ID；`flows[]` 仍只列当前采集表内的连接 |
 | `protocol`、`app`、`state`、`direction` | 与文本表格的 PROTO、APP、STATE、DIR 相同 |
 | `interfaces` | 抓到这条连接的采集接口，与文本表格和界面的 IFACE 相同；网桥和它的成员口会同时出现 |
 | `source`、`target`、`initiator_unknown` | 发起方与接收方；TCP 的发起方不确定时 `initiator_unknown` 为 true，两端为观测到的原始顺序 |
@@ -170,6 +171,18 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`（本端地址）、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits` |
 | `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`；`pid` 为 -1 表示多个进程有歧义 |
+| `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
 | `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |
 | `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
 | `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |
+
+## 实时 JSON 与 LOG
+
+`--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按现有 `--process`、`--pid`、`--cgroup` 限定范围。
+
+```sh
+sudo socktrail --output ndjson | jq -c 'select(.changes | index("name")) | {id,source,target,name,client,server}'
+sudo socktrail --output ndjson --duration 30s --refresh 10s > changes.ndjson
+```
+
+交互界面按 `6` 打开 LOG 页，显示最近 5000 次连接变化，按 `b` 在变化类型、进程和失败连接分组之间切换；失败分组在内核建连结果探针接入后才有数据。LOG 的底栏显示所选连接的当前或最后一次观测详情。LOG 保存在进程内存里；启动时指定 `--log-file changes.ndjson` 可同时保存变化和定期刷新记录。文件权限为 0600，达到 64 MiB 时滚动为 `.1`，只保留这一份旧文件。

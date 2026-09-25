@@ -32,6 +32,28 @@ type processDetails struct {
 	errorText   string
 }
 
+func environmentEntry(entry string, showSecrets bool) string {
+	key, value, ok := strings.Cut(entry, "=")
+	if !ok || showSecrets {
+		return entry
+	}
+	name, err := strconv.Unquote(key)
+	if err != nil {
+		name = key
+	}
+	name = strings.ToLower(name)
+	for _, marker := range [...]string{"token", "secret", "passw", "pwd", "key", "credential", "auth", "cookie", "session", "private"} {
+		if strings.Contains(name, marker) {
+			raw, err := strconv.Unquote(value)
+			if err != nil {
+				raw = value
+			}
+			return fmt.Sprintf("%s=••••(%d)", key, len(raw))
+		}
+	}
+	return entry
+}
+
 func readClockTicks() (uint64, error) {
 	data, err := os.ReadFile("/proc/self/auxv")
 	if err != nil {
