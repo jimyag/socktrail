@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -21,16 +22,42 @@ type dnsState struct {
 	Answered                     bool // The latest question has a response.
 	LastRTT, MinRTT              time.Duration
 	pending                      [4]dnsPending // The latest queries awaiting a response.
+	recent                       []dnsQueryRecord
 }
 
 type dnsPending struct {
-	id uint16
-	at time.Time
+	id       uint16
+	at       time.Time
+	sequence uint64
+}
+
+type dnsQueryRecord struct {
+	name      string
+	kind      uint16
+	code      uint8
+	addresses []netip.Addr
+	rtt       time.Duration
+	at        time.Time
+	answered  bool
+	sequence  uint64
+}
+
+const maxRecentDNSQueries = 8
+
+func (s *dnsState) recentQueries() []dnsQueryRecord {
+	queries := make([]dnsQueryRecord, 0, len(s.recent))
+	for seq := s.Queries; seq > 0 && len(queries) < len(s.recent); seq-- {
+		record := s.recent[(seq-1)%maxRecentDNSQueries]
+		if record.sequence == seq {
+			queries = append(queries, record)
+		}
+	}
+	return queries
 }
 
 // observe reads one message. Its question is parsed only for a query, or
 // while the flow has none, so a busy resolver's responses allocate nothing.
-func (s *dnsState) observe(p capture.Packet) {
+func (s *dnsState) observe(p capture.Packet, addresses []netip.Addr) {
 	msg := p.Payload
 	if p.Protocol == 6 { // DNS over TCP: a whole message after its length prefix.
 		if len(msg) < 2 || int(binary.BigEndian.Uint16(msg)) != len(msg)-2 {
@@ -49,21 +76,35 @@ func (s *dnsState) observe(p capture.Packet) {
 		}
 		for i, query := range s.pending {
 			if !query.at.IsZero() && query.id == id {
-				if rtt := p.CapturedAt.Sub(query.at); rtt >= 0 {
-					s.LastRTT = rtt
-					if s.MinRTT == 0 || rtt < s.MinRTT {
-						s.MinRTT = rtt
+				var rtt time.Duration
+				if elapsed := p.CapturedAt.Sub(query.at); elapsed >= 0 {
+					s.LastRTT, rtt = elapsed, elapsed
+					if s.MinRTT == 0 || elapsed < s.MinRTT {
+						s.MinRTT = elapsed
 					}
+				}
+				if record := &s.recent[(query.sequence-1)%maxRecentDNSQueries]; record.sequence == query.sequence {
+					record.code, record.answered, record.rtt = s.RCode, true, rtt
+					record.addresses = append([]netip.Addr(nil), addresses[:min(len(addresses), 4)]...)
 				}
 				s.pending[i] = dnsPending{}
 			}
 		}
 	} else {
-		s.pending[s.Queries%uint64(len(s.pending))] = dnsPending{id: id, at: p.CapturedAt}
+		name, kind, _ := domain.DNSQuestion(msg)
+		s.Name, s.Type = name, kind
+		sequence := s.Queries + 1
+		s.pending[s.Queries%uint64(len(s.pending))] = dnsPending{id: id, at: p.CapturedAt, sequence: sequence}
 		s.Queries++
 		s.Answered = false
+		record := dnsQueryRecord{name: name, kind: kind, at: p.CapturedAt, sequence: sequence}
+		if len(s.recent) < maxRecentDNSQueries {
+			s.recent = append(s.recent, record)
+		} else {
+			s.recent[(sequence-1)%maxRecentDNSQueries] = record
+		}
 	}
-	if !response || s.Name == "" {
+	if response && s.Name == "" {
 		if name, qtype, ok := domain.DNSQuestion(msg); ok {
 			s.Name, s.Type = name, qtype
 		}
@@ -75,19 +116,27 @@ var (
 	dnsRCodes = []string{"NOERROR", "FORMERR", "SERVFAIL", "NXDOMAIN", "NOTIMP", "REFUSED"}
 )
 
+func dnsTypeName(kind uint16) string {
+	if name, ok := dnsTypes[kind]; ok {
+		return name
+	}
+	return fmt.Sprintf("TYPE%d", kind)
+}
+
+func dnsRCodeName(code uint8) string {
+	if int(code) < len(dnsRCodes) {
+		return dnsRCodes[code]
+	}
+	return fmt.Sprintf("RCODE%d", code)
+}
+
 func (s dnsState) String() string {
 	if s.Name == "" {
 		return ""
 	}
-	kind, ok := dnsTypes[s.Type]
-	if !ok {
-		kind = fmt.Sprintf("TYPE%d", s.Type)
-	}
-	text := kind + " " + s.Name
-	if s.Answered && int(s.RCode) < len(dnsRCodes) {
-		text += " " + dnsRCodes[s.RCode]
-	} else if s.Answered {
-		text += fmt.Sprintf(" RCODE%d", s.RCode)
+	text := dnsTypeName(s.Type) + " " + s.Name
+	if s.Answered {
+		text += " " + dnsRCodeName(s.RCode)
 	}
 	if s.Queries > 1 {
 		text += fmt.Sprintf(" queries=%d", s.Queries)

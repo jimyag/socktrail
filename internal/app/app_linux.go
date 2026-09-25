@@ -321,12 +321,23 @@ func (c *collector) joinFragment(p *capture.Packet) {
 
 func (c *collector) packet(p capture.Packet) {
 	c.joinFragment(&p)
-	if c.dns != nil && p.Source.Port() == 53 {
-		// Name hints also serve flows on other interfaces and ports.
-		if p.Protocol == 17 {
-			c.dns.Observe(p.Payload, time.Now())
-		} else if p.Protocol == 6 && len(p.Payload) > 2 && int(binary.BigEndian.Uint16(p.Payload)) == len(p.Payload)-2 {
-			c.dns.Observe(p.Payload[2:], time.Now()) // A whole DNS-over-TCP answer in one segment.
+	var dnsAddresses []netip.Addr
+	if port := p.Source.Port(); port == 53 || port == 5353 || port == 5355 {
+		msg := p.Payload
+		if p.Protocol == 6 {
+			if len(msg) < 2 || int(binary.BigEndian.Uint16(msg)) != len(msg)-2 {
+				msg = nil
+			} else {
+				msg = msg[2:]
+			}
+		}
+		if len(msg) >= 12 {
+			name, addrs := domain.DNSAnswers(msg)
+			dnsAddresses = addrs
+			if c.dns != nil && port == 53 {
+				// Name hints also serve flows on other interfaces and ports.
+				c.dns.ObserveAnswers(name, addrs, time.Now())
+			}
 		}
 	}
 	if !c.acceptPort(p.Source, p.Destination) {
@@ -478,7 +489,7 @@ func (c *collector) packet(p capture.Packet) {
 			if f.DNS == nil {
 				f.DNS = new(dnsState)
 			}
-			f.DNS.observe(p)
+			f.DNS.observe(p, dnsAddresses)
 		case "SSH":
 			f.sshBanner(p)
 		}

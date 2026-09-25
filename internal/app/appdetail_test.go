@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -49,6 +50,38 @@ func TestDNSRoundTrip(t *testing.T) {
 	exchange(time.Second, 15200*time.Microsecond)
 	if got := flowName(c.flows[keyFor(client, resolver, 17)]); got != "A rtt.example.test NOERROR queries=2 rtt=15.2ms min=8ms" {
 		t.Fatalf("DNS flow detail %q", got)
+	}
+}
+
+func TestDNSRecentQueriesBoundedAndJSON(t *testing.T) {
+	client, resolver := netip.MustParseAddrPort("192.0.2.10:40003"), netip.MustParseAddrPort("192.0.2.53:53")
+	answerAddr := netip.MustParseAddr("198.51.100.7")
+	c := newTestCollector()
+	c.dns = new(domain.DNSCache)
+	start := time.Now()
+	for i := range 10 {
+		name := fmt.Sprintf("name%d.example.test", i)
+		query := append(dnsQuery(name, 1), 0, 1)
+		at := start.Add(time.Duration(i) * time.Second)
+		c.packet(capture.Packet{Source: client, Destination: resolver, Protocol: 17, HasPorts: true, Payload: query, IPBytes: 60, Outgoing: true, CapturedAt: at})
+		answer := testDNSAnswer(name, answerAddr)
+		answer[1] = 2
+		if i == 9 {
+			answer = append(dnsQuery(name, 1), 0, 1)
+			answer[2], answer[3] = 0x81, 0x83
+		}
+		c.packet(capture.Packet{Source: resolver, Destination: client, Protocol: 17, HasPorts: true, Payload: answer, IPBytes: 100, CapturedAt: at.Add(12 * time.Millisecond)})
+	}
+	f := c.flows[keyFor(client, resolver, 17)]
+	if f.DNS.Queries != 10 || len(f.DNS.recentQueries()) != 8 || f.DNS.recentQueries()[0].name != "name9.example.test" {
+		t.Fatalf("recent queries: %+v", f.DNS)
+	}
+	row := jsonFlowFor(f, 1, nil, nil)
+	if row.DNS == nil || len(row.DNS.Recent) != 8 || row.DNS.Recent[0].RCode != "NXDOMAIN" || row.DNS.Recent[0].RTTMicros != 12000 || row.DNS.Recent[1].Addresses[0] != answerAddr.String() {
+		t.Fatalf("structured DNS history: %+v", row.DNS)
+	}
+	if got := c.dns.Lookup(answerAddr, start.Add(8*time.Second), false); got != "name8.example.test" {
+		t.Fatalf("DNS hint from shared response parse: %q", got)
 	}
 }
 

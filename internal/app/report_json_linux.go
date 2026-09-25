@@ -111,6 +111,7 @@ type jsonFlow struct {
 	Name             string           `json:"name,omitempty"`
 	Detail           string           `json:"detail,omitempty"`
 	Evidence         *domain.Evidence `json:"evidence,omitempty"`
+	DNS              *jsonDNS         `json:"dns,omitempty"`
 	OpenSSLPIDs      []int            `json:"openssl_pids,omitempty"`
 	DomainConflict   bool             `json:"domain_conflict,omitempty"`
 	NAT              string           `json:"nat,omitempty"`
@@ -141,6 +142,27 @@ type jsonProcessIO struct {
 	jsonProcess
 	RXBytes uint64 `json:"rx_bytes"`
 	TXBytes uint64 `json:"tx_bytes"`
+}
+
+type jsonDNS struct {
+	Queries   uint64         `json:"queries"`
+	Responses uint64         `json:"responses"`
+	Failures  uint64         `json:"failures"`
+	Name      string         `json:"name,omitempty"`
+	Type      string         `json:"type,omitempty"`
+	RCode     string         `json:"rcode,omitempty"`
+	RTTMicros int64          `json:"rtt_us,omitzero"`
+	Recent    []jsonDNSQuery `json:"recent,omitempty"`
+}
+
+type jsonDNSQuery struct {
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	RCode     string    `json:"rcode,omitempty"`
+	Addresses []string  `json:"addresses,omitempty"`
+	RTTMicros int64     `json:"rtt_us,omitzero"`
+	At        time.Time `json:"at"`
+	Answered  bool      `json:"answered,omitzero"`
 }
 
 type jsonDomain struct {
@@ -243,6 +265,23 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 	if f.Domain != nil {
 		e := f.Domain.Evidence()
 		row.Evidence, row.Detail = &e, e.Detail()
+	}
+	if f.DNS != nil {
+		s := f.DNS
+		row.DNS = &jsonDNS{Queries: s.Queries, Responses: s.Responses, Failures: s.Failures, Name: s.Name, Type: dnsTypeName(s.Type), RTTMicros: s.LastRTT.Microseconds()}
+		if s.Answered {
+			row.DNS.RCode = dnsRCodeName(s.RCode)
+		}
+		for _, record := range s.recentQueries() {
+			item := jsonDNSQuery{Name: record.name, Type: dnsTypeName(record.kind), RTTMicros: record.rtt.Microseconds(), At: record.at, Answered: record.answered}
+			if record.answered {
+				item.RCode = dnsRCodeName(record.code)
+			}
+			for _, addr := range record.addresses {
+				item.Addresses = append(item.Addresses, addr.String())
+			}
+			row.DNS.Recent = append(row.DNS.Recent, item)
+		}
 	}
 	for actorID, io := range f.IO {
 		actor := participant{PID: actorID.PID, StartNS: actorID.StartNS}

@@ -1601,6 +1601,25 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
 			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))
 		*lines = append(*lines, label("EVIDENCE")+strings.TrimPrefix(evidenceLine(selected, c), "EVIDENCE"))
+		if selected.DNS != nil {
+			for _, query := range selected.DNS.recentQueries() {
+				result := "pending"
+				if query.answered {
+					result = dnsRCodeName(query.code)
+				}
+				if len(query.addresses) > 0 {
+					addresses := make([]string, 0, len(query.addresses))
+					for _, addr := range query.addresses {
+						addresses = append(addresses, addr.String())
+					}
+					result += " " + strings.Join(addresses, ",")
+				}
+				if query.rtt > 0 {
+					result += " " + query.rtt.Round(100*time.Microsecond).String()
+				}
+				*lines = append(*lines, label("DNS")+" "+displayTime(query.at)+" "+dnsTypeName(query.kind)+" "+query.name+" "+result)
+			}
+		}
 		*lines = append(*lines, geoLines...)
 		if u.mode == viewPID && row.pidID.PID > 0 {
 			packetLabel := "connection IP"

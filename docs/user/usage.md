@@ -172,8 +172,9 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`（本端地址）、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits` |
 | `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`；`pid` 为 -1 表示多个进程有歧义 |
 | `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
+| `dns` | DNS 流的查询、应答、失败次数和最近 8 次查询；每条记录含名字、类型、应答码、前 4 个地址、RTT 与时间 |
 | `name`、`detail` | 连接名称（如 `TLS example.com`）和证据说明 |
-| `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
+| `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`proxy_authority`、`upgrade`、`encrypted_dns`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
 | `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |
 
 ## 实时 JSON 与 LOG

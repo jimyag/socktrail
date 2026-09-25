@@ -121,6 +121,12 @@ type DNSCache struct {
 // Observe records the answers of a DNS response seen at now.
 func (c *DNSCache) Observe(msg []byte, now time.Time) {
 	name, addrs := DNSAnswers(msg)
+	c.ObserveAnswers(name, addrs, now)
+}
+
+// ObserveAnswers records an already parsed response, so callers can also use
+// its addresses for a connection's recent-query history.
+func (c *DNSCache) ObserveAnswers(name string, addrs []netip.Addr, now time.Time) {
 	for _, addr := range addrs {
 		if c.answers == nil {
 			c.answers = make(map[netip.Addr][]dnsAnswer)
