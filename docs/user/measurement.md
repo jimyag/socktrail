@@ -44,6 +44,8 @@ TCP 显示 SYN、established、closing、closed、reset 或 midstream 观察状�
 
 HTTP/1.1 `Host` 统计已完整观察的请求数。同一 TCP 连接出现多个 Host 时，连接字节归入 `multiple Hosts` 一组，不按请求拆分。TCP/QUIC/进程侧的 TLS `SNI` 是连接级域名证据，只统计连接与流量，不推断 HTTPS 请求数。入站 Host/SNI 指被访问的服务名，不是客户端来源域名。
 
+PROXY protocol v2 的 AUTHORITY 来自转发代理提供的头部；只有没有 SNI 或 HTTP Host 时才用于连接命名。它代表代理声称的原始访问域名，可信程度取决于代理配置。
+
 ## 入站连接尝试
 
 入站的连接尝试按来源汇总：被拒绝（目标回 RST，或 UDP 目标回端口不可达）和没有应答（只有 SYN 或单向的一两个 UDP 报文）的尝试计数，并记下尝试过的端口（最多 1024 个）。来源 IP 页在该来源的行上显示 `tried N ports: refused …, unanswered …`；流表满时先批量淘汰这类一次性的流（每次最旧的 10%），扫描不会挤掉正常连接，被淘汰的流仍留在汇总里。汇总 10 分钟没有新尝试后删除。

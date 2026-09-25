@@ -179,6 +179,35 @@ func TestSOCKS4AndPROXYProtocolPreambles(t *testing.T) {
 	}
 }
 
+func TestPROXYv2Authority(t *testing.T) {
+	header := append([]byte("\r\n\r\n\x00\r\nQUIT\n"), 0x21, 0x11, 0, 0, 203, 0, 113, 9, 192, 0, 2, 10, 0xc8, 0x22, 1, 187)
+	tlv := append([]byte{0x02, 0, 16}, []byte("App.Example.Test")...)
+	header[15] = byte(12 + len(tlv))
+	header = append(header, tlv...)
+	for _, tc := range []struct {
+		name, payload, want string
+	}{
+		{"no Host", "GET / HTTP/1.1\r\n\r\n", "app.example.test"},
+		{"Host wins", "GET / HTTP/1.1\r\nHost: request.example.test\r\n\r\n", "request.example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1)
+			s.Add(1, append(append([]byte(nil), header...), tc.payload...))
+			e := s.Evidence()
+			if e.ProxyAuthority != "app.example.test" || e.Group() != tc.want || e.ParseError != "" {
+				t.Fatalf("unexpected evidence: %+v, group %q", e, e.Group())
+			}
+		})
+	}
+	bad := append([]byte(nil), header...)
+	bad[16+12+1], bad[16+12+2] = 0xff, 0xff
+	s := New(1)
+	s.Add(1, append(bad, []byte("GET / HTTP/1.1\r\n\r\n")...))
+	if e := s.Evidence(); e.ParseError == "" {
+		t.Fatalf("malformed TLV accepted: %+v", e)
+	}
+}
+
 func TestStartsClientMessage(t *testing.T) {
 	for _, tc := range []struct {
 		payload []byte

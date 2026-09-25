@@ -26,7 +26,7 @@ Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos
 
 前五者来自客户端发出的字节，取自所选接口的报文，报文没给出名字时取 socket 层的同一份字节（连接详情的 `APP` 来源标 `(socket)`）：`PROXY` 是 HTTP CONNECT、SOCKS4/4a 或 SOCKS5 请求里的目标，隧道里的 ClientHello 或明文请求仍按 `TLS`、`HTTP` 记录，连接详情标出经由的代理。
 
-连接开头的 PROXY protocol v1/v2 头（负载均衡器转发到后端时加上）会被跳过，详情列出其中的原始客户端地址。
+连接开头的 PROXY protocol v1/v2 头（负载均衡器转发到后端时加上）会被跳过，详情列出其中的原始客户端地址。v2 的 AUTHORITY TLV 也会解析；没有 SNI 或 Host 时用它命名，JSON 证据字段为 `proxy_authority`。TLV 越界按解析失败处理。
 
 `OPENSSL` 来自默认开启的本机进程探针，只有同时取得进程、socket 和已观测连接的准确对应关系时才进入域名页；它仍是 SNI，不能当成加密 HTTP Host。
 

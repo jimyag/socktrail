@@ -30,23 +30,24 @@ const (
 // Evidence is what a connection's bytes said about its destination. The JSON
 // names are part of socktrail's --output json document.
 type Evidence struct {
-	Kind        string            `json:"kind,omitempty"`         // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
-	Hosts       map[string]uint64 `json:"hosts,omitempty"`        // HTTP request count per Host or HTTP/2 :authority.
-	GRPC        bool              `json:"grpc,omitempty"`         // HTTP/2 requests carried a gRPC content type.
-	SNI         string            `json:"sni,omitempty"`          // ClientHello server_name as sent, or the OpenSSL process value.
-	NoSNI       bool              `json:"no_sni,omitempty"`       // A complete ClientHello carried no server_name.
-	ECH         bool              `json:"ech,omitempty"`          // The ClientHello carried an encrypted_client_hello extension.
-	ALPN        []string          `json:"alpn,omitempty"`         // Protocols the client offered, not the negotiated one.
-	Proxy       string            `json:"proxy,omitempty"`        // Destination requested through an HTTP CONNECT or SOCKS tunnel.
-	ProxyVia    string            `json:"proxy_via,omitempty"`    // CONNECT, SOCKS4 or SOCKS5.
-	ProxyClient string            `json:"proxy_client,omitempty"` // Original client address from a PROXY protocol header.
-	DNS         string            `json:"dns,omitempty"`          // Name whose DNS answer pointed at the peer address.
-	NoHandshake bool              `json:"no_handshake,omitempty"` // TLS records arrived, but their ClientHello was not captured.
-	ParseError  string            `json:"parse_error,omitempty"`
-	TLSVersion  string            `json:"tls_version,omitempty"` // Version the server chose in its ServerHello.
-	ServerALPN  string            `json:"server_alpn,omitempty"` // Protocol the server chose; TLS 1.3 sends it encrypted.
-	Certificate []string          `json:"certificate,omitempty"` // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
-	Alert       string            `json:"alert,omitempty"`       // First plaintext alert of the handshake and the side that sent it.
+	Kind           string            `json:"kind,omitempty"`            // http, http2, tls, quic, openssl, proxy, dns or other; empty until known.
+	Hosts          map[string]uint64 `json:"hosts,omitempty"`           // HTTP request count per Host or HTTP/2 :authority.
+	GRPC           bool              `json:"grpc,omitempty"`            // HTTP/2 requests carried a gRPC content type.
+	SNI            string            `json:"sni,omitempty"`             // ClientHello server_name as sent, or the OpenSSL process value.
+	NoSNI          bool              `json:"no_sni,omitempty"`          // A complete ClientHello carried no server_name.
+	ECH            bool              `json:"ech,omitempty"`             // The ClientHello carried an encrypted_client_hello extension.
+	ALPN           []string          `json:"alpn,omitempty"`            // Protocols the client offered, not the negotiated one.
+	Proxy          string            `json:"proxy,omitempty"`           // Destination requested through an HTTP CONNECT or SOCKS tunnel.
+	ProxyVia       string            `json:"proxy_via,omitempty"`       // CONNECT, SOCKS4 or SOCKS5.
+	ProxyClient    string            `json:"proxy_client,omitempty"`    // Original client address from a PROXY protocol header.
+	ProxyAuthority string            `json:"proxy_authority,omitempty"` // Original authority from a PROXY v2 TLV.
+	DNS            string            `json:"dns,omitempty"`             // Name whose DNS answer pointed at the peer address.
+	NoHandshake    bool              `json:"no_handshake,omitempty"`    // TLS records arrived, but their ClientHello was not captured.
+	ParseError     string            `json:"parse_error,omitempty"`
+	TLSVersion     string            `json:"tls_version,omitempty"` // Version the server chose in its ServerHello.
+	ServerALPN     string            `json:"server_alpn,omitempty"` // Protocol the server chose; TLS 1.3 sends it encrypted.
+	Certificate    []string          `json:"certificate,omitempty"` // Leaf certificate names, read below TLS 1.3 when the ClientHello had no SNI.
+	Alert          string            `json:"alert,omitempty"`       // First plaintext alert of the handshake and the side that sent it.
 }
 
 // Group names the destination for the domain page. A ClientHello with an ECH
@@ -75,6 +76,8 @@ func (e Evidence) Group() string {
 		return e.DNS
 	}
 	switch {
+	case e.ProxyAuthority != "":
+		return e.ProxyAuthority
 	case e.Proxy != "":
 		return e.Proxy
 	case e.NoHandshake:
@@ -123,6 +126,9 @@ func (e Evidence) Detail() string {
 	}
 	if e.ProxyClient != "" {
 		parts = append(parts, "PROXY protocol client "+e.ProxyClient)
+	}
+	if e.ProxyAuthority != "" {
+		parts = append(parts, "PROXY protocol authority "+e.ProxyAuthority)
 	}
 	if e.ECH {
 		parts = append(parts, "ECH offered: on-wire SNI may be a provider's public name")
@@ -393,6 +399,13 @@ func (p *parser) feed(data []byte) error {
 			case "preamble":
 				// A load balancer's PROXY header precedes the client's own bytes.
 				p.evidence.ProxyClient = target
+				if bytes.HasPrefix(p.sniff, proxyV2Signature) {
+					var ok bool
+					p.evidence.ProxyAuthority, ok = proxyV2Authority(p.sniff[:used])
+					if !ok {
+						return fmt.Errorf("invalid PROXY v2 TLV")
+					}
+				}
 				data, p.sniff = p.sniff[used:], nil
 			case "http2":
 				p.evidence.Kind, p.h2 = kind, new(h2Parser)
@@ -580,7 +593,7 @@ func proxyV1Header(b []byte) (used int, client string, ok bool) {
 }
 
 // proxyV2Header parses a binary PROXY protocol v2 header and its TCP source
-// address. TLVs after the addresses are skipped.
+// address. The caller reads any TLVs from the complete header.
 func proxyV2Header(b []byte) (used int, client string, ok bool) {
 	if len(b) < 16 {
 		return 0, "", true
@@ -600,6 +613,42 @@ func proxyV2Header(b []byte) (used int, client string, ok bool) {
 		client = netip.AddrPortFrom(netip.AddrFrom16([16]byte(b[16:32])).Unmap(), binary.BigEndian.Uint16(b[48:50])).String()
 	}
 	return used, client, true
+}
+
+func proxyV2Authority(b []byte) (string, bool) {
+	authority := ""
+	offset := 16
+	if b[12]&0x0f != 0 {
+		switch b[13] >> 4 {
+		case 1:
+			offset += 12
+		case 2:
+			offset += 36
+		case 3:
+			offset += 216
+		default:
+			return "", true
+		}
+	}
+	if offset > len(b) {
+		return "", false
+	}
+	for offset < len(b) {
+		if len(b)-offset < 3 {
+			return "", false
+		}
+		kind := b[offset]
+		length := int(binary.BigEndian.Uint16(b[offset+1 : offset+3]))
+		offset += 3
+		if length > len(b)-offset {
+			return "", false
+		}
+		if kind == 0x02 && authority == "" && validHostname(b[offset:offset+length]) {
+			authority = normalizeName(string(b[offset : offset+length]))
+		}
+		offset += length
+	}
+	return authority, true
 }
 
 // StartsClientMessage reports whether a TCP payload begins with a TLS
