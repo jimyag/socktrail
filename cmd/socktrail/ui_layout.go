@@ -135,7 +135,7 @@ func displayTime(value time.Time) string {
 }
 
 func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
-	groupWidth, hintWidth, ifaceWidth := 32, 42, 0
+	groupWidth, hintWidth, ifaceWidth := 0, 42, 0
 	tcpWidth, udpWidth, icmpWidth, reqWidth, unknownWidth, flowsWidth := 5, 5, 8, 5, 5, 6
 	for _, row := range rows {
 		groupWidth = max(groupWidth, displayWidth(row.label))
@@ -165,7 +165,7 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 		{title: "LAST", width: 8},
 		{title: "HOST/SNI OR PEER", width: hintWidth},
 	}
-	return newTableLayout(columns, viewport, 0, len(columns)-1)
+	return newTableLayout(columns, viewport, len(columns)-1)
 }
 
 func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) string {

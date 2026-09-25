@@ -187,6 +187,24 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	}
 }
 
+func TestGroupColumnFitsCurrentPageContent(t *testing.T) {
+	short := &uiRow{label: "123 curl"}
+	long := &uiRow{label: "456 worker-with-long-name"}
+	for _, viewport := range []int{120, 300} {
+		shortLayout := groupLayout([]*uiRow{short}, viewPID, viewport)
+		longLayout := groupLayout([]*uiRow{long}, viewPID, viewport)
+		if got := shortLayout.columns[0].width; got != displayWidth(short.label) {
+			t.Errorf("viewport %d: short PID GROUP width = %d, want %d", viewport, got, displayWidth(short.label))
+		}
+		if got := longLayout.columns[0].width; got != displayWidth(long.label) {
+			t.Errorf("viewport %d: long PID GROUP width = %d, want %d", viewport, got, displayWidth(long.label))
+		}
+		if shortLayout.width < viewport || longLayout.width < viewport {
+			t.Errorf("viewport %d: table did not fill the terminal", viewport)
+		}
+	}
+}
+
 func TestPIDSocketIOIsSeparateFromPacketBytes(t *testing.T) {
 	a := netip.MustParseAddrPort("127.0.0.1:51000")
 	b := netip.MustParseAddrPort("127.0.0.1:8080")
