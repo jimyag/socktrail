@@ -222,11 +222,16 @@ func icmpDescription(f *flow) string {
 // flowState is the STATE column: the TCP state plus any ICMP error the flow
 // received, which is the only state a UDP flow has.
 func flowState(f *flow) string {
+	state := f.TCPState
+	if f.Health.ConnectResult != 0 {
+		state = "syn"
+		state += ", " + connectResultName(f.Health.ConnectResult)
+	}
 	switch {
 	case f.ICMPError == "":
-		return f.TCPState
-	case f.TCPState == "":
+		return state
+	case state == "":
 		return f.ICMPError
 	}
-	return f.TCPState + ", " + f.ICMPError
+	return state + ", " + f.ICMPError
 }

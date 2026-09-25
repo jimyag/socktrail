@@ -20,6 +20,19 @@ type BpfConfig struct {
 	_     [6]byte
 }
 
+type BpfConnectStart struct {
+	_             structs.HostLayout
+	StartNs       uint64
+	ParentStartNs uint64
+	CgroupId      uint64
+	StartedAt     uint64
+	Pid           uint32
+	Ppid          uint32
+	LocalPort     uint16
+	Comm          [16]int8
+	_             [6]byte
+}
+
 type BpfEvent struct {
 	_             structs.HostLayout
 	StartNs       uint64
@@ -50,6 +63,7 @@ type BpfEvent struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
+	BpfMapConnecting          = "connecting"
 	BpfMapEvents              = "events"
 	BpfMapLost                = "lost"
 	BpfMapSettings            = "settings"
@@ -66,6 +80,7 @@ const (
 	BpfProgSpliceRecvExit     = "splice_recv_exit"
 	BpfProgSpliceSendExit     = "splice_send_exit"
 	BpfProgTcpAcceptExit      = "tcp_accept_exit"
+	BpfProgTcpConnectResult   = "tcp_connect_result"
 	BpfProgTcpLossProbeExit   = "tcp_loss_probe_exit"
 	BpfProgTcpRecvExit        = "tcp_recv_exit"
 	BpfProgTcpRecvExitOld     = "tcp_recv_exit_old"
@@ -136,6 +151,7 @@ type BpfProgramSpecs struct {
 	SpliceRecvExit     *ebpf.ProgramSpec `ebpf:"splice_recv_exit"`
 	SpliceSendExit     *ebpf.ProgramSpec `ebpf:"splice_send_exit"`
 	TcpAcceptExit      *ebpf.ProgramSpec `ebpf:"tcp_accept_exit"`
+	TcpConnectResult   *ebpf.ProgramSpec `ebpf:"tcp_connect_result"`
 	TcpLossProbeExit   *ebpf.ProgramSpec `ebpf:"tcp_loss_probe_exit"`
 	TcpRecvExit        *ebpf.ProgramSpec `ebpf:"tcp_recv_exit"`
 	TcpRecvExitOld     *ebpf.ProgramSpec `ebpf:"tcp_recv_exit_old"`
@@ -155,9 +171,10 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	Events   *ebpf.MapSpec `ebpf:"events"`
-	Lost     *ebpf.MapSpec `ebpf:"lost"`
-	Settings *ebpf.MapSpec `ebpf:"settings"`
+	Connecting *ebpf.MapSpec `ebpf:"connecting"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	Lost       *ebpf.MapSpec `ebpf:"lost"`
+	Settings   *ebpf.MapSpec `ebpf:"settings"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -186,13 +203,15 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	Events   *ebpf.Map `ebpf:"events"`
-	Lost     *ebpf.Map `ebpf:"lost"`
-	Settings *ebpf.Map `ebpf:"settings"`
+	Connecting *ebpf.Map `ebpf:"connecting"`
+	Events     *ebpf.Map `ebpf:"events"`
+	Lost       *ebpf.Map `ebpf:"lost"`
+	Settings   *ebpf.Map `ebpf:"settings"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.Connecting,
 		m.Events,
 		m.Lost,
 		m.Settings,
@@ -222,6 +241,7 @@ type BpfPrograms struct {
 	SpliceRecvExit     *ebpf.Program `ebpf:"splice_recv_exit"`
 	SpliceSendExit     *ebpf.Program `ebpf:"splice_send_exit"`
 	TcpAcceptExit      *ebpf.Program `ebpf:"tcp_accept_exit"`
+	TcpConnectResult   *ebpf.Program `ebpf:"tcp_connect_result"`
 	TcpLossProbeExit   *ebpf.Program `ebpf:"tcp_loss_probe_exit"`
 	TcpRecvExit        *ebpf.Program `ebpf:"tcp_recv_exit"`
 	TcpRecvExitOld     *ebpf.Program `ebpf:"tcp_recv_exit_old"`
@@ -252,6 +272,7 @@ func (p *BpfPrograms) Close() error {
 		p.SpliceRecvExit,
 		p.SpliceSendExit,
 		p.TcpAcceptExit,
+		p.TcpConnectResult,
 		p.TcpLossProbeExit,
 		p.TcpRecvExit,
 		p.TcpRecvExitOld,

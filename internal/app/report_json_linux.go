@@ -22,6 +22,18 @@ type jsonSnapshot struct {
 	Reports    []jsonReport    `json:"reports"`
 	Processes  []jsonProcessIO `json:"processes"`
 	Services   []jsonService   `json:"services"`
+	Failures   []jsonFailure   `json:"failures,omitempty"`
+}
+
+type jsonFailure struct {
+	Reason  string    `json:"reason"`
+	Process string    `json:"process"`
+	PID     int       `json:"pid"`
+	Target  string    `json:"target"`
+	Count   int       `json:"count"`
+	First   time.Time `json:"first"`
+	Last    time.Time `json:"last"`
+	IDs     []uint64  `json:"ids"`
 }
 
 // jsonService is one systemd unit or container: the socket I/O of its
@@ -36,10 +48,11 @@ type jsonService struct {
 }
 
 type jsonProbes struct {
-	PID          jsonProbe `json:"pid"`
-	OpenSSL      jsonProbe `json:"openssl"`
-	SocketStream jsonProbe `json:"socket_stream"`
-	NAT          jsonNAT   `json:"nat"`
+	PID           jsonProbe `json:"pid"`
+	ConnectResult jsonProbe `json:"connect_result"`
+	OpenSSL       jsonProbe `json:"openssl"`
+	SocketStream  jsonProbe `json:"socket_stream"`
+	NAT           jsonNAT   `json:"nat"`
 }
 
 // jsonProbe counts one probe's events. The OpenSSL probe does not count
@@ -100,6 +113,8 @@ type jsonFlow struct {
 	FirstSeen        time.Time        `json:"first_seen"`
 	LastSeen         time.Time        `json:"last_seen"`
 	SYNRTTMicros     int64            `json:"syn_rtt_us,omitempty"`
+	ConnectResult    string           `json:"connect_result,omitempty"`
+	ConnectLatencyUS uint32           `json:"connect_latency_us,omitzero"`
 	RTTMicros        int64            `json:"rtt_us,omitempty"`
 	RTTSource        string           `json:"rtt_source,omitempty"`
 	Retransmits      uint64           `json:"retransmits"`
@@ -245,6 +260,9 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 		SYNRTTMicros: f.Health.SynRTT.Microseconds(),
 		Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
 		Name: flowName(f), DomainConflict: f.DomainConflict,
+	}
+	if f.Health.ConnectLatency > 0 {
+		row.ConnectResult, row.ConnectLatencyUS = connectResultName(f.Health.ConnectResult), f.Health.ConnectLatency
 	}
 	if geo != nil {
 		sourceIP, targetIP := endpointAddresses(f)

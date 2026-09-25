@@ -44,6 +44,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Record the next 15 seconds of packets for a selected connection or PID to a PCAPNG file on demand, optionally starting with the frames of the seconds before.
 - Print a timed snapshot as a text report or a JSON document.
 - Stream connection changes as NDJSON and inspect recent changes in the `6 LOG` view.
+- Diagnose failed outbound TCP connects by process, target, and kernel error; inspect connect latency for successful and failed attempts.
 - Optionally enrich a selected connection with offline DB-IP Lite country and ASN data.
 
 ## Screenshots

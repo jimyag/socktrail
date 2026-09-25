@@ -152,6 +152,7 @@ type terminalUI struct {
 	captureStatus     string
 	capturePath       string
 	tlsProbeStatus    string
+	connectStatus     string
 	tlsProbeStats     *tlsprobe.Statistics
 	streamStatus      string
 	streamStats       *sockstream.Statistics
@@ -769,38 +770,43 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		addWithKey(label, label, f, ownBytes)
 	}
 	if mode == viewLog && u.hostState != nil {
-		seen := make(map[string]map[uint64]bool)
-		for _, change := range u.hostState.recentChanges {
-			f := change.Flow
-			if !scope.flow(f, c) {
-				continue
-			}
-			var group string
-			switch u.logGrouping {
-			case 1:
-				owner := f.Client
-				if f.Direction == "inbound" || owner.PID <= 0 {
-					owner = f.Server
+		if u.logGrouping == 2 {
+			for _, group := range u.hostState.failureGroups(scope, c) {
+				name := group.Reason + " " + formatPIDBrief(group.Process) + " → " + endpointGroup(group.Target)
+				for _, f := range group.Flows {
+					row := addWithKey(name, name, f, true)
+					row.lastEvent = group.Last
 				}
-				group = formatPIDBrief(owner)
-			case 2:
-				if f.End != flowFailed {
+			}
+		} else {
+			seen := make(map[string]map[uint64]bool)
+			for _, change := range u.hostState.recentChanges {
+				f := change.Flow
+				if !scope.flow(f, c) {
 					continue
 				}
-				group = "failed " + endpointGroup(f.Target)
-			default:
-				group = strings.Join(change.Changes, "+")
-			}
-			if seen[group] == nil {
-				seen[group] = make(map[uint64]bool)
-			}
-			if seen[group][change.ID] {
-				continue
-			}
-			seen[group][change.ID] = true
-			row := addWithKey(group, group, f, true)
-			if change.At.After(row.lastEvent) {
-				row.lastEvent = change.At
+				var group string
+				switch u.logGrouping {
+				case 1:
+					owner := f.Client
+					if f.Direction == "inbound" || owner.PID <= 0 {
+						owner = f.Server
+					}
+					group = formatPIDBrief(owner)
+				default:
+					group = strings.Join(change.Changes, "+")
+				}
+				if seen[group] == nil {
+					seen[group] = make(map[uint64]bool)
+				}
+				if seen[group][change.ID] {
+					continue
+				}
+				seen[group][change.ID] = true
+				row := addWithKey(group, group, f, true)
+				if change.At.After(row.lastEvent) {
+					row.lastEvent = change.At
+				}
 			}
 		}
 	} else if mode == viewInterfaces {
@@ -1385,6 +1391,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			lines = append(lines, u.geo.Status())
 		}
 		lines = append(lines, u.tlsProbeStatus)
+		lines = append(lines, u.connectStatus)
 		if u.tlsProbeStats != nil {
 			lines = append(lines, fmt.Sprintf("OpenSSL SNI events %d  invalid %d  queue dropped %d", u.tlsProbeStats.Received.Load(), u.tlsProbeStats.Invalid.Load(), u.tlsProbeStats.Dropped.Load()))
 		}
@@ -1586,6 +1593,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			appLine += " " + styleFaint.paint("("+rttSource+")")
 		}
 		appLine += "  " + label("RETX") + " " + retxText + " " + styleFaint.paint("("+retxSource+")")
+		if selected.Health.ConnectLatency > 0 {
+			appLine += "  " + label("CONNECT") + " " + connectResultName(selected.Health.ConnectResult) + " " + (time.Duration(selected.Health.ConnectLatency) * time.Microsecond).String()
+		}
 		if selected.DomainConflict {
 			appLine += "  " + styleAlert.paint("DOMAIN CONFLICT")
 		}

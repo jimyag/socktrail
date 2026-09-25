@@ -20,6 +20,8 @@ type flowChangeKey struct {
 	hosts, actors  uint64
 	client, server processID
 	end            flowEnd
+	connectResult  int32
+	connectLatency uint32
 }
 
 type pendingFlowName struct {
@@ -29,7 +31,10 @@ type pendingFlowName struct {
 }
 
 func changeKey(f *flow) flowChangeKey {
-	k := flowChangeKey{tcp: f.TCPState, icmp: f.ICMPError, client: f.Client.id(), server: f.Server.id(), end: f.End}
+	k := flowChangeKey{
+		tcp: f.TCPState, icmp: f.ICMPError, client: f.Client.id(), server: f.Server.id(), end: f.End,
+		connectResult: f.Health.ConnectResult, connectLatency: f.Health.ConnectLatency,
+	}
 	if f.Domain != nil {
 		e := f.Domain.Evidence()
 		k.group, k.name = e.Group(), e.Label()
@@ -73,9 +78,10 @@ func (s *hostViewState) detectChanges(current, previous map[uint64]*flow, now ti
 			continue
 		}
 		var fields []string
-		if key.tcp != old.tcp || key.icmp != old.icmp {
+		if key.tcp != old.tcp || key.icmp != old.icmp || key.connectResult != old.connectResult || key.connectLatency != old.connectLatency {
 			fields = append(fields, "state")
 			old.tcp, old.icmp = key.tcp, key.icmp
+			old.connectResult, old.connectLatency = key.connectResult, key.connectLatency
 		}
 		if key.client != old.client || key.server != old.server || key.actors != old.actors {
 			fields = append(fields, "process")

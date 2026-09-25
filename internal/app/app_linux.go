@@ -36,11 +36,11 @@ import (
 
 type flowKey struct {
 	A, B      netip.AddrPort
-	Protocol  uint8
 	EtherType uint16 // Non-zero for frames without an IP header.
+	ICMPID    uint16
+	Protocol  uint8
 	ICMPType  uint8
 	ICMPCode  uint8
-	ICMPID    uint16
 	ICMPEcho  bool
 }
 
@@ -814,6 +814,9 @@ func (c *collector) event(e probe.Event) {
 		fmt.Fprintf(os.Stderr, "PID event: proto=%d op=%s app-bytes=%d local=%s remote=%s pid=%d netns=%d\n", e.Protocol, e.Operation, e.AppBytes, e.Local, e.Remote, e.PID, e.NetNS)
 	}
 	e.Local, e.Remote = c.natSocket(e.Local, e.Remote, e.Protocol)
+	if e.Operation == "connect_result" {
+		c.connectResult(e)
+	}
 	if e.Protocol == 6 && e.TCP != (probe.TCPInfo{}) {
 		key := keyFor(e.Local, e.Remote, 6)
 		if f := c.flows[key]; f != nil {
@@ -1342,6 +1345,7 @@ func Run() error {
 		ui.showEnvSecrets = *showEnvSecrets
 		ui.hostState = &hostState
 		ui.tlsProbeStatus = tlsStatus
+		ui.connectStatus = probeStats.ConnectStatus
 		ui.tlsProbeStats = tlsStats
 		ui.streamStatus, ui.streamStats = streamStatus, streamStats
 		ui.natStatus, ui.nat = natStatus, nat
@@ -1709,10 +1713,11 @@ func Run() error {
 		}
 	} else if *output == "json" {
 		snapshot := jsonSnapshot{Version: 1, Netns: stat.Ino, Interfaces: interfaceNames, GeoIP: geo.Status(), Probes: jsonProbes{
-			PID:          jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
-			OpenSSL:      jsonProbe{Status: tlsStatus},
-			SocketStream: jsonProbe{Status: streamStatus},
-			NAT:          jsonNAT{Status: natStatus},
+			PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
+			ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
+			OpenSSL:       jsonProbe{Status: tlsStatus},
+			SocketStream:  jsonProbe{Status: streamStatus},
+			NAT:           jsonNAT{Status: natStatus},
 		}}
 		if tlsStats != nil {
 			snapshot.Probes.OpenSSL.Received, snapshot.Probes.OpenSSL.Dropped, snapshot.Probes.OpenSSL.Invalid = tlsStats.Received.Load(), tlsStats.Dropped.Load(), tlsStats.Invalid.Load()
@@ -1727,8 +1732,8 @@ func Run() error {
 		// A service's connections span every interface, like the host view.
 		host, _, members = hostCollector(interfaceNames, collectors)
 		correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
+		hostState.update(host, members)
 		if autoInterfaces {
-			hostState.update(host, members)
 			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo, hostState.displayedIDs())}
 		} else {
 			for _, name := range interfaceNames {
@@ -1738,6 +1743,12 @@ func Run() error {
 		snapshot.Filter = filter.String()
 		snapshot.Processes = processesJSON(collectors[interfaceNames[0]], *limit, processes, scope)
 		snapshot.Services = servicesJSON(host, processes, scope)
+		for _, group := range hostState.failureGroups(scope, host) {
+			snapshot.Failures = append(snapshot.Failures, jsonFailure{
+				Reason: group.Reason, Process: group.Process.Name, PID: group.Process.PID,
+				Target: group.Target.String(), Count: len(group.IDs), First: group.First, Last: group.Last, IDs: group.IDs,
+			})
+		}
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(snapshot)

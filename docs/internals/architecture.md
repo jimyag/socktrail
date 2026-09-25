@@ -49,6 +49,8 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 [pid.bpf.c](../../internal/probe/pid.bpf.c) 挂在 TCP connect/accept/send/receive、UDP send/receive，以及原始 socket 和 ping socket 发出的 ICMP Echo 请求上，每个事件带协议、端点、PID、进程启动时间、角色和应用字节数，还有父进程（PID 和启动时间）和 cgroup v2 ID：在事件发生时读取，进程随后退出也不丢。TCP 事件另带 socket 此刻的平滑 RTT 及偏差、拥塞窗口、已发送数据段和累计重传，与 `ss -ti` 同源。
 
+出站 TCP 建连结果另由 `inet_sock_set_state` 跟踪：进入 SYN_SENT 时在有界 LRU map 保存发起进程和时间，`tcp_v4_connect`/`tcp_v6_connect` 返回时补上当时才分配好的本地临时端口；转为 ESTABLISHED 或 CLOSE 时输出结果与耗时并删除 map 项。CLOSE 的 `sk_err=0` 归为应用主动放弃。结果复用 128 B 的 PID ring 事件。跟踪点加载或挂载失败只关闭这项探针，状态页与 JSON 显示原因，其他 socket 事件继续采集。
+
 - `sendfile` 和写往 socket 的 splice 在 6.5 起都经过 `tcp_sendmsg`；之前的内核里 splice 写 socket 走 `generic_splice_sendpage`，另挂它的 fexit。读 socket 的 splice 走 `tcp_splice_read`，各内核都有。
 - socket 开启内核 TLS 后，协议操作换成 tls 模块的实现，读写不再经过 `tcp_sendmsg`/`tcp_recvmsg`。程序另挂 `tls_sw_sendmsg`、`tls_device_sendmsg`、`tls_sw_recvmsg` 和 `tls_sw_splice_read` 的 fexit；cilium/ebpf 能挂到已加载模块里的函数。`tls_*_sendpage` 不挂，它们的字节已由 `generic_splice_sendpage` 计入。
 - 重传挂 `tcp_retransmit_skb`（返回 0 才算）和 `tcp_send_loss_probe` 的 fexit：尾部丢失探测直接调用 `__tcp_retransmit_skb`，不挂它会少计。事件带 `tcp_sock` 里的累计 `total_retrans`，也就是 `ss -ti` 显示的值；这两个 hook 在软中断和定时器里运行，网络命名空间取自 socket 而不是当前任务。

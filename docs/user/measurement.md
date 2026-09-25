@@ -20,9 +20,11 @@ PID 页的 RX/TX 是当前网络命名空间内 TCP/UDP `sendmsg`/`recvmsg` 返�
 
 TCP 来源/目标按 SYN 或已关联的 connect/accept 确定。没看到建立过程时，发出 ClientHello 或 HTTP 请求行的一端是客户端；本机连接再查内核 socket 表：本地端口上有监听 socket，或本地地址不属于本机（透明代理接受的连接）时为入站，否则为出站。方向不按端口号猜测，都判断不了时详情列出两个带 `?` 的观测端点。UDP 和其他 IP 协议的来源/目标是首次观测报文的端点，ICMP Echo 以首个请求的发送方为发起方。UDP 两端 PID 按本机 socket 所在端点记录，不因服务端回包而交换。
 
-TCP 显示 SYN、established、closing、closed、reset 或 midstream 观察状态；同五元组的新 SYN 建立新代次。不能可靠关联的 PID 显示未知或有歧义。
+TCP 显示 SYN、established、closing、closed、reset 或 midstream 观察状态；本机出站建连失败时再附上内核报告的 refused、timeout、aborted 或不可达原因。同五元组的新 SYN 建立新代次。不能可靠关联的 PID 显示未知或有歧义。
 
-整机合并视图为连接分配运行期间稳定的 ID。TCP 关闭后等待 2 秒接收晚到的进程事件，再把最后一份合并记录放入最多 5000 条的内存历史；连接从采集表消失时，也会以 `idle` 或 `evicted` 记录。历史目前只供后续实时事件功能使用，快照 `flows[]` 仍只列采集表中的连接。历史满时最早的记录被覆盖，程序退出后不持久化。
+整机合并视图为连接分配运行期间稳定的 ID。TCP 正常关闭后等待 2 秒接收晚到的进程事件；内核明确报告的建连失败立即归档。最后一份合并记录放入最多 5000 条的内存历史；连接从采集表消失时，也会以 `idle` 或 `evicted` 记录。快照 `flows[]` 仍只列采集表中的连接，`failures[]` 同时汇总活动表和历史。历史满时最早的记录被覆盖，程序退出后不持久化。
+
+本机出站 TCP 建连时延从进入 SYN_SENT 到 ESTABLISHED 或 CLOSE 计算，含 SYN 重传时间；`connect_result=aborted` 表示应用在内核给出错误之前关闭了 socket。它不等于连接建立后的 RTT，也不统计 UDP。内核状态跟踪点不可用时，状态页和 JSON 探针状态会说明原因；抓包侧的 SYN、RST 和 ICMP 观察仍可用，但不会凭这些推断 errno 或精确建连时延。
 
 ## RTT 与 RETX
 

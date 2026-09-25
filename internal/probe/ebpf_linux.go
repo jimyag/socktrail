@@ -62,26 +62,37 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 	} else {
 		delete(spec.Programs, "ktls_recv_exit_old")
 	}
-	objects, err := ebpf.NewCollection(spec)
-	if err != nil && errors.Is(err, ebpf.ErrNotSupported) && strings.Contains(err.Error(), "program ktls_") {
-		// Module BTF may be visible but inaccessible without CAP_SYS_ADMIN.
-		// The core socket probes still work with CAP_BPF and CAP_PERFMON.
-		for name := range spec.Programs {
-			if strings.HasPrefix(name, "ktls_") {
-				delete(spec.Programs, name)
-			}
-		}
+	connectStatus := "kernel TCP connect results active"
+	var objects *ebpf.Collection
+	ktlsFallback, connectFallback := false, false
+	for {
 		objects, err = ebpf.NewCollection(spec)
 		if err == nil {
-			notice := "socktrail: kernel TLS probes unavailable; continuing without kTLS socket events"
-			if os.Geteuid() != 0 {
-				notice += "; run with sudo for full kernel TLS observation"
+			break
+		}
+		switch {
+		case !ktlsFallback && errors.Is(err, ebpf.ErrNotSupported) && strings.Contains(err.Error(), "program ktls_"):
+			// Module BTF may be visible but inaccessible without CAP_SYS_ADMIN.
+			for name := range spec.Programs {
+				if strings.HasPrefix(name, "ktls_") {
+					delete(spec.Programs, name)
+				}
 			}
-			fmt.Fprintln(os.Stderr, notice)
+			ktlsFallback = true
+		case !connectFallback && strings.Contains(err.Error(), "tcp_connect_result"):
+			connectStatus = "kernel TCP connect results unavailable: " + err.Error()
+			delete(spec.Programs, "tcp_connect_result")
+			connectFallback = true
+		default:
+			return nil, nil, nil, fmt.Errorf("load embedded eBPF programs (need BTF and CAP_BPF/CAP_PERFMON): %w", err)
 		}
 	}
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load embedded eBPF programs (need BTF and CAP_BPF/CAP_PERFMON): %w", err)
+	if ktlsFallback {
+		notice := "socktrail: kernel TLS probes unavailable; continuing without kTLS socket events"
+		if os.Geteuid() != 0 {
+			notice += "; run with sudo for full kernel TLS observation"
+		}
+		fmt.Fprintln(os.Stderr, notice)
 	}
 	key := uint32(0)
 	if err := objects.Maps["settings"].Update(key, BpfConfig{Netns: netNS, Port: port}, ebpf.UpdateAny); err != nil {
@@ -92,6 +103,10 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 	for name, program := range objects.Programs {
 		attached, err := link.AttachTracing(link.TracingOptions{Program: program})
 		if err != nil {
+			if name == "tcp_connect_result" {
+				connectStatus = "kernel TCP connect results unavailable: " + err.Error()
+				continue
+			}
 			for _, previous := range links {
 				_ = previous.Close()
 			}
@@ -118,6 +133,7 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 	events := make(chan []Event, 16)
 	done := make(chan error, 1)
 	stats := new(Statistics)
+	stats.ConnectStatus = connectStatus
 	pollCtx, stopPoll := context.WithCancel(ctx)
 	pollDone := make(chan struct{})
 	go func() {
@@ -191,6 +207,9 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 				continue
 			}
 			stats.Received.Add(1)
+			if event.Operation == "connect_result" {
+				stats.ConnectEvents.Add(1)
+			}
 			if batch = append(batch, event); record.Remaining == 0 || len(batch) == maxBatch {
 				send()
 			}
@@ -228,7 +247,7 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 	if raw.Protocol != 6 && raw.Protocol != 17 && raw.Protocol != 1 && raw.Protocol != 58 {
 		return Event{}, fmt.Errorf("invalid eBPF protocol %d", raw.Protocol)
 	}
-	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit"}[raw.Operation]
+	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit", 6: "connect_result"}[raw.Operation]
 	if operation == "" {
 		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
 	}
@@ -240,7 +259,7 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		//nolint:gosec // G115: kernel char arrays contain raw bytes, including values above 127.
 		name = append(name, byte(c))
 	}
-	return Event{
+	event := Event{
 		Protocol:      raw.Protocol,
 		Family:        int(raw.Family),
 		Role:          role,
@@ -259,5 +278,11 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 			RTT: time.Duration(raw.SrttUs) * time.Microsecond, RTTVar: time.Duration(raw.RttvarUs) * time.Microsecond,
 			Cwnd: raw.SndCwnd, SegsOut: raw.DataSegsOut, Retransmits: raw.TotalRetrans,
 		},
-	}, nil
+	}
+	if operation == "connect_result" {
+		event.AppBytes, event.TCP = 0, TCPInfo{}
+		event.Result = int32(raw.SrttUs)            //nolint:gosec // Kernel uses this field for a non-negative errno only on connect_result.
+		event.ConnectLatency = uint32(raw.AppBytes) //nolint:gosec // BPF clamps latency to uint32 before writing it.
+	}
+	return event, nil
 }

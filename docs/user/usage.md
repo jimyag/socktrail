@@ -156,18 +156,21 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `reports[].inbound_attempts[]` | 被拒或无应答的入站尝试：`source`、`ports`、`refused`、`unanswered` |
 | `processes[]` | PID socket I/O：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、`rx_bytes`、`tx_bytes`，前 `--limit` 个 |
 | `services[]` | 按服务汇总：`service`、`cgroup`、`processes`（进程数）、`connections`、`rx_bytes`、`tx_bytes`，全部列出 |
+| `failures[]` | 最近失败的出站 TCP 建连，按原因、进程和目标分组；包含次数、首次/最近时间及连接 ID。最多覆盖内存中最近 5000 条已结束连接 |
+| `probes.connect_result` | 内核建连结果探针的状态和已收到事件数；不可用时仍按抓包状态显示连接 |
 
 `flows[]` 的字段：
 
 | 字段 | 内容 |
 | --- | --- |
-| `id`、`end` | 自动合并的整机视图中，`id` 是本次运行内的稳定连接 ID；`end` 表示已确认结束的连接，目前取值为 `fin`、`reset`、`idle` 或 `evicted`。显式按单接口输出的快照暂不分配整机 ID；`flows[]` 仍只列当前采集表内的连接 |
+| `id`、`end` | 自动合并的整机视图中，`id` 是本次运行内的稳定连接 ID；`end` 表示已确认结束的连接，取值为 `fin`、`reset`、`failed`、`idle` 或 `evicted`。显式按单接口输出的快照暂不分配整机 ID；`flows[]` 仍只列当前采集表内的连接 |
 | `protocol`、`app`、`state`、`direction` | 与文本表格的 PROTO、APP、STATE、DIR 相同 |
 | `interfaces` | 抓到这条连接的采集接口，与文本表格和界面的 IFACE 相同；网桥和它的成员口会同时出现 |
 | `source`、`target`、`initiator_unknown` | 发起方与接收方；TCP 的发起方不确定时 `initiator_unknown` 为 true，两端为观测到的原始顺序 |
 | `source_geo`、`target_geo` | 相应公网地址命中本地 DB-IP Lite 时的 `country_code`、`country`、`asn`、`organization`；未命中时省略 |
 | `rx_bytes`、`tx_bytes`、`packets`、`first_seen`、`last_seen` | 采集点的 IP 字节与报文数 |
 | `syn_rtt_us`、`rtt_us`、`rtt_source` | 抓到的握手时延，以及界面上显示的 RTT 和来源（`kernel` 或 `SYN`），单位微秒 |
+| `connect_result`、`connect_latency_us` | 本机出站 TCP 建连结果（`connected`、`refused`、`timeout`、`aborted`、`host unreachable` 等）及从 SYN_SENT 到结束的微秒数；探针未观察到时省略 |
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`（本端地址）、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits` |
 | `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`；`pid` 为 -1 表示多个进程有歧义 |
@@ -188,4 +191,4 @@ sudo socktrail --output ndjson | jq -c 'select(.changes | index("name")) | {id,s
 sudo socktrail --output ndjson --duration 30s --refresh 10s > changes.ndjson
 ```
 
-交互界面按 `6` 打开 LOG 页，显示最近 5000 次连接变化，按 `b` 在变化类型、进程和失败连接分组之间切换；失败分组在内核建连结果探针接入后才有数据。LOG 的底栏显示所选连接的当前或最后一次观测详情。LOG 保存在进程内存里；启动时指定 `--log-file changes.ndjson` 可同时保存变化和定期刷新记录。文件权限为 0600，达到 64 MiB 时滚动为 `.1`，只保留这一份旧文件。
+交互界面按 `6` 打开 LOG 页，显示最近 5000 次连接变化，按 `b` 在变化类型、进程和失败连接分组之间切换；失败分组按原因、进程和目标合并，底栏逐条显示失败连接。LOG 的底栏显示所选连接的当前或最后一次观测详情。LOG 保存在进程内存里；启动时指定 `--log-file changes.ndjson` 可同时保存变化和定期刷新记录。文件权限为 0600，达到 64 MiB 时滚动为 `.1`，只保留这一份旧文件。

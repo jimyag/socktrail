@@ -112,6 +112,7 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 		listed := merged.Domain != nil && merged.Domain.Evidence().Listed()
 		newActive[id] = hostFlowTotal{RX: merged.RX, TX: merged.TX, domain: listed}
 		shown := s.displayed[id]
+		wasEnded := shown != nil && shown.End != flowOngoing
 		if shown == nil {
 			shown = merged
 		} else if shown.End != flowOngoing {
@@ -120,7 +121,9 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 		} else {
 			*shown = *merged
 		}
-		if shown.End == flowOngoing && shown.Closed && now.Sub(shown.Last) >= lateEventWindow {
+		if shown.End != flowOngoing && !wasEnded {
+			s.remember(id, shown)
+		} else if shown.End == flowOngoing && shown.Closed && now.Sub(shown.Last) >= lateEventWindow {
 			shown.End = endReason(shown, now)
 			s.remember(id, shown)
 		}
@@ -373,6 +376,12 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			merged.Health.SynRTT = f.Health.SynRTT
 		}
 		merged.Health.Retransmits = max(merged.Health.Retransmits, f.Health.Retransmits)
+		if f.Health.ConnectLatency > 0 {
+			merged.Health.ConnectResult, merged.Health.ConnectLatency = f.Health.ConnectResult, f.Health.ConnectLatency
+		}
+		if f.End == flowFailed {
+			merged.End, merged.Closed = flowFailed, true
+		}
 		for side, info := range f.Health.Kernel {
 			if info != (probe.TCPInfo{}) {
 				merged.Health.observeKernel(side, info)

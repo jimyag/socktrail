@@ -18,6 +18,10 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define OP_SEND 3
 #define OP_RECV 4
 #define OP_RETRANSMIT 5
+#define OP_CONNECT_RESULT 6
+#define TCP_ESTABLISHED 1
+#define TCP_SYN_SENT 2
+#define TCP_CLOSE 7
 #define WAKEUP_BYTES (512 << 10) // Of the 4 MiB event ring; the reader drains it every 100 ms anyway.
 
 struct in_addr { __be32 s_addr; } __attribute__((preserve_access_index));
@@ -70,6 +74,7 @@ struct sock_common {
 struct sock {
     struct sock_common __sk_common;
     __u16 sk_protocol; // A plain field from Linux 5.6.
+    int sk_err;
 } __attribute__((preserve_access_index));
 struct tcp_sock {
     __u32 srtt_us; // Smoothed RTT, shifted left by 3.
@@ -149,6 +154,101 @@ struct {
     __uint(max_entries, 1 << 22);
     __type(value, struct event);
 } events SEC(".maps");
+
+struct connect_start {
+    __u64 start_ns;
+    __u64 parent_start_ns;
+    __u64 cgroup_id;
+    __u64 started_at;
+    __u32 pid;
+    __u32 ppid;
+    __u16 local_port;
+    char comm[16];
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);
+    __type(value, struct connect_start);
+} connecting SEC(".maps");
+
+SEC("tp_btf/inet_sock_set_state")
+int BPF_PROG(tcp_connect_result, const struct sock *sk, int oldstate, int newstate)
+{
+    if (!sk || (newstate != TCP_SYN_SENT && oldstate != TCP_SYN_SENT)) return 0;
+    if (BPF_CORE_READ(sk, sk_protocol) != 6) return 0;
+    __u32 zero = 0;
+    struct config *cfg = bpf_map_lookup_elem(&settings, &zero);
+    if (!cfg || !cfg->netns || BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum) != cfg->netns) return 0;
+    __u64 key = (__u64)sk;
+    if (newstate == TCP_SYN_SENT) {
+        struct task_struct *task = (void *)bpf_get_current_task();
+        struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+        struct connect_start start = {};
+        start.pid = bpf_get_current_pid_tgid() >> 32;
+        start.start_ns = process_start(task);
+        start.ppid = BPF_CORE_READ(parent, tgid);
+        start.parent_start_ns = process_start(parent);
+        start.cgroup_id = bpf_get_current_cgroup_id();
+        start.started_at = bpf_ktime_get_ns();
+        start.local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+        bpf_get_current_comm(&start.comm, sizeof(start.comm));
+        bpf_map_update_elem(&connecting, &key, &start, BPF_ANY);
+        return 0;
+    }
+    if (newstate != TCP_ESTABLISHED && newstate != TCP_CLOSE) return 0;
+    struct connect_start *start = bpf_map_lookup_elem(&connecting, &key);
+    if (!start) return 0;
+    __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    __u16 local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+    if (!local_port) local_port = start->local_port;
+    __u16 remote_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    if ((family != AF_INET && family != AF_INET6) ||
+        (cfg->port && cfg->port != local_port && cfg->port != remote_port)) goto done;
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        __u64 *count = bpf_map_lookup_elem(&lost, &zero);
+        if (count) __sync_fetch_and_add(count, 1);
+        goto done;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->pid = start->pid;
+    e->start_ns = start->start_ns;
+    e->ppid = start->ppid;
+    e->parent_start_ns = start->parent_start_ns;
+    e->cgroup_id = start->cgroup_id;
+    __builtin_memcpy(e->comm, start->comm, sizeof(e->comm));
+    e->netns = cfg->netns;
+    e->local_port = local_port;
+    e->remote_port = remote_port;
+    e->protocol = 6;
+    e->role = ROLE_SEND;
+    e->operation = OP_CONNECT_RESULT;
+    e->family = family == AF_INET ? 4 : 6;
+    // These fields are operation-specific, keeping the 128-byte ring event.
+    e->srtt_us = newstate == TCP_CLOSE ? BPF_CORE_READ(sk, sk_err) : 0;
+    if (newstate == TCP_CLOSE && e->srtt_us == 0) e->srtt_us = 0xffffffff; // Application aborted.
+    __u64 elapsed = (bpf_ktime_get_ns() - start->started_at) / 1000;
+    if (elapsed == 0) elapsed = 1;
+    e->app_bytes = elapsed > 0xffffffff ? 0xffffffff : elapsed;
+    if (family == AF_INET) {
+        __be32 local = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __be32 remote = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(e->local_ip, &local, 4);
+        __builtin_memcpy(e->remote_ip, &remote, 4);
+    } else {
+        struct in6_addr local = {}, remote = {};
+        BPF_CORE_READ_INTO(&local, sk, __sk_common.skc_v6_rcv_saddr);
+        BPF_CORE_READ_INTO(&remote, sk, __sk_common.skc_v6_daddr);
+        __builtin_memcpy(e->local_ip, local.in6_u.u6_addr8, 16);
+        __builtin_memcpy(e->remote_ip, remote.in6_u.u6_addr8, 16);
+    }
+    __u64 flags = bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) >= WAKEUP_BYTES ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
+    bpf_ringbuf_submit(e, flags);
+done:
+    bpf_map_delete_elem(&connecting, &key);
+    return 0;
+}
 
 // local_port overrides the socket's port when non-negative: an ICMP echo
 // flow is keyed by its identifier instead.
@@ -256,7 +356,12 @@ SEC("fexit/tcp_v4_connect")
 int BPF_PROG(tcp_v4_connect_exit, struct sock *sk, struct sockaddr *uaddr,
              int addr_len, int ret)
 {
-    if (ret == 0) output(sk, 6, ROLE_SEND, OP_CONNECT, 0, 0, AF_INET, -1);
+    if (ret == 0) {
+        __u64 key = (__u64)sk;
+        struct connect_start *start = bpf_map_lookup_elem(&connecting, &key);
+        if (start) start->local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+        output(sk, 6, ROLE_SEND, OP_CONNECT, 0, 0, AF_INET, -1);
+    }
     return 0;
 }
 
@@ -264,7 +369,12 @@ SEC("fexit/tcp_v6_connect")
 int BPF_PROG(tcp_v6_connect_exit, struct sock *sk, struct sockaddr *uaddr,
              int addr_len, int ret)
 {
-    if (ret == 0) output(sk, 6, ROLE_SEND, OP_CONNECT, 0, 0, AF_INET6, -1);
+    if (ret == 0) {
+        __u64 key = (__u64)sk;
+        struct connect_start *start = bpf_map_lookup_elem(&connecting, &key);
+        if (start) start->local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+        output(sk, 6, ROLE_SEND, OP_CONNECT, 0, 0, AF_INET6, -1);
+    }
     return 0;
 }
 

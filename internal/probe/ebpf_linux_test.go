@@ -15,9 +15,16 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestRingEventSize(t *testing.T) {
+	if size := unsafe.Sizeof(BpfEvent{}); size != 128 {
+		t.Fatalf("PID ring event is %d B, want 128 B", size)
+	}
+}
 
 // Needs root to load the probe: sudo go test ./internal/probe/
 // It exercises every hook on the running kernel, including the recvmsg and
@@ -26,7 +33,12 @@ import (
 // startProbe attaches the probes for netNS and hands their events over one
 // at a time.
 func startProbe(t *testing.T, netNS uint64) <-chan Event {
-	batches, _, _, err := StartEmbedded(t.Context(), netNS, 0)
+	events, _ := startProbeStats(t, netNS)
+	return events
+}
+
+func startProbeStats(t *testing.T, netNS uint64) (<-chan Event, *Statistics) {
+	batches, _, stats, err := StartEmbedded(t.Context(), netNS, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +51,7 @@ func startProbe(t *testing.T, netNS uint64) <-chan Event {
 			}
 		}
 	}()
-	return events
+	return events, stats
 }
 
 // ownCgroupID returns the ID of this process's cgroup v2: the inode of its
@@ -158,6 +170,130 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatalf("events never seen: %v", slices.Sorted(maps.Keys(want)))
+		}
+	}
+}
+
+func TestProbeReportsConnectResults(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("loading eBPF programs needs root")
+	}
+	info, err := os.Stat("/proc/thread-self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, stats := startProbeStats(t, info.Sys().(*syscall.Stat_t).Ino)
+	if !strings.HasSuffix(stats.ConnectStatus, "active") {
+		t.Skip(stats.ConnectStatus)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := netip.MustParseAddrPort(ln.Addr().String())
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	_ = ln.Close()
+	_, err = net.DialTimeout("tcp", good.String(), time.Second)
+	if err == nil {
+		t.Fatal("closed listener accepted a connection")
+	}
+	var success, refused bool
+	deadline := time.After(3 * time.Second)
+	for !success || !refused {
+		select {
+		case e := <-events:
+			if e.Operation != "connect_result" || e.Remote != good || e.PID != os.Getpid() {
+				continue
+			}
+			if e.Local.Port() == 0 {
+				t.Fatalf("connect result lost the local port: %+v", e)
+			}
+			if e.ConnectLatency == 0 {
+				t.Fatalf("connect result has no latency: %+v", e)
+			}
+			if e.Result == 0 {
+				success = true
+			} else if e.Result == int32(syscall.ECONNREFUSED) {
+				refused = true
+			}
+		case <-deadline:
+			t.Fatalf("connect results: success=%t refused=%t", success, refused)
+		}
+	}
+}
+
+func TestProbeReportsAbortedAndTimedOutConnects(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("loading eBPF programs needs root")
+	}
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Skip("needs nft")
+	}
+	runtime.LockOSThread() // This thread's private namespace ends with the test.
+	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
+		t.Fatal(err)
+	}
+	run := func(name string, args ...string) {
+		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+			t.Fatalf("%s %v: %v %s", name, args, err, out)
+		}
+	}
+	run("ip", "link", "set", "lo", "up")
+	info, err := os.Stat("/proc/thread-self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batches, _, stats, err := StartEmbedded(t.Context(), info.Sys().(*syscall.Stat_t).Ino, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(stats.ConnectStatus, "active") {
+		t.Skip(stats.ConnectStatus)
+	}
+	run(nft, "add table inet t; add chain inet t in { type filter hook input priority 0; }; add rule inet t in tcp dport 43999 drop")
+	connect := func(abort bool) netip.AddrPort {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.SetsockoptInt(fd, unix.IPPROTO_TCP, unix.TCP_SYNCNT, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Connect(fd, &unix.SockaddrInet4{Port: 43999, Addr: [4]byte{127, 0, 0, 1}}); err != unix.EINPROGRESS {
+			t.Fatalf("nonblocking connect: %v", err)
+		}
+		local, err := unix.Getsockname(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := uint16(local.(*unix.SockaddrInet4).Port)
+		localPort := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
+		if abort {
+			time.Sleep(100 * time.Millisecond)
+			_ = unix.Close(fd)
+		} else {
+			t.Cleanup(func() { _ = unix.Close(fd) })
+		}
+		return localPort
+	}
+	aborted, timedOut := connect(true), connect(false)
+	want := map[netip.AddrPort]int32{aborted: -1, timedOut: int32(syscall.ETIMEDOUT)}
+	deadline := time.After(20 * time.Second)
+	for len(want) > 0 {
+		select {
+		case batch := <-batches:
+			for _, event := range batch {
+				if expected, ok := want[event.Local]; ok && event.Operation == "connect_result" && event.Result == expected && event.ConnectLatency > 0 {
+					delete(want, event.Local)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("missing connection results: %v", want)
 		}
 	}
 }

@@ -20,8 +20,10 @@ func (r sequenceRange) overlaps(other sequenceRange) bool {
 }
 
 type tcpHealth struct {
-	SynRTT      time.Duration
-	Retransmits uint64 // Overlapping captured segments: a guess from the capture point.
+	SynRTT         time.Duration
+	Retransmits    uint64 // Overlapping captured segments: a guess from the capture point.
+	ConnectResult  int32  // errno from the kernel; zero for a successful or aborted connect.
+	ConnectLatency uint32 // Time from SYN_SENT to the result, in microseconds.
 	// Each local end's socket as the kernel last reported it, indexed like
 	// the key's A and B; zero for an end that is not a local socket.
 	Kernel      [2]probe.TCPInfo
