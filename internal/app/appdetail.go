@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net/netip"
 	"strings"
 	"time"
 
@@ -35,7 +34,7 @@ type dnsQueryRecord struct {
 	name      string
 	kind      uint16
 	code      uint8
-	addresses []netip.Addr
+	addresses []domain.DNSAnswer
 	rtt       time.Duration
 	at        time.Time
 	answered  bool
@@ -57,7 +56,7 @@ func (s *dnsState) recentQueries() []dnsQueryRecord {
 
 // observe reads one message. Its question is parsed only for a query, or
 // while the flow has none, so a busy resolver's responses allocate nothing.
-func (s *dnsState) observe(p capture.Packet, addresses []netip.Addr) {
+func (s *dnsState) observe(p capture.Packet, addresses []domain.DNSAnswer) {
 	msg := p.Payload
 	if p.Protocol == 6 { // DNS over TCP: a whole message after its length prefix.
 		if len(msg) < 2 || int(binary.BigEndian.Uint16(msg)) != len(msg)-2 {
@@ -85,7 +84,7 @@ func (s *dnsState) observe(p capture.Packet, addresses []netip.Addr) {
 				}
 				if record := &s.recent[(query.sequence-1)%maxRecentDNSQueries]; record.sequence == query.sequence {
 					record.code, record.answered, record.rtt = s.RCode, true, rtt
-					record.addresses = append([]netip.Addr(nil), addresses[:min(len(addresses), 4)]...)
+					record.addresses = append([]domain.DNSAnswer(nil), addresses[:min(len(addresses), 4)]...)
 				}
 				s.pending[i] = dnsPending{}
 			}

@@ -1610,7 +1610,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 				if len(query.addresses) > 0 {
 					addresses := make([]string, 0, len(query.addresses))
 					for _, addr := range query.addresses {
-						addresses = append(addresses, addr.String())
+						addresses = append(addresses, addr.Address.String())
 					}
 					result += " " + strings.Join(addresses, ",")
 				}

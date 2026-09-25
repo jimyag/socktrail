@@ -177,6 +177,8 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `evidence` | 域名证据：`kind`、`hosts`、`grpc`、`sni`、`no_sni`、`ech`、`alpn`、`proxy`、`proxy_via`、`proxy_client`、`proxy_authority`、`upgrade`、`encrypted_dns`、`dns`、`no_handshake`、`parse_error`、`tls_version`、`server_alpn`、`certificate`、`alert` |
 | `openssl_pids`、`domain_conflict`、`nat` | OpenSSL 探针报告过 SNI 的进程、进程 SNI 与报文冲突、NAT 改写 |
 
+`evidence.kind=dns_process` 表示名字来自同一进程在最近 5 分钟内、且仍在应答 TTL 内的 DNS 查询；`evidence.dns` 是查询名。带 ECH 时 `evidence.sni` 仍保留线上可见的外层名。
+
 ## 实时 JSON 与 LOG
 
 `--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按现有 `--process`、`--pid`、`--cgroup` 限定范围。

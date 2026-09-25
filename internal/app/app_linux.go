@@ -321,7 +321,7 @@ func (c *collector) joinFragment(p *capture.Packet) {
 
 func (c *collector) packet(p capture.Packet) {
 	c.joinFragment(&p)
-	var dnsAddresses []netip.Addr
+	var dnsAddresses []domain.DNSAnswer
 	if port := p.Source.Port(); port == 53 || port == 5353 || port == 5355 {
 		msg := p.Payload
 		if p.Protocol == 6 {
@@ -332,11 +332,11 @@ func (c *collector) packet(p capture.Packet) {
 			}
 		}
 		if len(msg) >= 12 {
-			name, addrs := domain.DNSAnswers(msg)
+			name, addrs := domain.DNSAnswerRecords(msg)
 			dnsAddresses = addrs
 			if c.dns != nil && port == 53 {
 				// Name hints also serve flows on other interfaces and ports.
-				c.dns.ObserveAnswers(name, addrs, time.Now())
+				c.dns.ObserveRecords(name, addrs, time.Now())
 			}
 		}
 	}
@@ -624,14 +624,17 @@ var extraDoHNames []string
 func chooseDomain(f *flow) {
 	wire := clientBytes(f)
 	process := named(f.ProcessDomain)
+	processDNS := named(f.DNSDomain) && f.DNSDomain.Evidence().Kind == "dns_process"
 	switch {
-	case named(wire) && !(process && wire.Evidence().ECH):
+	case named(wire) && !((process || processDNS) && wire.Evidence().ECH):
 		if process && f.ProcessDomain.Evidence().Group() != wire.Evidence().Group() {
 			f.DomainConflict = true
 		}
 		f.Domain = wire
 	case process:
 		f.Domain = f.ProcessDomain
+	case processDNS:
+		f.Domain = f.DNSDomain
 	case named(f.DNSDomain):
 		f.Domain = f.DNSDomain
 	case wire != nil && wire.Evidence().Listed():
@@ -1465,6 +1468,7 @@ func Run() error {
 				var sources map[*flow]*flow
 				oldHost := host
 				host, sources, members = hostCollector(interfaceNames, collectors)
+				correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 				replacements := hostState.update(host, members)
 				if streamEncoder != nil {
 					scope := newProcessScope(processes, filter)
@@ -1722,6 +1726,7 @@ func Run() error {
 		scope := newProcessScope(processes, filter)
 		// A service's connections span every interface, like the host view.
 		host, _, members = hostCollector(interfaceNames, collectors)
+		correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 		if autoInterfaces {
 			hostState.update(host, members)
 			snapshot.Reports = []jsonReport{reportJSON(host, "OVERVIEW", *limit, processes, scope, geo, hostState.displayedIDs())}
@@ -1744,6 +1749,7 @@ func Run() error {
 			fmt.Printf("\nOnly processes matching %s, with their descendants for pid, and the flows and socket I/O they take part in.\n", filter)
 		}
 		host, _, members = hostCollector(interfaceNames, collectors)
+		correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 		if autoInterfaces {
 			hostState.update(host, members)
 			printReport(*host, "OVERVIEW", *limit, probeStats, scope)

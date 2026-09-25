@@ -13,10 +13,13 @@ const (
 	maxNamesPerAddress = 4
 )
 
-// DNSAnswers returns the question name and the A/AAAA addresses of a DNS
-// response. Every address, including one behind a CNAME chain, is paired with
-// the name the client asked for.
-func DNSAnswers(msg []byte) (string, []netip.Addr) {
+type DNSAnswer struct {
+	Address netip.Addr
+	TTL     time.Duration
+}
+
+// DNSAnswerRecords returns the asked name and its A/AAAA addresses with TTLs.
+func DNSAnswerRecords(msg []byte) (string, []DNSAnswer) {
 	if len(msg) < 12 || msg[2]&0x80 == 0 || msg[3]&0x0f != 0 || binary.BigEndian.Uint16(msg[4:6]) != 1 {
 		return "", nil // Not a successful response to a single question.
 	}
@@ -29,12 +32,13 @@ func DNSAnswers(msg []byte) (string, []netip.Addr) {
 		return "", nil
 	}
 	offset += 4
-	var addrs []netip.Addr
+	var addrs []DNSAnswer
 	for range answers {
 		if offset, ok = skipName(msg, offset); !ok || offset+10 > len(msg) {
 			break
 		}
 		recordType, class := binary.BigEndian.Uint16(msg[offset:]), binary.BigEndian.Uint16(msg[offset+2:])
+		ttl := time.Duration(binary.BigEndian.Uint32(msg[offset+4:])) * time.Second
 		length := int(binary.BigEndian.Uint16(msg[offset+8:]))
 		offset += 10
 		if offset+length > len(msg) {
@@ -42,11 +46,24 @@ func DNSAnswers(msg []byte) (string, []netip.Addr) {
 		}
 		switch {
 		case class == 1 && recordType == 1 && length == 4:
-			addrs = append(addrs, netip.AddrFrom4([4]byte(msg[offset:offset+4])))
+			addrs = append(addrs, DNSAnswer{netip.AddrFrom4([4]byte(msg[offset : offset+4])), ttl})
 		case class == 1 && recordType == 28 && length == 16:
-			addrs = append(addrs, netip.AddrFrom16([16]byte(msg[offset:offset+16])).Unmap())
+			addrs = append(addrs, DNSAnswer{netip.AddrFrom16([16]byte(msg[offset : offset+16])).Unmap(), ttl})
 		}
 		offset += length
+	}
+	return name, addrs
+}
+
+// DNSAnswers retains the address-only API for callers that do not need TTLs.
+func DNSAnswers(msg []byte) (string, []netip.Addr) {
+	name, records := DNSAnswerRecords(msg)
+	if len(records) == 0 {
+		return name, nil
+	}
+	addrs := make([]netip.Addr, 0, len(records))
+	for _, record := range records {
+		addrs = append(addrs, record.Address)
 	}
 	return name, addrs
 }
@@ -120,14 +137,14 @@ type DNSCache struct {
 
 // Observe records the answers of a DNS response seen at now.
 func (c *DNSCache) Observe(msg []byte, now time.Time) {
-	name, addrs := DNSAnswers(msg)
-	c.ObserveAnswers(name, addrs, now)
+	name, records := DNSAnswerRecords(msg)
+	c.ObserveRecords(name, records, now)
 }
 
-// ObserveAnswers records an already parsed response, so callers can also use
-// its addresses for a connection's recent-query history.
-func (c *DNSCache) ObserveAnswers(name string, addrs []netip.Addr, now time.Time) {
-	for _, addr := range addrs {
+// ObserveRecords records an already parsed response, shared with query history.
+func (c *DNSCache) ObserveRecords(name string, records []DNSAnswer, now time.Time) {
+	for _, record := range records {
+		addr := record.Address
 		if c.answers == nil {
 			c.answers = make(map[netip.Addr][]dnsAnswer)
 		}
@@ -190,4 +207,8 @@ func (c *DNSCache) Expire(now time.Time) {
 // NewDNSHint records that the peer address was a recent DNS answer for name.
 func NewDNSHint(name string) *Stream {
 	return &Stream{parser: parser{evidence: Evidence{Kind: "dns", DNS: name}}}
+}
+
+func NewDNSProcessHint(name, outerSNI string, ech bool) *Stream {
+	return &Stream{parser: parser{evidence: Evidence{Kind: "dns_process", DNS: name, SNI: outerSNI, ECH: ech}}}
 }

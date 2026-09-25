@@ -309,14 +309,16 @@ func domainEvidenceScore(f *flow) uint64 {
 		return 1
 	case evidence.Kind == "dns":
 		return 2
-	case evidence.Kind == "openssl":
+	case evidence.Kind == "dns_process":
 		return 3
+	case evidence.Kind == "openssl":
+		return 4
 	}
 	var requests uint64
 	for _, count := range evidence.Hosts {
 		requests += count
 	}
-	return 4 + requests
+	return 5 + requests
 }
 
 // crossed reports a flow seen entering the host on one interface and

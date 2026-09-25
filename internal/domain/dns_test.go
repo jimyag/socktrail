@@ -37,6 +37,9 @@ func TestDNSAnswersFollowCNAMEToQuestionName(t *testing.T) {
 	if name != "www.example.test" || !slices.Equal(addrs, []netip.Addr{addr}) {
 		t.Fatalf("name=%q addrs=%v", name, addrs)
 	}
+	if _, records := DNSAnswerRecords(dnsResponse("www.example.test", addr)); len(records) != 1 || records[0].Address != addr || records[0].TTL != time.Minute {
+		t.Fatalf("answer records with TTL: %v", records)
+	}
 	query := dnsResponse("www.example.test", addr)
 	query[2] &^= 0x80
 	nxdomain := dnsResponse("www.example.test", addr)

@@ -278,7 +278,7 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 				item.RCode = dnsRCodeName(record.code)
 			}
 			for _, addr := range record.addresses {
-				item.Addresses = append(item.Addresses, addr.String())
+				item.Addresses = append(item.Addresses, addr.Address.String())
 			}
 			row.DNS.Recent = append(row.DNS.Recent, item)
 		}

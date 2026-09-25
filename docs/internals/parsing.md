@@ -26,6 +26,8 @@ Kafka、NATS、ZooKeeper、Memcached、SQL Server、Oracle TNS、LDAP、Kerberos
 
 DNS、mDNS 和 LLMNR 连接保留最近 8 次问题及结果，包括应答码、前 4 个 A/AAAA 地址、RTT 和时间。DNS 应答的地址只解析一次，同时供连接历史和全局 DNS 提示缓存使用；历史是每条连接的有界数据，不另建全局查询表。
 
+每秒从 DNS 连接和已结束连接的有界历史临时建立「进程身份 → 回答地址 → 域名」索引，期限取应答 TTL 与 5 分钟中的较短值。只有同一进程随后发起到该地址的出站连接才会得到 `dns_process` 证据；它排在 SNI/Host 和 OpenSSL 证据之后、全局 DNS 提示之前。若线上 SNI 带 ECH，进程关联的名字优先，同时保留外层 SNI 和 ECH 标记。
+
 SMTP、IMAP、POP3、FTP、XMPP、LDAP、PostgreSQL 和 MySQL 先以明文命令请求升级，再发 TLS ClientHello 时，解析器继续等待握手并在证据的 `upgrade` 字段标记升级协议。等待最多 16 KiB 客户端字节或 30 秒；升级前的内容只在有界解析缓冲中，不进入证据。若握手未出现，归为 `other`。
 
 前五者来自客户端发出的字节，取自所选接口的报文，报文没给出名字时取 socket 层的同一份字节（连接详情的 `APP` 来源标 `(socket)`）：`PROXY` 是 HTTP CONNECT、SOCKS4/4a 或 SOCKS5 请求里的目标，隧道里的 ClientHello 或明文请求仍按 `TLS`、`HTTP` 记录，连接详情标出经由的代理。

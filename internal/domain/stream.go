@@ -74,7 +74,7 @@ func (e Evidence) Group() string {
 		if len(e.Hosts) > 1 {
 			return "multiple Hosts"
 		}
-	case "dns":
+	case "dns", "dns_process":
 		return e.DNS
 	}
 	switch {
@@ -169,7 +169,9 @@ func (e Evidence) Detail() string {
 	case e.NoSNI && e.TLSVersion == "TLS 1.3":
 		parts = append(parts, "no SNI, and TLS 1.3 encrypts the server certificate")
 	}
-	if e.Kind == "dns" {
+	if e.Kind == "dns_process" {
+		parts = append(parts, "name from this process's recent DNS answer for the peer")
+	} else if e.Kind == "dns" {
 		parts = append(parts, "name from a DNS answer for the peer, not Host/SNI")
 	}
 	if e.ParseError != "" {
