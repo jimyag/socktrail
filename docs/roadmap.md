@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、3、5、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、3、5、6、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；6 的 `NO_SOCKET`、`NETFILTER_DROP` 和 5.10 函数名回退已在实机或虚拟机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -310,6 +310,12 @@
 - 内核矩阵全部通过，重点确认 5.10 和 arm64 6.4 上的位域读取正确。
 
 ## 6. 内核丢包原因
+
+已实现。原因编号转名称对照 [pwru 的 BTF enum 映射](https://github.com/cilium/pwru/blob/main/internal/pwru/output.go)，旧内核参数回退对照 [nettrace 的 `kfree_skb` 跟踪点](https://github.com/OpenCloudOS/nettrace/blob/btf/src/progs/tracing.c)。实际用 raw tracepoint 同时兼容有、没有 reason 参数的内核；按 tuple、原因或位置在 per-CPU LRU map 汇总，每秒读取一次，默认关闭。连接不存在且没有本机 socket 角色时只计入全局，避免 `--interface lo` 时把其他接口的丢包制造成连接。map 读出后删除与新的丢包会并发，极端丢包风暴下计数可能略低于真实值。
+
+2026-09-25 验证：当前 6.8 内核对未监听 UDP 端口给出 `NO_SOCKET`；nftables OUTPUT 丢弃的回环 TCP SYN 在连接上显示 `NETFILTER_DROP×2`，全局原因合计一致。amd64 5.10 虚拟机从 `/proc/kallsyms` 给出 `__udp4_lib_rcv`，arm64 6.4 虚拟机也通过探针矩阵。
+
+相同的 7 秒、回环 100 Mbit/s TCP 负载下，关闭/开启 `--drops` 的采集进程 CPU user/sys 分别为 0.53/0.60 与 0.69/0.78 秒，峰值 RSS 分别为 72,708 与 83,684 KiB；开启会增加约 0.34 秒 CPU 时间和 11 MiB 峰值 RSS，因此保持默认关闭。
 
 参考 pwru、nettrace 的 `--drop` 和 dropwatch。
 

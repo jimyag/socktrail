@@ -26,6 +26,26 @@ type jsonSnapshot struct {
 	Listeners       []jsonListener  `json:"listeners,omitempty"`
 	ListenOverflows uint64          `json:"listen_overflows"`
 	ListenDrops     uint64          `json:"listen_drops"`
+	Drops           []jsonDrop      `json:"drops,omitempty"`
+}
+
+type jsonDrop struct {
+	Reason string `json:"reason"`
+	Count  uint64 `json:"count"`
+}
+
+func dropsJSON(totals map[string]uint64) []jsonDrop {
+	result := make([]jsonDrop, 0, len(totals))
+	for reason, count := range totals {
+		result = append(result, jsonDrop{reason, count})
+	}
+	slices.SortFunc(result, func(a, b jsonDrop) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		return cmp.Compare(a.Reason, b.Reason)
+	})
+	return result
 }
 
 type jsonListener struct {
@@ -134,42 +154,43 @@ type jsonReport struct {
 }
 
 type jsonFlow struct {
-	ID               uint64           `json:"id,omitzero"`
-	End              string           `json:"end,omitempty"`
-	Changes          []string         `json:"changes,omitempty"`
-	Protocol         string           `json:"protocol"`
-	App              string           `json:"app,omitempty"`
-	State            string           `json:"state,omitempty"`
-	Direction        string           `json:"direction,omitempty"`
-	Interfaces       []string         `json:"interfaces,omitempty"` // The capture interfaces that saw it.
-	Source           string           `json:"source"`
-	Target           string           `json:"target"`
-	SourceGeo        *geoip.Location  `json:"source_geo,omitempty"`
-	TargetGeo        *geoip.Location  `json:"target_geo,omitempty"`
-	InitiatorUnknown bool             `json:"initiator_unknown,omitempty"`
-	RXBytes          uint64           `json:"rx_bytes"`
-	TXBytes          uint64           `json:"tx_bytes"`
-	Packets          uint64           `json:"packets"`
-	FirstSeen        time.Time        `json:"first_seen"`
-	LastSeen         time.Time        `json:"last_seen"`
-	SYNRTTMicros     int64            `json:"syn_rtt_us,omitempty"`
-	ConnectResult    string           `json:"connect_result,omitempty"`
-	ConnectLatencyUS uint32           `json:"connect_latency_us,omitzero"`
-	RTTMicros        int64            `json:"rtt_us,omitempty"`
-	RTTSource        string           `json:"rtt_source,omitempty"`
-	Retransmits      uint64           `json:"retransmits"`
-	RetransmitSource string           `json:"retransmit_source,omitempty"`
-	KernelTCP        []jsonKernelTCP  `json:"kernel_tcp,omitempty"`
-	Client           *jsonProcess     `json:"client,omitempty"`
-	Server           *jsonProcess     `json:"server,omitempty"`
-	IO               []jsonProcessIO  `json:"io,omitempty"`
-	Name             string           `json:"name,omitempty"`
-	Detail           string           `json:"detail,omitempty"`
-	Evidence         *domain.Evidence `json:"evidence,omitempty"`
-	DNS              *jsonDNS         `json:"dns,omitempty"`
-	OpenSSLPIDs      []int            `json:"openssl_pids,omitempty"`
-	DomainConflict   bool             `json:"domain_conflict,omitempty"`
-	NAT              string           `json:"nat,omitempty"`
+	ID               uint64            `json:"id,omitzero"`
+	End              string            `json:"end,omitempty"`
+	Changes          []string          `json:"changes,omitempty"`
+	Protocol         string            `json:"protocol"`
+	App              string            `json:"app,omitempty"`
+	State            string            `json:"state,omitempty"`
+	Direction        string            `json:"direction,omitempty"`
+	Interfaces       []string          `json:"interfaces,omitempty"` // The capture interfaces that saw it.
+	Source           string            `json:"source"`
+	Target           string            `json:"target"`
+	SourceGeo        *geoip.Location   `json:"source_geo,omitempty"`
+	TargetGeo        *geoip.Location   `json:"target_geo,omitempty"`
+	InitiatorUnknown bool              `json:"initiator_unknown,omitempty"`
+	RXBytes          uint64            `json:"rx_bytes"`
+	TXBytes          uint64            `json:"tx_bytes"`
+	Packets          uint64            `json:"packets"`
+	FirstSeen        time.Time         `json:"first_seen"`
+	LastSeen         time.Time         `json:"last_seen"`
+	SYNRTTMicros     int64             `json:"syn_rtt_us,omitempty"`
+	ConnectResult    string            `json:"connect_result,omitempty"`
+	ConnectLatencyUS uint32            `json:"connect_latency_us,omitzero"`
+	RTTMicros        int64             `json:"rtt_us,omitempty"`
+	RTTSource        string            `json:"rtt_source,omitempty"`
+	Retransmits      uint64            `json:"retransmits"`
+	RetransmitSource string            `json:"retransmit_source,omitempty"`
+	KernelTCP        []jsonKernelTCP   `json:"kernel_tcp,omitempty"`
+	Client           *jsonProcess      `json:"client,omitempty"`
+	Server           *jsonProcess      `json:"server,omitempty"`
+	IO               []jsonProcessIO   `json:"io,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Detail           string            `json:"detail,omitempty"`
+	Evidence         *domain.Evidence  `json:"evidence,omitempty"`
+	DNS              *jsonDNS          `json:"dns,omitempty"`
+	OpenSSLPIDs      []int             `json:"openssl_pids,omitempty"`
+	DomainConflict   bool              `json:"domain_conflict,omitempty"`
+	NAT              string            `json:"nat,omitempty"`
+	Drops            map[string]uint64 `json:"drops,omitempty"`
 }
 
 // jsonKernelTCP is a local end's socket as the kernel last reported it.
@@ -310,6 +331,9 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 		SYNRTTMicros: f.Health.SynRTT.Microseconds(),
 		Client:       processJSON(f.Client, processes), Server: processJSON(f.Server, processes),
 		Name: flowName(f), DomainConflict: f.DomainConflict,
+	}
+	if f.Drops != nil {
+		row.Drops = f.Drops.reasons
 	}
 	if f.Health.ConnectLatency > 0 {
 		row.ConnectResult, row.ConnectLatencyUS = connectResultName(f.Health.ConnectResult), f.Health.ConnectLatency

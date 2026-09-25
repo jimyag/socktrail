@@ -22,6 +22,7 @@ type flowChangeKey struct {
 	end            flowEnd
 	connectResult  int32
 	connectLatency uint32
+	drops          uint64
 }
 
 type pendingFlowName struct {
@@ -45,6 +46,11 @@ func changeKey(f *flow) flowChangeKey {
 	for id := range f.IO {
 		//nolint:gosec // G115: socket I/O map keys are positive kernel PIDs.
 		k.actors ^= uint64(id.PID)*0x9e3779b97f4a7c15 ^ id.StartNS*0xbf58476d1ce4e5b9
+	}
+	if f.Drops != nil {
+		for _, count := range f.Drops.reasons {
+			k.drops += count
+		}
 	}
 	return k
 }
@@ -90,6 +96,10 @@ func (s *hostViewState) detectChanges(current, previous map[uint64]*flow, now ti
 		if key.end != old.end {
 			fields = append(fields, "end")
 			old.end = key.end
+		}
+		if key.drops != old.drops {
+			fields = append(fields, "drops")
+			old.drops = key.drops
 		}
 		if key.group != old.group || key.name != old.name || key.hosts != old.hosts {
 			pending := s.pendingNames[id]

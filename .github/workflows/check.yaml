@@ -55,7 +55,7 @@ jobs:
           sudo modprobe tls || true # Kernel TLS; its test skips without it.
       - name: Root tests
         run: |
-          for package in probe sockstream capture conntrack; do
+          for package in probe dropprobe sockstream capture conntrack; do
             go test -c -o "$RUNNER_TEMP/$package.test" "./internal/$package"
             sudo "$RUNNER_TEMP/$package.test" -test.v
           done

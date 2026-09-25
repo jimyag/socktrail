@@ -27,6 +27,7 @@ import (
 	"github.com/jimyag/socktrail/internal/capture"
 	"github.com/jimyag/socktrail/internal/conntrack"
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/dropprobe"
 	"github.com/jimyag/socktrail/internal/geoip"
 	"github.com/jimyag/socktrail/internal/probe"
 	"github.com/jimyag/socktrail/internal/quicinitial"
@@ -181,6 +182,7 @@ type flow struct {
 	AppProtocol      string
 	AppSource        string
 	Health           tcpHealth
+	Drops            *dropStats
 	SYNSeq           uint32
 	TCPState         string
 	ClientWildcard   *wildcardKey
@@ -1158,6 +1160,7 @@ func Run() error {
 	showEnvSecrets := flag.Bool("show-env-secrets", false, "show credential-like environment values in process details (default: hidden)")
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
+	drops := flag.Bool("drops", false, "aggregate kernel packet drop reasons (extra tracepoint overhead)")
 	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
 	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
 	dohList := flag.String("doh-list", "", "additional comma-separated DoH service names for encrypted DNS labeling")
@@ -1257,6 +1260,14 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	var dropUpdates <-chan []dropprobe.Sample
+	if *drops {
+		dropUpdates, err = dropprobe.Start(probeCtx, netNSIDs)
+		if err != nil {
+			return err
+		}
+	}
+	dropTotals := make(map[string]uint64)
 	var tlsEvents <-chan tlsprobe.Event
 	var tlsDone <-chan error
 	var tlsStats *tlsprobe.Statistics
@@ -1442,6 +1453,7 @@ func Run() error {
 		ui.processes, ui.scopeFilter = processes, filter
 		ui.sockets = sockets
 		ui.namespaces, ui.socketsByNS = namespaces, socketsByNS
+		ui.dropTotals = dropTotals
 		ui.filter = *filterExpression
 		ui.render(host, 0, 0, 0)
 	} else if *output == "text" {
@@ -1520,8 +1532,24 @@ func Run() error {
 		time.AfterFunc(*duration, cancelRun)
 	}
 	stopCh := ctx.Done()
-	for packets != nil || events != nil || tlsEvents != nil || streamChunks != nil {
+	for packets != nil || events != nil || tlsEvents != nil || streamChunks != nil || dropUpdates != nil {
 		select {
+		case samples, ok := <-dropUpdates:
+			if !ok {
+				dropUpdates = nil
+				continue
+			}
+			for _, sample := range samples {
+				dropTotals[sample.Reason] += sample.Count
+				first := true
+				for _, name := range interfaceNames {
+					c := collectors[name]
+					if c.netns == sample.NetNS {
+						c.recordDrop(sample, first)
+						first = false
+					}
+				}
+			}
 		case <-tickCh:
 			if ui != nil {
 				summary.sample(collectors)
@@ -1828,7 +1856,7 @@ func Run() error {
 			}
 		}
 	} else if *output == "json" {
-		snapshot := jsonSnapshot{Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Probes: jsonProbes{
+		snapshot := jsonSnapshot{Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Drops: dropsJSON(dropTotals), Probes: jsonProbes{
 			PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
 			ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
 			OpenSSL:       jsonProbe{Status: tlsStatus},

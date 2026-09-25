@@ -17,6 +17,7 @@ sudo ./socktrail --netns container:0123456789ab --interface lo
 sudo ./socktrail --netns team-a --netns team-b --interface lo
 sudo ./socktrail --openssl-probe=false  # 禁用默认开启的系统 OpenSSL 探针
 sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀读取
+sudo ./socktrail --drops                 # 按需采集内核丢包原因
 ```
 
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
@@ -57,6 +58,8 @@ sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' 
 这组权限可运行核心抓包、socket 探针和 NAT 查询，但不保证能读取其他用户的 `/proc` 信息或挂载 OpenSSL 用户态探针；失败原因可在 `!` 状态页查看。内核模块 BTF 不允许读取时会提示并跳过可选的 kTLS 探针。需要完整进程信息或 OpenSSL 探针时使用 `sudo`。`--version` 不需要这些权限。
 
 进入其他网络命名空间的 `--netns` 还需要 `CAP_SYS_ADMIN`。安装时设置的 file capabilities 不包含它；跨命名空间采集请用 `sudo socktrail --netns ...`。
+
+`--drops` 默认关闭；开启后按 `kfree_skb` 的原因在内核 per-CPU map 中汇总，每秒读取一次。连接详情显示 DROPS 行，`!` 状态页显示原因排行；JSON 快照顶部的 `drops[]` 是所选网络命名空间的总量，flow 的 `drops` 是原因到次数的映射。全局汇总覆盖该网络命名空间的接口，不受 `--interface` 限定；没有可归属连接的丢包仍计入全局。5.10–5.16 内核没有原因枚举，用 `/proc/kallsyms` 中的释放位置函数名代替；如果符号地址被限制则显示十六进制地址。此统计与 AF_PACKET 抓包环的 `capture_dropped` 是两种不同的丢包。
 
 ## 连接录制
 
@@ -191,6 +194,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `connect_result`、`connect_latency_us` | 本机出站 TCP 建连结果（`connected`、`refused`、`timeout`、`aborted`、`host unreachable` 等）及从 SYN_SENT 到结束的微秒数；探针未观察到时省略 |
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits`；有采样时还包含 `busy_ms`、`rwnd_limited_ms`、`sndbuf_limited_ms`、`delivery_rate_bps`、`app_limited` 和推断的 `limit`。时长需两次采样估算内核 HZ，首次采样可能省略 |
+| `drops[]`、flow 的 `drops` | 开启 `--drops` 后，前者是内核丢包原因的全局排行，后者是归属到连接的各原因次数 |
 | `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`；`container` 含名称、运行时、Pod/namespace、Compose 项目/服务；`pid` 为 -1 表示多个进程有歧义 |
 | `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
 | `dns` | DNS 流的查询、应答、失败次数和最近 8 次查询；每条记录含名字、类型、应答码、前 4 个地址、RTT 与时间 |
@@ -202,7 +206,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 
 ## 实时 JSON 与 LOG
 
-`--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按 `--process`、`--pid`、`--cgroup`、`--container` 限定范围。
+`--output ndjson` 每行输出一条发生变化的连接；不指定 `--duration` 时一直运行到 Ctrl-C。它与 JSON 快照的 `flows[]` 使用相同字段，另有 `changes`：`new`、`name`、`state`、`process`、`drops`、`end` 或 `refresh`。新连接和新域名等待 2 秒，以便接收晚到的进程事件；未变化且仍进行中的连接每隔 `--refresh`（默认 60 秒）重发当前计数。连接 ID 只在本次运行内稳定。输出可以按 `--process`、`--pid`、`--cgroup`、`--container` 限定范围。
 
 ```sh
 sudo socktrail --output ndjson | jq -c 'select(.changes | index("name")) | {id,source,target,name,client,server}'

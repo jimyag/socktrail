@@ -53,7 +53,7 @@ func main() {
 	version, _ := os.ReadFile("/proc/version")
 	fmt.Printf("VM kernel (%s): %s", runtime.GOARCH, version)
 	var r result
-	for _, test := range []string{"/bin/probe.test", "/bin/sockstream.test", "/bin/capture.test", "/bin/conntrack.test"} {
+	for _, test := range []string{"/bin/probe.test", "/bin/dropprobe.test", "/bin/sockstream.test", "/bin/capture.test", "/bin/conntrack.test"} {
 		r.test(test)
 	}
 	r.capture()

@@ -160,6 +160,7 @@ type terminalUI struct {
 	connectStatus     string
 	tlsProbeStats     *tlsprobe.Statistics
 	streamStatus      string
+	dropTotals        map[string]uint64
 	streamStats       *sockstream.Statistics
 	natStatus         string
 	geo               *geoip.DB
@@ -1452,6 +1453,13 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 			lines = append(lines, fmt.Sprintf("OpenSSL SNI events %d  invalid %d  queue dropped %d", u.tlsProbeStats.Received.Load(), u.tlsProbeStats.Invalid.Load(), u.tlsProbeStats.Dropped.Load()))
 		}
 		lines = append(lines, u.streamStatus)
+		if len(u.dropTotals) > 0 {
+			var top []string
+			for _, item := range dropsJSON(u.dropTotals)[:min(5, len(u.dropTotals))] {
+				top = append(top, fmt.Sprintf("%s×%d", item.Reason, item.Count))
+			}
+			lines = append(lines, "Kernel packet drops: "+strings.Join(top, "  "))
+		}
 		if u.streamStats != nil {
 			lines = append(lines, fmt.Sprintf("Socket stream chunks %d  kernel lost %d  queue dropped %d  invalid %d", u.streamStats.Received.Load(), u.streamStats.KernelLost.Load(), u.streamStats.Dropped.Load(), u.streamStats.Invalid.Load()))
 		}
@@ -1631,9 +1639,13 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		u.detailX = min(u.detailX, max(0, layout.width-u.screenWidth))
 		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth)))
 		limitLine := limitDetail(selected)
+		dropLine := dropDetail(selected)
 		extra := 0
 		if limitLine != "" {
 			extra = 1
+		}
+		if dropLine != "" {
+			extra++
 		}
 		visible := max(1, u.bottomHeight-7-len(geoLines)-extra) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
@@ -1682,6 +1694,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		*lines = append(*lines, tcpLine)
 		if limitLine != "" {
 			*lines = append(*lines, label("LIMIT")+" "+limitLine)
+		}
+		if dropLine != "" {
+			*lines = append(*lines, label("DROPS")+" "+dropLine)
 		}
 		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
 			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))

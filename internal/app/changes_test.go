@@ -40,6 +40,10 @@ func TestConnectionChangesAreDelayedAndEmittedOnce(t *testing.T) {
 	if got := state.detectChanges(current, current, now.Add(9*time.Second)); len(got) != 1 || !reflect.DeepEqual(got[0].Changes, []string{"process"}) {
 		t.Fatalf("process change = %+v", got)
 	}
+	f.Drops = &dropStats{reasons: map[string]uint64{"NETFILTER_DROP": 2}}
+	if got := state.detectChanges(current, current, now.Add(9500*time.Millisecond)); len(got) != 1 || !reflect.DeepEqual(got[0].Changes, []string{"drops"}) {
+		t.Fatalf("drop change = %+v", got)
+	}
 	f.End = flowFin
 	if got := state.detectChanges(current, current, now.Add(10*time.Second)); len(got) != 1 || !reflect.DeepEqual(got[0].Changes, []string{"end"}) {
 		t.Fatalf("end change = %+v", got)

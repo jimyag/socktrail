@@ -384,7 +384,7 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 	merged.Interfaces = packetSource.Interfaces.clone()
 	// Rebuilt below from every observation, packetSource's too; the view is
 	// rebuilt each second, so maps come only with an entry.
-	merged.IO, merged.TLSActors = nil, nil
+	merged.IO, merged.TLSActors, merged.Drops = nil, nil, nil
 	merged.Domain = evidenceSource.Domain
 	// The observation that supplied the name also parsed the application protocol.
 	if merged.AppProtocol == "" || evidenceSource.AppProtocol != "" && domainEvidenceScore(evidenceSource) > 0 {
@@ -423,6 +423,14 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 				if info != (probe.TCPInfo{}) {
 					merged.Health.observeKernel(side, info)
 				}
+			}
+		}
+		if f.Drops != nil {
+			if merged.Drops == nil {
+				merged.Drops = &dropStats{reasons: make(map[string]uint64)}
+			}
+			for reason, count := range f.Drops.reasons {
+				merged.Drops.reasons[reason] = max(merged.Drops.reasons[reason], count)
 			}
 		}
 		if !f.First.IsZero() && (merged.First.IsZero() || f.First.Before(merged.First)) {
