@@ -89,6 +89,40 @@ func TestGeoColumnsMatchBothEndpoints(t *testing.T) {
 	}
 }
 
+func TestTargetConnectLatencyPercentiles(t *testing.T) {
+	flows := make([]*flow, 20)
+	for i := range flows {
+		flows[i] = &flow{}
+		flows[i].Health.ConnectLatency = uint32(20-i) * 1000 // Unsorted milliseconds.
+	}
+	failed := &flow{}
+	failed.Health.ConnectLatency = 3_000_000
+	failed.Health.ConnectResult = 110
+	flows = append(flows, failed)
+	if p50, p95 := connectLatencyPercentiles(flows); p50 != "10ms" || p95 != "19ms" {
+		t.Fatalf("destination connect latency = %s/%s, want 10ms/19ms", p50, p95)
+	}
+	if p50, p95 := connectLatencyPercentiles([]*flow{failed}); p50 != "-" || p95 != "-" {
+		t.Fatalf("failed attempts changed successful latency = %s/%s", p50, p95)
+	}
+	columns := groupLayout([]*uiRow{{label: "127.0.0.1", flows: flows}}, viewTarget, 180).columns
+	if columns[12].title != "CONN50" || columns[13].title != "CONN95" {
+		t.Fatalf("destination latency columns missing: %+v", columns)
+	}
+}
+
+func BenchmarkTargetConnectLatencyPercentiles(b *testing.B) {
+	flows := make([]*flow, 5000)
+	for i := range flows {
+		flows[i] = &flow{}
+		flows[i].Health.ConnectLatency = uint32((i*7919)%5000 + 1)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		connectLatencyPercentiles(flows)
+	}
+}
+
 // A filter can name QUIC or a qq.com host; Ctrl-C still quits from it.
 func TestFilterTakesQAsText(t *testing.T) {
 	u := &terminalUI{}

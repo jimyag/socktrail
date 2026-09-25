@@ -26,6 +26,8 @@ TCP 显示 SYN、established、closing、closed、reset 或 midstream 观察状�
 
 本机出站 TCP 建连时延从进入 SYN_SENT 到 ESTABLISHED 或 CLOSE 计算，含 SYN 重传时间；`connect_result=aborted` 表示应用在内核给出错误之前关闭了 socket。它不等于连接建立后的 RTT，也不统计 UDP。内核状态跟踪点不可用时，状态页和 JSON 探针状态会说明原因；抓包侧的 SYN、RST 和 ICMP 观察仍可用，但不会凭这些推断 errno 或精确建连时延。
 
+目标 IP 页的 `CONN50`、`CONN95` 只统计当前采集表里、由内核结果探针确认成功的出站 TCP 连接，分别取排序样本的最近秩 p50、p95；失败和没有探针结果的连接不进入样本。这是当前可见连接的分位数，不是整段运行时间的累计值。
+
 ## RTT 与 RETX
 
 `RTT` 有两种来源，连接详情在数字后标明：

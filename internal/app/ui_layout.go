@@ -213,6 +213,11 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 		{title: "LAST", width: 8},
 		{title: "HOST/SNI OR PEER", width: 42},
 	}
+	if mode == viewTarget {
+		columns = slices.Insert(columns, len(columns)-3,
+			tableColumn{title: "CONN50", width: 8, right: true},
+			tableColumn{title: "CONN95", width: 8, right: true})
+	}
 	if mode == viewDomain {
 		columns = slices.Insert(columns, len(columns)-1, tableColumn{title: "LOCAL", width: 38})
 	}
@@ -241,12 +246,31 @@ func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) str
 		row.label, ifaces, human(row.rxRate), human(row.txRate), human(row.rx), human(row.tx),
 		strconv.FormatUint(row.tcp, 10), strconv.FormatUint(row.udp, 10), strconv.FormatUint(row.icmp, 10),
 		strconv.FormatUint(row.reqs, 10), strconv.FormatUint(row.unknownPID, 10), strconv.Itoa(len(row.flows)),
-		first, last,
 	}
+	if mode == viewTarget {
+		p50, p95 := connectLatencyPercentiles(row.flows)
+		values = append(values, p50, p95)
+	}
+	values = append(values, first, last)
 	if mode == viewDomain {
 		values = append(values, localAddressCell(row, layout.columns[len(layout.columns)-2].width))
 	}
 	return layout.line(cursor, append(values, hint)...)
+}
+
+func connectLatencyPercentiles(flows []*flow) (string, string) {
+	samples := make([]uint32, 0, len(flows))
+	for _, f := range flows {
+		if f.Health.ConnectLatency > 0 && f.Health.ConnectResult == 0 {
+			samples = append(samples, f.Health.ConnectLatency)
+		}
+	}
+	if len(samples) == 0 {
+		return "-", "-"
+	}
+	slices.Sort(samples)
+	format := func(value uint32) string { return (time.Duration(value) * time.Microsecond).String() }
+	return format(samples[(len(samples)+1)/2-1]), format(samples[(95*len(samples)+99)/100-1])
 }
 
 func localAddressValues(row *uiRow) []string {
