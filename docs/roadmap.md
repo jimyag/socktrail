@@ -25,7 +25,7 @@
 | 16 | [变化计算、实时 JSON 输出与 LOG 页](#16-变化计算实时-json-输出与-log-页) | 高 | 中 | 1 |
 | 17 | [域名覆盖：补齐缺口，标明原因](#17-域名覆盖补齐缺口标明原因) | 高 | 中 | 第 3 部分依赖 10 |
 
-进度（2026-09-25）：0、1、2、3、5、6、7、8、9、10、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；6 的 `NO_SOCKET`、`NETFILTER_DROP` 和 5.10 函数名回退已在实机或虚拟机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
+进度（2026-09-25）：0、1、2、3、5、6、7、8、9、10、11、16 已实现并验证（1 的一小时历史流测试已通过；3B 的跨命名空间抓包、PID、NAT、socket 表与 kind Pod 已在实机验证；5 的 TCP 指标在当前内核、amd64 5.10 与 arm64 6.4 上通过探针测试；6 的 `NO_SOCKET`、`NETFILTER_DROP` 和 5.10 函数名回退已在实机或虚拟机验证；7 的 sock_diag 队列、真实 HTTP 监听与 accept、PTY 页面和 root 冒烟测试已通过；8 已通过单元测试和 root 冒烟测试；11 的规则优先级与正常连接空诊断已通过单元测试）；4 的 Docker 名称和 `--container` 已在实机验证，Pod 名称和 namespace 已在 kind 的真实 kubelet 元数据上验收；17 的协议升级 TLS、PROXY v2 AUTHORITY、按进程 DNS 关联和加密 DNS 标记已实现并验证。其余条目尚未开始。
 
 建议顺序：
 1. 先做 0，它只调整字段顺序。
@@ -448,6 +448,10 @@
 - 列表不超过上限。
 
 ## 11. 诊断结论
+
+已实现。参考 [nettrace 的规则诊断](https://github.com/OpenCloudOS/nettrace/blob/btf/src/analysis.c)：先用明确的内核丢包原因，再用 TCP 窗口/缓冲指标，最后用建连错误；每条连接只显示优先级最高的一条。对 `ECONNREFUSED` 只说“连接被拒”，不直接断言“端口未监听”，因为防火墙 REJECT 也会产生相同错误。正常连接和证据不足时不显示。
+
+2026-09-25 验证：规则测试覆盖正常连接、拒绝、无 socket、Netfilter 丢包和接收窗口受限；真实 nftables OUTPUT 丢包的 JSON 连接同时给出 `NETFILTER_DROP: 2` 和 `Netfilter dropped 2 packets; inspect local firewall rules`。
 
 参考 nettrace 的诊断模式。
 

@@ -195,6 +195,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 | `retransmits`、`retransmit_source` | 重传数和来源（`kernel` 或 `capture`），只对 TCP 给出 |
 | `kernel_tcp[]` | 每个本机端 socket 的内核状态：`local`、`rtt_us`、`rttvar_us`、`cwnd`、`data_segs_out`、`retransmits`；有采样时还包含 `busy_ms`、`rwnd_limited_ms`、`sndbuf_limited_ms`、`delivery_rate_bps`、`app_limited` 和推断的 `limit`。时长需两次采样估算内核 HZ，首次采样可能省略 |
 | `drops[]`、flow 的 `drops` | 开启 `--drops` 后，前者是内核丢包原因的全局排行，后者是归属到连接的各原因次数 |
+| `diagnosis` | 有足够证据时的一条诊断结论和检查建议；依据建连结果、TCP 限制指标或开启 `--drops` 后的内核丢包原因。正常连接和证据不足时省略 |
 | `client`、`server` | 两端的进程：`pid`、`start_ns`、`name`、`ppid`、`cgroup`、`service`、可用时的 `container`；`container` 含名称、运行时、Pod/namespace、Compose 项目/服务；`pid` 为 -1 表示多个进程有歧义 |
 | `io[]` | 这条连接上实际收发的各进程及其 socket RX/TX 字节；与 IP 报文字节不是同一口径 |
 | `dns` | DNS 流的查询、应答、失败次数和最近 8 次查询；每条记录含名字、类型、应答码、前 4 个地址、RTT 与时间 |

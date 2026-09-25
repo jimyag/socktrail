@@ -1640,11 +1640,15 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		*lines = append(*lines, styleBold.paint(scrollTableLine(layout.sortedHeader(u.flowSort), u.detailX, u.screenWidth)))
 		limitLine := limitDetail(selected)
 		dropLine := dropDetail(selected)
+		diagnosisLine := diagnosis(selected)
 		extra := 0
 		if limitLine != "" {
 			extra = 1
 		}
 		if dropLine != "" {
+			extra++
+		}
+		if diagnosisLine != "" {
 			extra++
 		}
 		visible := max(1, u.bottomHeight-7-len(geoLines)-extra) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
@@ -1697,6 +1701,9 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		}
 		if dropLine != "" {
 			*lines = append(*lines, label("DROPS")+" "+dropLine)
+		}
+		if diagnosisLine != "" {
+			*lines = append(*lines, label("DIAGNOSIS")+" "+diagnosisLine)
 		}
 		*lines = append(*lines, styleBold.paint(flowName(selected))+"  "+label("origin PID")+" "+formatPIDBrief(selected.Client)+"  "+label("target PID")+" "+formatPIDBrief(selected.Server)+
 			"  "+label("first")+" "+displayTime(selected.First)+"  "+label("last")+" "+displayTime(selected.Last))

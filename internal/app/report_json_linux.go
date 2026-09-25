@@ -191,6 +191,7 @@ type jsonFlow struct {
 	DomainConflict   bool              `json:"domain_conflict,omitempty"`
 	NAT              string            `json:"nat,omitempty"`
 	Drops            map[string]uint64 `json:"drops,omitempty"`
+	Diagnosis        string            `json:"diagnosis,omitempty"`
 }
 
 // jsonKernelTCP is a local end's socket as the kernel last reported it.
@@ -335,6 +336,7 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 	if f.Drops != nil {
 		row.Drops = f.Drops.reasons
 	}
+	row.Diagnosis = diagnosis(f)
 	if f.Health.ConnectLatency > 0 {
 		row.ConnectResult, row.ConnectLatencyUS = connectResultName(f.Health.ConnectResult), f.Health.ConnectLatency
 	}
