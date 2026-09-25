@@ -16,6 +16,12 @@ PID 页的 RX/TX 是当前网络命名空间内 TCP/UDP `sendmsg`/`recvmsg` 返�
 
 `lo` 只保留 AF_PACKET 的发送副本，避免本机同一包重复计数。因此它的 RX/TX 是抓包方向，通常显示 TX；不表示本机客户端与服务端各自的收发量。
 
+## Docker 网络
+
+当前只采集 socktrail 所在的网络命名空间。`--network host` 的容器共享宿主网络命名空间：连接可关联容器进程，服务显示为 `docker-<短 ID>.scope`。普通 bridge 容器的进程属于另一个网络命名空间，宿主上的探针和 `/proc/net` 无法给这些连接补 PID；要看到容器内进程需要跨命名空间采集（计划中的 `--netns`）。
+
+本机 Docker 实测：bridge 容器向外建连的 SYN 在 `docker0` 和宿主出口 `br0` 各有一份；conntrack 将 NAT 前后的元组合成一个整机连接 ID，方向为 `forwarded`，PID 未知。此次外部目标未完成握手，验证的是建连尝试与 NAT 关联。两个同桥容器互访的帧出现在它们的宿主侧 veth 上，`docker0` 没有收到这些桥内转发帧。需要排查单个容器时，用 `--interface vethXXX` 显式指定其宿主侧接口；这只覆盖经过该 veth 的流量，仍不能关联容器内 PID。不同 Docker 网络和内核桥接配置可能改变具体采集点，应先用网卡页确认。
+
 ## 连接方向
 
 TCP 来源/目标按 SYN 或已关联的 connect/accept 确定。没看到建立过程时，发出 ClientHello 或 HTTP 请求行的一端是客户端；本机连接再查内核 socket 表：本地端口上有监听 socket，或本地地址不属于本机（透明代理接受的连接）时为入站，否则为出站。方向不按端口号猜测，都判断不了时详情列出两个带 `?` 的观测端点。UDP 和其他 IP 协议的来源/目标是首次观测报文的端点，ICMP Echo 以首个请求的发送方为发起方。UDP 两端 PID 按本机 socket 所在端点记录，不因服务端回包而交换。

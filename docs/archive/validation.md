@@ -406,11 +406,22 @@ GOGC=50 用多 18% 的 CPU 换少 18% 的 RSS，没有设为默认，需要时�
 
 新的事件字段要读 `task_struct` 的 `real_parent`、`tgid`，调用 `bpf_get_current_cgroup_id`，并读 `tcp_sock` 的 `srtt_us`、`mdev_us`、`snd_cwnd`、`data_segs_out`。内核矩阵的 11 个内核（amd64 的 5.10 到 7.0 及 CentOS Stream 9、10，arm64 的 6.4 和 6.8）全部通过，各 16 项测试通过、3 项按预期跳过。
 
+## 2026-09-25 Docker 网络实测
+
+本机 Docker 29.8.1、systemd cgroup v2；临时用 BusyBox HTTP 服务和 curl 容器，结束后删除测试容器。
+
+| 场景 | 实际结果 |
+| --- | --- |
+| host 网络容器的 HTTP 服务 | 回环抓包识别 `httpd` 服务端 PID，服务为 `docker-<短 ID>.scope`；三次请求都关联成功 |
+| 同一默认 bridge 中的两个容器互访 | 显式抓服务容器的宿主侧 veth 看见三条 HTTP 连接，客户端和服务端 PID 都未知；同时抓的 `docker0` 报告中没有这三条转发连接 |
+| bridge 容器向外建连 | 抓 `docker0` 看见 NAT 前源地址，抓出口 `br0` 看见 SNAT 后源地址；两份都有相同 NAT 映射。NDJSON 整机视图仅一个连接 ID，`interfaces` 同时含两张接口、方向为 `forwarded`、PID 未知。外部目标的 TCP 握手超时，本次只验收了 SYN 和 NAT 关联 |
+| 单独选宿主侧 veth | 只显示经过该容器接口的流量；不能因此得到容器内 PID |
+
 ## 尚未完成的验收
 
 以下是记录时尚未完成的验收，后续状态以当前代码和[数据口径](../user/measurement.md)为准。
 
-- 容器网络，以及非当前网络命名空间的 PID 与方向：探针只统计当前网络命名空间的 socket，其他命名空间的流量只有报文。桥接只验证了抓网桥端口的情况，同时抓两个端口时整机页按规则会合成一条 `forwarded` 连接，没有实测。NAT 只在本机网络命名空间搭的网关上验收了 SNAT、DNAT 和本机 OUTPUT DNAT；conntrack zone 非 0 的条目（部分 OVS、CNI 场景）查不到。“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
+- 非当前网络命名空间的 PID 与容器内方向仍无法采集；Docker bridge/host 的宿主侧行为见上方实测。其他 CNI、conntrack zone 非 0 的条目（部分 OVS、CNI 场景）尚未验收，可能查不到。“精确整机 IP 总量”未实现。`lo` 只数发送副本，IP RX/TX 不等于本机两端 socket 各自的字节。
 - `sendfile`、splice 和内核 TLS 的计数由 root 测试核对；io_uring 的零拷贝发送等其他路径没有验证，PID 应用字节只承诺已挂探针的返回值。
 - 探针挂载前已经进入阻塞 `recvfrom` 的 UDP 服务，首次返回可能少计；服务进程在探针之后启动的对照场景两端各为 RX/TX 5 B。启动时抓取的中途连接和调用不能补历史数据。Linux 6.8 以前的内核没有 `__inet_accept`，回退到 `inet_csk_accept` 的 fexit 已在 5.10 至 5.15 上加载并收到 accept 事件，但挂载前就阻塞着的第一次 accept 仍会漏掉，只能靠 socket 表补上仍存在的连接。
 - 内核 socket 表只覆盖当前网络命名空间，每 10 秒最多在后台读一次，两次读取之间开始又结束的连接拿不到。
