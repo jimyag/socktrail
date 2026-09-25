@@ -153,17 +153,25 @@ func (c *collector) icmp(f *flow, p capture.Packet) {
 }
 
 var (
-	icmpUnreachable = []string{"net-unreachable", "host-unreachable", "protocol-unreachable", "port-unreachable",
+	icmpUnreachable = []string{
+		"net-unreachable", "host-unreachable", "protocol-unreachable", "port-unreachable",
 		"frag-needed", "source-route-failed", "net-unknown", "host-unknown", "source-host-isolated",
-		"net-prohibited", "host-prohibited", "net-tos-unreachable", "host-tos-unreachable", "admin-prohibited"}
-	icmp6Unreachable = []string{"no-route", "admin-prohibited", "beyond-scope", "address-unreachable",
-		"port-unreachable", "source-policy-failed", "reject-route"}
-	icmpNames = map[uint8]string{0: "echo", 8: "echo", 4: "source-quench", 5: "redirect", 9: "router-advertisement",
-		10: "router-solicitation", 11: "ttl-exceeded", 12: "parameter-problem", 13: "timestamp", 14: "timestamp"}
-	icmp6Names = map[uint8]string{2: "packet-too-big", 3: "hop-limit-exceeded", 4: "parameter-problem", 128: "echo",
+		"net-prohibited", "host-prohibited", "net-tos-unreachable", "host-tos-unreachable", "admin-prohibited",
+	}
+	icmp6Unreachable = []string{
+		"no-route", "admin-prohibited", "beyond-scope", "address-unreachable",
+		"port-unreachable", "source-policy-failed", "reject-route",
+	}
+	icmpNames = map[uint8]string{
+		0: "echo", 8: "echo", 4: "source-quench", 5: "redirect", 9: "router-advertisement",
+		10: "router-solicitation", 11: "ttl-exceeded", 12: "parameter-problem", 13: "timestamp", 14: "timestamp",
+	}
+	icmp6Names = map[uint8]string{
+		2: "packet-too-big", 3: "hop-limit-exceeded", 4: "parameter-problem", 128: "echo",
 		129: "echo", 130: "mld-query", 131: "mld-report", 132: "mld-done", 133: "router-solicitation",
 		134: "router-advertisement", 135: "neighbor-solicitation", 136: "neighbor-advertisement", 137: "redirect",
-		143: "mld-report"}
+		143: "mld-report",
+	}
 )
 
 // icmpName is a short label for an ICMP or ICMPv6 type and code.

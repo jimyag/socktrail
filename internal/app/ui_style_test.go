@@ -22,8 +22,10 @@ func TestStyledRowsKeepTheirTextAndWidth(t *testing.T) {
 	if marked := tableRow(layout, 0, 40, true, false, line); !strings.HasPrefix(ansi.Strip(marked), "▸inbound") {
 		t.Fatalf("the unfocused selection lost its marker: %q", marked)
 	}
-	for state, want := range map[string]style{"established": styleGreen, "syn": styleYellow, "reset": styleRed, "closed": styleFaint,
-		"established, port-unreachable": styleRed, "established, packet-too-big": styleYellow, "frag-needed": styleYellow} {
+	for state, want := range map[string]style{
+		"established": styleGreen, "syn": styleYellow, "reset": styleRed, "closed": styleFaint,
+		"established, port-unreachable": styleRed, "established, packet-too-big": styleYellow, "frag-needed": styleYellow,
+	} {
 		if got := stateCell(state); got != want.paint(state) {
 			t.Errorf("state %q painted %q", state, got)
 		}

@@ -93,7 +93,7 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 		attached, err := link.AttachTracing(link.TracingOptions{Program: program})
 		if err != nil {
 			for _, previous := range links {
-				previous.Close()
+				_ = previous.Close()
 			}
 			objects.Close()
 			if runtime.GOARCH == "arm64" && errors.Is(err, ebpf.ErrNotSupported) {
@@ -107,7 +107,7 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 	reader, err := ringbuf.NewReader(objects.Maps["events"])
 	if err != nil {
 		for _, attached := range links {
-			attached.Close()
+			_ = attached.Close()
 		}
 		objects.Close()
 		return nil, nil, nil, fmt.Errorf("open eBPF event ring: %w", err)
@@ -138,14 +138,14 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 	}()
 	go func() {
 		<-ctx.Done()
-		reader.Close()
+		_ = reader.Close()
 	}()
 	go func() {
 		defer close(events)
 		defer objects.Close()
 		defer func() {
 			for _, attached := range links {
-				attached.Close()
+				_ = attached.Close()
 			}
 		}()
 		var readErr error
@@ -184,6 +184,7 @@ func StartEmbedded(ctx context.Context, netNS uint64, port uint16) (<-chan []Eve
 			}
 			// The program wrote the struct in the generated layout; reflection
 			// through encoding/binary cost a tenth of the CPU under load.
+			//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
 			event, err := decodeEvent(*(*BpfEvent)(unsafe.Pointer(&record.RawSample[0])))
 			if err != nil {
 				stats.Invalid.Add(1)
@@ -236,6 +237,7 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 		if c == 0 {
 			break
 		}
+		//nolint:gosec // G115: kernel char arrays contain raw bytes, including values above 127.
 		name = append(name, byte(c))
 	}
 	return Event{

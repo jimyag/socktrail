@@ -33,6 +33,6 @@ func (u *terminalUI) draw(lines []string, width, height int) {
 	if output != "" {
 		// Synchronized output: a terminal that supports mode 2026 shows the
 		// frame at once instead of row by row; others ignore it.
-		fmt.Fprint(os.Stdout, "\x1b[?2026h"+output+"\x1b[?2026l")
+		_, _ = fmt.Fprint(os.Stdout, "\x1b[?2026h"+output+"\x1b[?2026l")
 	}
 }

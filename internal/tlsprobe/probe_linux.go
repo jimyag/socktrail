@@ -48,18 +48,18 @@ func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Stat
 	}
 	key := uint32(0)
 	if err := objects.TargetNetns.Update(key, netNS, ebpf.UpdateAny); err != nil {
-		objects.Close()
+		_ = objects.Close()
 		return nil, nil, nil, "", fmt.Errorf("configure OpenSSL probe netns: %w", err)
 	}
 	executable, err := link.OpenExecutable(path)
 	if err != nil {
-		objects.Close()
+		_ = objects.Close()
 		return nil, nil, nil, "", err
 	}
 	cryptoPath := strings.Replace(path, "libssl.so", "libcrypto.so", 1)
 	crypto, err := link.OpenExecutable(cryptoPath)
 	if err != nil {
-		objects.Close()
+		_ = objects.Close()
 		return nil, nil, nil, "", fmt.Errorf("open matching OpenSSL BIO library %s: %w", cryptoPath, err)
 	}
 	var links []link.Link
@@ -79,9 +79,9 @@ func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Stat
 	}
 	cleanup := func() {
 		for _, attached := range links {
-			attached.Close()
+			_ = attached.Close()
 		}
-		objects.Close()
+		_ = objects.Close()
 	}
 	for _, hook := range []struct {
 		crypto  bool
@@ -130,7 +130,7 @@ func Start(ctx context.Context, netNS uint64) (<-chan Event, <-chan error, *Stat
 	stats := new(Statistics)
 	go func() {
 		<-ctx.Done()
-		reader.Close()
+		_ = reader.Close()
 	}()
 	go func() {
 		defer close(events)
@@ -187,6 +187,7 @@ func decodeEvent(raw TlsEvent) (Event, error) {
 		if c == 0 {
 			break
 		}
+		//nolint:gosec // G115: kernel char arrays contain raw bytes, including values above 127.
 		b := byte(c)
 		if b < 33 || b > 126 || b == '/' || b == ':' || b == '\\' {
 			return Event{}, fmt.Errorf("invalid OpenSSL hostname")
@@ -214,6 +215,7 @@ func decodeEvent(raw TlsEvent) (Event, error) {
 func bytesFromInt8(value []int8) []byte {
 	result := make([]byte, len(value))
 	for i, b := range value {
+		//nolint:gosec // G115: kernel char arrays contain raw bytes, including values above 127.
 		result[i] = byte(b)
 	}
 	return result

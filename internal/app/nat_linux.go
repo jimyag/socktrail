@@ -58,7 +58,7 @@ func startNAT(ctx context.Context) (*natTable, string) {
 }
 
 func (t *natTable) resolve(ctx context.Context, conn *conntrack.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	for {
 		var r natRequest
 		select {

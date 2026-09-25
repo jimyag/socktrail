@@ -66,6 +66,7 @@ func TCP(payload []byte, source, destination uint16) Detection {
 	if eitherPort(source, destination, 6379) && len(payload) >= 4 && bytes.Contains(payload[:min(len(payload), 64)], []byte("\r\n")) && bytes.IndexByte([]byte("+-:$*"), payload[0]) >= 0 {
 		return detected("Redis", "payload+port")
 	}
+	//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
 	if eitherPort(source, destination, 5432) && len(payload) >= 8 && binary.BigEndian.Uint32(payload[:4]) == uint32(len(payload)) && binary.BigEndian.Uint32(payload[4:8]) == 196608 {
 		return detected("PostgreSQL", "payload+port")
 	}
@@ -84,6 +85,7 @@ func TCP(payload []byte, source, destination uint16) Detection {
 	if eitherPort(source, destination, 23) && len(payload) >= 3 && payload[0] == 0xff && payload[1] >= 0xfb {
 		return detected("Telnet", "payload+port") // IAC WILL/WONT/DO/DONT negotiation.
 	}
+	//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
 	if eitherPort(source, destination, 27017) && len(payload) >= 16 && binary.LittleEndian.Uint32(payload[:4]) == uint32(len(payload)) && mongoOpCode(binary.LittleEndian.Uint32(payload[12:16])) {
 		return detected("MongoDB", "payload+port")
 	}
@@ -303,6 +305,7 @@ func UDP(payload []byte, source, destination uint16) Detection {
 			}
 			ike = payload[4:]
 		}
+		//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
 		if len(ike) >= 28 && (ike[17] == 0x20 || ike[17] == 0x10) && binary.BigEndian.Uint32(ike[24:28]) == uint32(len(ike)) {
 			return detected("IKE", "payload+port")
 		}
@@ -315,6 +318,7 @@ func UDP(payload []byte, source, destination uint16) Detection {
 	if eitherPort(source, destination, 69) && len(payload) >= 4 && payload[0] == 0 && payload[1] >= 1 && payload[1] <= 6 {
 		return detected("TFTP", "payload+port")
 	}
+	//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
 	if (eitherPort(source, destination, 1812) || eitherPort(source, destination, 1813)) && len(payload) >= 20 && binary.BigEndian.Uint16(payload[2:4]) == uint16(len(payload)) {
 		return detected("RADIUS", "payload+port")
 	}

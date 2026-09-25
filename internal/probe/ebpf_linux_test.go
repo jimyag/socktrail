@@ -83,38 +83,38 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 16)
 		n, _ := conn.Read(buf)
-		conn.Write(buf[:n])
+		_, _ = conn.Write(buf[:n])
 	}()
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	conn.Write([]byte("hello"))
-	conn.Read(make([]byte, 16))
+	defer func() { _ = conn.Close() }()
+	_, _ = conn.Write([]byte("hello"))
+	_, _ = conn.Read(make([]byte, 16))
 	client, server := netip.MustParseAddrPort(conn.LocalAddr().String()), netip.MustParseAddrPort(ln.Addr().String())
 
 	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer receiver.Close()
+	defer func() { _ = receiver.Close() }()
 	sender, err := net.DialUDP("udp", nil, receiver.LocalAddr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sender.Close()
-	sender.Write([]byte("datagram"))
-	receiver.ReadFromUDP(make([]byte, 16))
+	defer func() { _ = sender.Close() }()
+	_, _ = sender.Write([]byte("datagram"))
+	_, _, _ = receiver.ReadFromUDP(make([]byte, 16))
 	datagramPort := uint16(sender.LocalAddr().(*net.UDPAddr).Port)
 
 	// A raw socket carries the echo identifier in the message.
@@ -122,8 +122,8 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
-	raw.WriteTo([]byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}, &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	defer func() { _ = raw.Close() }()
+	_, _ = raw.WriteTo([]byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}, &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)})
 
 	cgroup := ownCgroupID(t)
 	want := map[string]func(Event) bool{
@@ -185,32 +185,32 @@ func TestProbeCountsSendfileAndSplice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 	go func() {
 		if conn, err := sink.Accept(); err == nil {
-			io.Copy(io.Discard, conn)
-			conn.Close()
+			_, _ = io.Copy(io.Discard, conn)
+			_ = conn.Close()
 		}
 	}()
 	relay, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer relay.Close()
+	defer func() { _ = relay.Close() }()
 	relayed := make(chan [2]netip.AddrPort, 1)
 	go func() {
 		in, err := relay.Accept()
 		if err != nil {
 			return
 		}
-		defer in.Close()
+		defer func() { _ = in.Close() }()
 		out, err := net.Dial("tcp", sink.Addr().String())
 		if err != nil {
 			return
 		}
-		defer out.Close()
+		defer func() { _ = out.Close() }()
 		relayed <- [2]netip.AddrPort{addr(in.LocalAddr()), addr(out.LocalAddr())}
-		out.(*net.TCPConn).ReadFrom(in) // splice
+		_, _ = out.(*net.TCPConn).ReadFrom(in) // splice
 	}()
 	client, err := net.Dial("tcp", relay.Addr().String())
 	if err != nil {
@@ -220,9 +220,9 @@ func TestProbeCountsSendfileAndSplice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.(*net.TCPConn).ReadFrom(file) // sendfile
-	file.Close()
-	client.Close()
+	_, _ = client.(*net.TCPConn).ReadFrom(file) // sendfile
+	_ = file.Close()
+	_ = client.Close()
 	ends := <-relayed
 
 	totals := map[string]uint64{}
@@ -274,7 +274,7 @@ func TestProbeReportsKernelRetransmits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
 	run(nft, "add table inet t; add chain inet t in { type filter hook input priority 0; }; add rule inet t in tcp dport "+port+" numgen random mod 3 == 0 drop")
 
@@ -284,16 +284,16 @@ func TestProbeReportsKernelRetransmits(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		if _, err := io.CopyN(io.Discard, conn, size); err == nil {
-			conn.Write([]byte{1}) // All data arrived.
+			_, _ = conn.Write([]byte{1}) // All data arrived.
 		}
 	}()
 	conn, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write(make([]byte, size)); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestProbeReportsKernelRetransmits(t *testing.T) {
 		t.Fatal(err)
 	}
 	var tcpInfo *unix.TCPInfo
-	raw.Control(func(fd uintptr) { tcpInfo, err = unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO) })
+	_ = raw.Control(func(fd uintptr) { tcpInfo, err = unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestProbeReportsSYNRetransmits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(listener)
+	defer func() { _ = unix.Close(listener) }()
 	loopback := &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}
 	if err := unix.Bind(listener, loopback); err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestProbeReportsSYNRetransmits(t *testing.T) {
 		return fd
 	}
 	first := connect() // Fills the accept queue, which nobody drains.
-	defer unix.Close(first)
+	defer func() { _ = unix.Close(first) }()
 	for start := time.Now(); ; { // Its handshake must finish before the second SYN.
 		info, err := unix.GetsockoptTCPInfo(first, unix.IPPROTO_TCP, unix.TCP_INFO)
 		if err != nil {
@@ -382,7 +382,7 @@ func TestProbeReportsSYNRetransmits(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	second := connect()
-	defer unix.Close(second)
+	defer func() { _ = unix.Close(second) }()
 	name, err := unix.Getsockname(second)
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +420,7 @@ func TestProbeCountsKTLSBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	accepted := make(chan net.Conn, 1)
 	go func() {
 		if conn, err := listener.Accept(); err == nil {
@@ -431,9 +431,9 @@ func TestProbeCountsKTLSBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	server := <-accepted
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	// TLS 1.2 AES-GCM-128 crypto info: version, cipher, IV, key, salt, record sequence.
 	const tlsTX, tlsRX = 1, 2
 	info := []byte{0x03, 0x03, 51, 0}
@@ -490,7 +490,8 @@ func TestProbeCountsKTLSBytes(t *testing.T) {
 	if err := setsockopt(server, unix.SOL_TLS, tlsRX, string(info)); err != nil {
 		t.Fatal(err)
 	}
-	go client.Write(make([]byte, size))
+	payload := make([]byte, size)
+	go func() { _, _ = client.Write(payload) }()
 	if _, err := io.ReadFull(server, make([]byte, size)); err != nil {
 		t.Fatal(err)
 	}

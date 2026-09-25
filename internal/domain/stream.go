@@ -212,6 +212,7 @@ func (s *Stream) Add(seq uint32, payload []byte) {
 	if s.failed || s.parser.finished() || len(payload) == 0 {
 		return
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	diff := int32(seq - s.expected)
 	if diff > 0 {
 		if s.gapSince.IsZero() {
@@ -253,6 +254,7 @@ func (s *Stream) AddSegment(seq uint32, prefix []byte, length int) {
 		s.Add(seq, prefix)
 		return
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	if s.failed || s.parser.finished() || int32(seq+uint32(length)-s.expected) <= 0 {
 		return // Nothing more is needed, or this is an old retransmission.
 	}
@@ -270,6 +272,7 @@ func (s *Stream) AddSegment(seq uint32, prefix []byte, length int) {
 		s.Fail(err.Error())
 		return
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	s.expected += uint32(length - len(prefix))
 	s.drain()
 }
@@ -280,6 +283,7 @@ func (s *Stream) drain() {
 		var chosenSeq uint32
 		var chosen []byte
 		for pendingSeq, segment := range s.pending {
+			//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 			d := int32(pendingSeq - s.expected)
 			if d <= 0 && int(-d) < len(segment) {
 				chosenSeq, chosen = pendingSeq, segment
@@ -303,6 +307,7 @@ func (s *Stream) drain() {
 }
 
 func (s *Stream) push(payload []byte) {
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	s.expected += uint32(len(payload))
 	s.lastProgress = time.Now()
 	if s.pendingBytes > 0 {
@@ -444,7 +449,7 @@ func sniffStream(b []byte) (kind string, used int, target string) {
 		return prefix("socks4", socks4Request)
 	case bytes.HasPrefix(proxyV2Signature, b[:min(len(b), len(proxyV2Signature))]):
 		return prefix("preamble", proxyV2Header)
-	case bytes.HasPrefix([]byte("PROXY "), b[:min(len(b), 6)]):
+	case bytes.Equal(b[:min(len(b), 6)], []byte("PROXY ")[:min(len(b), 6)]):
 		return prefix("preamble", proxyV1Header)
 	case bytes.HasPrefix(b, h2Preface):
 		return "http2", len(h2Preface), ""

@@ -37,6 +37,7 @@ func downloadGeoIP(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
+	//nolint:gosec // G204: exe is os.Executable and the child arguments are fixed flags.
 	cmd := exec.CommandContext(ctx, exe, "--download-geoip-db", "--geoip-dir", dir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
 	cmd.Env = []string{"HOME=" + owner.HomeDir, "PATH=/usr/bin:/bin"}

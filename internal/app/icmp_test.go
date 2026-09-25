@@ -22,8 +22,10 @@ func echo(source, target netip.AddrPort, request bool, seq uint16, at time.Time)
 // request is processed first; the identifier ties them together.
 func TestLocalPingNamesItsProcess(t *testing.T) {
 	local, remote := netip.MustParseAddrPort("192.0.2.10:0"), netip.MustParseAddrPort("198.51.100.7:0")
-	sent := probe.Event{Protocol: 1, Role: "out", Operation: "send", PID: 4242, StartNS: 1000, Process: "ping",
-		Local: netip.AddrPortFrom(netip.IPv4Unspecified(), 7), Remote: remote}
+	sent := probe.Event{
+		Protocol: 1, Role: "out", Operation: "send", PID: 4242, StartNS: 1000, Process: "ping",
+		Local: netip.AddrPortFrom(netip.IPv4Unspecified(), 7), Remote: remote,
+	}
 	for _, eventFirst := range []bool{true, false} {
 		c := newTestCollector()
 		request := echo(local, remote, true, 1, time.Now())
@@ -100,8 +102,14 @@ func TestICMPNames(t *testing.T) {
 		protocol, kind, code uint8
 		want                 string
 	}{
-		{1, 3, 4, "frag-needed"}, {1, 3, 13, "admin-prohibited"}, {1, 11, 0, "ttl-exceeded"}, {1, 11, 1, "reassembly-timeout"},
-		{58, 1, 4, "port-unreachable"}, {58, 2, 0, "packet-too-big"}, {58, 135, 0, "neighbor-solicitation"}, {1, 42, 0, "type=42 code=0"},
+		{1, 3, 4, "frag-needed"},
+		{1, 3, 13, "admin-prohibited"},
+		{1, 11, 0, "ttl-exceeded"},
+		{1, 11, 1, "reassembly-timeout"},
+		{58, 1, 4, "port-unreachable"},
+		{58, 2, 0, "packet-too-big"},
+		{58, 135, 0, "neighbor-solicitation"},
+		{1, 42, 0, "type=42 code=0"},
 	} {
 		if got := icmpName(tc.protocol, tc.kind, tc.code); got != tc.want {
 			t.Fatalf("icmpName(%d,%d,%d) = %q, want %q", tc.protocol, tc.kind, tc.code, got, tc.want)

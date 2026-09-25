@@ -24,8 +24,10 @@ jobs:
           cache-dependency-path: go.sum
       - name: Format
         run: test -z "$(gofmt -l .)"
-      - name: Vet
-        run: go vet ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
       - name: Test
         run: go test -race ./...
       - name: Build

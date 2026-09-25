@@ -80,28 +80,30 @@ func Open(interfaceName string, ringSize int) (*Socket, error) {
 	}
 	s := &Socket{fd: fd, blocks: max(1, ringSize/ringBlockSize), name: interfaceName, released: make(chan struct{}, 1)}
 	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_VERSION, unix.TPACKET_V3); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, fmt.Errorf("select TPACKET_V3: %w", err)
 	}
 	request := unix.TpacketReq3{
+		//nolint:gosec // G115: ring dimensions and file descriptors are bounded by the kernel allocation.
 		Block_size: ringBlockSize, Block_nr: uint32(s.blocks),
+		//nolint:gosec // G115: ring dimensions and file descriptors are bounded by the kernel allocation.
 		Frame_size: ringFrameSize, Frame_nr: uint32(ringBlockSize / ringFrameSize * s.blocks),
 		Retire_blk_tov: ringBlockTimeout,
 	}
 	if err := unix.SetsockoptTpacketReq3(fd, unix.SOL_PACKET, unix.PACKET_RX_RING, &request); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, fmt.Errorf("set up AF_PACKET receive ring: %w", err)
 	}
 	if s.ring, err = unix.Mmap(fd, 0, ringBlockSize*s.blocks, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, fmt.Errorf("map AF_PACKET receive ring: %w", err)
 	}
 	if err := s.SetFullFrames(false); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, err
 	}
 	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(etherTypeAll), Ifindex: iface.Index}); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, fmt.Errorf("bind AF_PACKET to %s: %w", interfaceName, err)
 	}
 	return s, nil
@@ -134,11 +136,12 @@ func (s *Socket) keep(length uint32) error {
 }
 
 func (s *Socket) Close() error {
+	var unmapErr error
 	if s.ring != nil {
-		unix.Munmap(s.ring)
+		unmapErr = unix.Munmap(s.ring)
 		s.ring = nil
 	}
-	return unix.Close(s.fd)
+	return errors.Join(unmapErr, unix.Close(s.fd))
 }
 
 // Statistics returns the kernel's AF_PACKET counters since the last call:
@@ -172,9 +175,11 @@ func (s *Socket) Run(ctx context.Context, recordFrames *atomic.Bool, out chan<- 
 	headerLen := (unix.SizeofTpacket3Hdr + tpacketAlignment - 1) &^ (tpacketAlignment - 1)
 	for ctx.Err() == nil {
 		block := s.ring[s.next*ringBlockSize : (s.next+1)*ringBlockSize]
+		//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
 		desc := (*unix.TpacketHdrV1)(unsafe.Pointer(&block[unsafe.Offsetof(unix.TpacketBlockDesc{}.Hdr)]))
 		if atomic.LoadUint32(&desc.Block_status)&unix.TP_STATUS_USER == 0 {
 			// The 200 ms timeout lets cancellation stop the loop.
+			//nolint:gosec // G115: ring dimensions and file descriptors are bounded by the kernel allocation.
 			fds := []unix.PollFd{{Fd: int32(s.fd), Events: unix.POLLIN}}
 			_, err := unix.Poll(fds, 200)
 			if err == nil && fds[0].Revents&unix.POLLERR != 0 {
@@ -197,7 +202,9 @@ func (s *Socket) Run(ctx context.Context, recordFrames *atomic.Bool, out chan<- 
 			if offset+headerLen+unix.SizeofSockaddrLinklayer > len(block) {
 				break
 			}
+			//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
 			header := (*unix.Tpacket3Hdr)(unsafe.Pointer(&block[offset]))
+			//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
 			ll := (*unix.RawSockaddrLinklayer)(unsafe.Pointer(&block[offset+headerLen]))
 			start := offset + int(header.Mac)
 			if start+int(header.Snaplen) > len(block) {

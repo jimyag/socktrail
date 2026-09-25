@@ -89,11 +89,11 @@ func Open() (*Conn, error) {
 		return nil, fmt.Errorf("open ctnetlink socket: %w", err)
 	}
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("bind ctnetlink socket: %w", err)
 	}
 	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("set ctnetlink receive timeout: %w", err)
 	}
 	return &Conn{fd: fd, buffer: make([]byte, 8192)}, nil
@@ -103,7 +103,7 @@ func (c *Conn) Close() error { return unix.Close(c.fd) }
 
 const (
 	ctnetlinkGet = 1<<8 | 1 // NFNL_SUBSYS_CTNETLINK, IPCTNL_MSG_CT_GET.
-	ctnetlinkNew = 1<<8 | 0
+	ctnetlinkNew = 1 << 8
 	nested       = unix.NLA_F_NESTED
 )
 
@@ -158,6 +158,7 @@ func lookupRequest(seq uint32, protocol uint8, src, dst netip.Addr, sport, dport
 			attribute(1, []byte{protocol}),                           // CTA_PROTO_NUM
 			attribute(2, binary.BigEndian.AppendUint16(nil, sport)),  // CTA_PROTO_SRC_PORT
 			attribute(3, binary.BigEndian.AppendUint16(nil, dport)))) // CTA_PROTO_DST_PORT
+	//nolint:gosec // G115: netlink encodes lengths and negative errno in fixed-width fields.
 	b := binary.NativeEndian.AppendUint32(nil, uint32(unix.NLMSG_HDRLEN+4+len(tuple)))
 	b = binary.NativeEndian.AppendUint16(b, ctnetlinkGet)
 	b = binary.NativeEndian.AppendUint16(b, unix.NLM_F_REQUEST)
@@ -187,12 +188,14 @@ func parseReply(b []byte, seq uint32) (entry Entry, ok, done bool, err error) {
 			if len(body) < 4 {
 				return Entry{}, false, true, fmt.Errorf("short netlink error")
 			}
+			//nolint:gosec // G115: netlink encodes lengths and negative errno in fixed-width fields.
 			switch errno := -int32(binary.NativeEndian.Uint32(body)); unix.Errno(errno) {
 			case 0:
 				continue // An acknowledgement.
 			case unix.ENOENT:
 				return Entry{}, false, true, nil
 			default:
+				//nolint:gosec // G115: netlink encodes lengths and negative errno in fixed-width fields.
 				return Entry{}, false, true, fmt.Errorf("conntrack lookup: %w", unix.Errno(errno))
 			}
 		case ctnetlinkNew:

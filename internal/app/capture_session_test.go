@@ -31,7 +31,7 @@ func TestDefaultCaptureDirectoryUsesXDGStateHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { session.Close() })
+	t.Cleanup(func() { _ = session.Close() })
 	want := filepath.Join(home, "state", "socktrail", "captures")
 	if got := filepath.Dir(session.path); got != want {
 		t.Fatalf("capture directory = %q, want %q", got, want)

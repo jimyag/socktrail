@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 )
 
@@ -30,6 +31,9 @@ func New(out io.Writer, interfaceNames []string, maxBytes uint64) (*Writer, erro
 	if len(interfaceNames) == 0 {
 		return nil, fmt.Errorf("PCAPNG needs at least one interface")
 	}
+	if uint64(len(interfaceNames)) > math.MaxUint32 {
+		return nil, fmt.Errorf("too many PCAPNG interfaces")
+	}
 	w := &Writer{out: out, maxBytes: maxBytes}
 	section := binary.LittleEndian.AppendUint32(nil, 0x1a2b3c4d)
 	section = binary.LittleEndian.AppendUint16(section, 1)
@@ -39,6 +43,9 @@ func New(out io.Writer, interfaceNames []string, maxBytes uint64) (*Writer, erro
 		return nil, err
 	}
 	for _, interfaceName := range interfaceNames {
+		if len(interfaceName) > math.MaxUint16 {
+			return nil, fmt.Errorf("PCAPNG interface name is too long")
+		}
 		iface := binary.LittleEndian.AppendUint16(nil, ethernetLinkType)
 		iface = binary.LittleEndian.AppendUint16(iface, 0)
 		iface = binary.LittleEndian.AppendUint32(iface, maxSnapLength)
@@ -49,6 +56,7 @@ func New(out io.Writer, interfaceNames []string, maxBytes uint64) (*Writer, erro
 			return nil, err
 		}
 	}
+	//nolint:gosec // G115: PCAPNG field width and frame, option, or interface bounds are checked above.
 	w.interfaces = uint32(len(interfaceNames))
 	return w, nil
 }
@@ -62,11 +70,20 @@ func (w *Writer) Packet(interfaceID uint32, frame []byte, wireLength int, at tim
 	if len(frame) == 0 || len(frame) > maxSnapLength {
 		return fmt.Errorf("invalid captured frame length %d", len(frame))
 	}
+	if wireLength > math.MaxUint32 {
+		return fmt.Errorf("invalid wire length %d", wireLength)
+	}
+	if len(comment) > math.MaxUint16 {
+		return fmt.Errorf("PCAPNG comment is too long")
+	}
 	stamp := uint64(at.UnixMicro())
 	body := binary.LittleEndian.AppendUint32(nil, interfaceID)
 	body = binary.LittleEndian.AppendUint32(body, uint32(stamp>>32))
+	//nolint:gosec // G115: PCAPNG timestamp stores the low 32 bits separately from the high 32 bits.
 	body = binary.LittleEndian.AppendUint32(body, uint32(stamp))
+	//nolint:gosec // G115: PCAPNG field width and frame, option, or interface bounds are checked above.
 	body = binary.LittleEndian.AppendUint32(body, uint32(len(frame)))
+	//nolint:gosec // G115: PCAPNG field width and frame, option, or interface bounds are checked above.
 	body = binary.LittleEndian.AppendUint32(body, uint32(max(wireLength, len(frame))))
 	body = appendPadded(body, frame)
 	if comment != "" {
@@ -86,6 +103,7 @@ func (w *Writer) block(kind uint32, body []byte) error {
 	if len(body)%4 != 0 {
 		return fmt.Errorf("PCAPNG block body is not aligned")
 	}
+	//nolint:gosec // G115: PCAPNG field width and frame, option, or interface bounds are checked above.
 	length := uint32(len(body) + 12)
 	if w.maxBytes > 0 && w.bytes+uint64(length) > w.maxBytes {
 		return ErrLimit
@@ -95,6 +113,7 @@ func (w *Writer) block(kind uint32, body []byte) error {
 	block = append(block, body...)
 	block = binary.LittleEndian.AppendUint32(block, length)
 	n, err := w.out.Write(block)
+	//nolint:gosec // G115: io.Writer reports a nonnegative byte count.
 	w.bytes += uint64(n)
 	if err != nil {
 		return err
@@ -107,6 +126,7 @@ func (w *Writer) block(kind uint32, body []byte) error {
 
 func appendOption(dst []byte, kind uint16, value []byte) []byte {
 	dst = binary.LittleEndian.AppendUint16(dst, kind)
+	//nolint:gosec // G115: PCAPNG field width and frame, option, or interface bounds are checked above.
 	dst = binary.LittleEndian.AppendUint16(dst, uint16(len(value)))
 	return appendPadded(dst, value)
 }

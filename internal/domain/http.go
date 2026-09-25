@@ -168,9 +168,11 @@ func (p *httpParser) feed(data []byte, evidence *Evidence) error {
 // skip consumes n body bytes that were not captured. Only a body whose
 // remaining length is already known can be skipped.
 func (p *httpParser) skip(n int) bool {
+	//nolint:gosec // G115: n is a nonnegative count of consumed bytes.
 	if len(p.buffer) != 0 || p.state != httpFixedBody && p.state != httpChunkData || uint64(n) > p.remaining {
 		return false
 	}
+	//nolint:gosec // G115: n is a nonnegative count of consumed bytes.
 	p.remaining -= uint64(n)
 	if p.remaining == 0 && p.state == httpFixedBody {
 		p.state = httpHeaders

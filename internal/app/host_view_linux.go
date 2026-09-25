@@ -60,7 +60,7 @@ func (s *hostViewState) update(host *collector, members map[*flow][]*flow) map[*
 			newIDs[observation] = id
 		}
 		listed := merged.Domain != nil && merged.Domain.Evidence().Listed()
-		newActive[id] = hostFlowTotal{ioBytes: ioBytes{RX: merged.RX, TX: merged.TX}, domain: listed}
+		newActive[id] = hostFlowTotal{RX: merged.RX, TX: merged.TX, domain: listed}
 		shown := s.displayed[id]
 		if shown == nil {
 			shown = merged

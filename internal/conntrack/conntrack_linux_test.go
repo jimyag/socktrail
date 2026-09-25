@@ -77,7 +77,7 @@ func TestLookupFindsDNAT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	backend := listener.Addr().(*net.TCPAddr).AddrPort()
 	run(nft, "add table ip t; add chain ip t out { type nat hook output priority -100; }; add rule ip t out tcp dport 9 dnat to "+backend.String())
 	if err := Available(); err != nil {
@@ -87,14 +87,14 @@ func TestLookupFindsDNAT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	local, service := conn.LocalAddr().(*net.TCPAddr).AddrPort(), netip.MustParseAddrPort("127.0.0.1:9")
 	local = netip.AddrPortFrom(local.Addr().Unmap(), local.Port())
 	c, err := Open()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	want := Entry{Protocol: 6, Orig: [2]netip.AddrPort{local, service}, Reply: [2]netip.AddrPort{backend, local}}
 	for _, tuple := range [][2]netip.AddrPort{{local, service}, {backend, local}} {
 		entry, ok, err := c.Lookup(6, tuple[0], tuple[1])

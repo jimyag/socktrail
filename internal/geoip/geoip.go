@@ -75,7 +75,7 @@ func Open(dir string) *DB {
 			err = validate(r, item.name)
 		}
 		if err != nil && r != nil {
-			r.Close()
+			_ = r.Close()
 		}
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -98,10 +98,10 @@ func (db *DB) Available() bool { return db != nil && (db.country != nil || db.as
 
 func (db *DB) Close() {
 	if db.country != nil {
-		db.country.Close()
+		_ = db.country.Close()
 	}
 	if db.asn != nil {
-		db.asn.Close()
+		_ = db.asn.Close()
 	}
 }
 

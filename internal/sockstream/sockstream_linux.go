@@ -70,7 +70,7 @@ func Start(ctx context.Context, netNS uint64, port uint16) (<-chan Chunk, <-chan
 	var links []link.Link
 	cleanup := func() {
 		for _, attached := range links {
-			attached.Close()
+			_ = attached.Close()
 		}
 		objects.Close()
 	}
@@ -109,7 +109,7 @@ func Start(ctx context.Context, netNS uint64, port uint16) (<-chan Chunk, <-chan
 			case <-ticker.C:
 				readLost()
 			case <-ctx.Done():
-				reader.Close()
+				_ = reader.Close()
 				return
 			}
 		}
@@ -159,7 +159,7 @@ func haveSocketCookie() bool {
 		Instructions: asm.Instructions{asm.FnGetSocketCookie.Call(), asm.Return()},
 	})
 	if err == nil {
-		prog.Close()
+		_ = prog.Close()
 	}
 	return !errors.Is(err, syscall.EINVAL)
 }
@@ -171,6 +171,7 @@ func decode(raw []byte) (Chunk, error) {
 	if len(raw) < size {
 		return Chunk{}, fmt.Errorf("short socket stream record")
 	}
+	//nolint:gosec // G103: kernel ABI requires this layout overlay after buffer bounds checks.
 	header := *(*SockstreamChunkHeader)(unsafe.Pointer(&raw[0]))
 	if int(header.Len) > len(raw)-size || header.Direction < 1 || header.Direction > 2 || header.Protocol != 6 && header.Protocol != 17 {
 		return Chunk{}, fmt.Errorf("invalid socket stream record")
@@ -189,6 +190,7 @@ func decode(raw []byte) (Chunk, error) {
 		if c == 0 {
 			break
 		}
+		//nolint:gosec // G115: kernel char arrays contain raw bytes, including values above 127.
 		name = append(name, byte(c))
 	}
 	return Chunk{

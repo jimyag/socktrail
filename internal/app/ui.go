@@ -31,13 +31,17 @@ const (
 	viewService
 )
 
-var viewNames = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES"}
-var tabNames = [...]string{"conns", "process"}
-var topTabKeys = [...]string{"1", "2", "3", "4", "5", "d", "0", "a", "i"}
+var (
+	viewNames  = [...]string{"PID", "SOURCE IP", "TARGET IP", "PROTOCOL", "DOMAINS", "INTERFACES", "SERVICES"}
+	tabNames   = [...]string{"conns", "process"}
+	topTabKeys = [...]string{"1", "2", "3", "4", "5", "d", "0", "a", "i"}
+)
 
-type rate struct{ rx, tx uint64 }
-type counters struct{ rx, tx uint64 }
-type hitSpan struct{ start, end int }
+type (
+	rate     struct{ rx, tx uint64 }
+	counters struct{ rx, tx uint64 }
+	hitSpan  struct{ start, end int }
+)
 
 type uiRow struct {
 	key                  string
@@ -215,8 +219,8 @@ func openUI(interfaceNames []string, netNS uint64, collectors map[string]*collec
 		return nil, fmt.Errorf("put terminal in raw mode: %w", err)
 	}
 	if _, err := fmt.Fprint(os.Stdout, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[H"); err != nil {
-		fmt.Fprint(os.Stdout, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l")
-		term.Restore(int(os.Stdin.Fd()), state)
+		_, _ = fmt.Fprint(os.Stdout, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l")
+		_ = term.Restore(int(os.Stdin.Fd()), state)
 		return nil, err
 	}
 	u := &terminalUI{
@@ -235,8 +239,8 @@ func (u *terminalUI) close() {
 		return
 	}
 	u.closed = true
-	fmt.Fprint(os.Stdout, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l")
-	term.Restore(int(os.Stdin.Fd()), u.state)
+	_, _ = fmt.Fprint(os.Stdout, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l")
+	_ = term.Restore(int(os.Stdin.Fd()), u.state)
 }
 
 func (u *terminalUI) handleKey(key string) bool {
@@ -599,8 +603,16 @@ func (u *terminalUI) handleMouse(m mouseInput, c *collector) {
 	u.help, u.status, u.filtering = false, false, false
 	if m.y == 0 {
 		for _, item := range [...]struct{ label, key string }{
-			{"1 PID", "1"}, {"2 SRC", "2"}, {"3 DST", "3"}, {"4 PROTO", "4"}, {"5 SVC", "5"}, {"d DOMAINS", "d"}, {"0 IFACES", "0"},
-			{"a overview", "a"}, {"i per interface", "i"}, {"i next interface", "i"},
+			{"1 PID", "1"},
+			{"2 SRC", "2"},
+			{"3 DST", "3"},
+			{"4 PROTO", "4"},
+			{"5 SVC", "5"},
+			{"d DOMAINS", "d"},
+			{"0 IFACES", "0"},
+			{"a overview", "a"},
+			{"i per interface", "i"},
+			{"i next interface", "i"},
 		} {
 			// The line holds wider characters than ASCII, such as the bar
 			// before the scope keys: find the entry by its screen column.
@@ -732,8 +744,8 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		r.add(f, u.rates[f], ownBytes)
 		return r
 	}
-	add := func(label string, f *flow, ownBytes bool) *uiRow {
-		return addWithKey(label, label, f, ownBytes)
+	add := func(label string, f *flow, ownBytes bool) {
+		addWithKey(label, label, f, ownBytes)
 	}
 	if mode == viewInterfaces {
 		for _, name := range u.interfaces {
@@ -786,9 +798,7 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 						participants[id] = participant{PID: id.PID, StartNS: id.StartNS, Name: c.pidIO[id].Name}
 					}
 				}
-				for id, actor := range f.TLSActors {
-					participants[id] = actor
-				}
+				maps.Copy(participants, f.TLSActors)
 				switch len(participants) {
 				case 0:
 					add("unknown PID", f, false)
@@ -1189,8 +1199,14 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		name string
 		n    uint64
 	}{
-		{"drop", dropped}, {"trunc", truncated}, {"flow-index", flowIndex}, {"pid-index", pidIndex},
-		{"pid-lost", probeLost + probeDropped}, {"io-unindexed", unindexed}, {"sniff-lost", sniffLost}, {"parse", parseFailures},
+		{"drop", dropped},
+		{"trunc", truncated},
+		{"flow-index", flowIndex},
+		{"pid-index", pidIndex},
+		{"pid-lost", probeLost + probeDropped},
+		{"io-unindexed", unindexed},
+		{"sniff-lost", sniffLost},
+		{"parse", parseFailures},
 	} {
 		if count.n > 0 {
 			reasons = append(reasons, fmt.Sprintf("%s=%d", count.name, count.n))
@@ -1540,9 +1556,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			for id := range f.IO {
 				seen[id] = participant{PID: id.PID, StartNS: id.StartNS, Name: c.pidIO[id].Name}
 			}
-			for id, actor := range f.TLSActors {
-				seen[id] = actor
-			}
+			maps.Copy(seen, f.TLSActors)
 		}
 		for id, p := range seen {
 			// A service row lists its own processes, not their peers.

@@ -46,7 +46,7 @@ func TestParseProcNetDecodesHostOrderAddresses(t *testing.T) {
 // shows that the peer connected in.
 func TestSocketTableNamesConnectionsSeenMidstream(t *testing.T) {
 	local := netip.MustParseAddr("192.0.2.10")
-	at := func(addr netip.Addr, port uint16) netip.AddrPort { return netip.AddrPortFrom(addr, port) }
+	at := netip.AddrPortFrom
 	remote := netip.MustParseAddr("203.0.113.5")
 	ssh, https := at(local, 22), at(local, 40000)
 	sshPeer, httpsPeer, dnsPeer := at(remote, 50000), netip.MustParseAddrPort("198.51.100.7:443"), at(remote, 40001)

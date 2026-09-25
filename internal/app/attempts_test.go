@@ -27,8 +27,10 @@ func TestScanIsSummarizedAndEvicted(t *testing.T) {
 	}
 	udpProbe := capture.Packet{Source: netip.AddrPortFrom(scanner, 42000), Destination: netip.AddrPortFrom(local, 3000), Protocol: 17, HasPorts: true, IPBytes: 28, CapturedAt: now}
 	c.packet(udpProbe)
-	c.packet(capture.Packet{Source: netip.AddrPortFrom(local, 0), Destination: netip.AddrPortFrom(scanner, 0), Protocol: 1, ICMPType: 3, ICMPCode: 3, QuotedProtocol: 17,
-		QuotedSource: udpProbe.Source, QuotedDestination: udpProbe.Destination, IPBytes: 56, Outgoing: true, CapturedAt: now})
+	c.packet(capture.Packet{
+		Source: netip.AddrPortFrom(local, 0), Destination: netip.AddrPortFrom(scanner, 0), Protocol: 1, ICMPType: 3, ICMPCode: 3, QuotedProtocol: 17,
+		QuotedSource: udpProbe.Source, QuotedDestination: udpProbe.Destination, IPBytes: 56, Outgoing: true, CapturedAt: now,
+	})
 
 	// The table is full: a real connection evicts old attempts instead of
 	// being dropped, and the unanswered ones evicted count as such.

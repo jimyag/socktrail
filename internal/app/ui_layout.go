@@ -242,11 +242,25 @@ func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) str
 // connectionColumns are the connection table's columns, the same on every
 // page.
 var connectionColumns = []tableColumn{
-	{title: "I/O PID"}, {title: "IFACE"}, {title: "DIR"}, {title: "SOURCE"}, {title: "TARGET"}, {title: "PROTO"},
-	{title: "APP"}, {title: "STATE"}, {title: "DOMAIN / ICMP"},
-	{title: "IP RX", right: true}, {title: "IP TX", right: true}, {title: "RTT", right: true}, {title: "RETX", right: true},
-	{title: "PID RX", right: true}, {title: "PID TX", right: true},
-	{title: "ORIGIN PID"}, {title: "TARGET PID"}, {title: "FIRST"}, {title: "LAST"},
+	{title: "I/O PID"},
+	{title: "IFACE"},
+	{title: "DIR"},
+	{title: "SOURCE"},
+	{title: "TARGET"},
+	{title: "PROTO"},
+	{title: "APP"},
+	{title: "STATE"},
+	{title: "DOMAIN / ICMP"},
+	{title: "IP RX", right: true},
+	{title: "IP TX", right: true},
+	{title: "RTT", right: true},
+	{title: "RETX", right: true},
+	{title: "PID RX", right: true},
+	{title: "PID TX", right: true},
+	{title: "ORIGIN PID"},
+	{title: "TARGET PID"},
+	{title: "FIRST"},
+	{title: "LAST"},
 }
 
 // connectionLayout sizes each column to its title or its widest value over

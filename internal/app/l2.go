@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 
 	"github.com/jimyag/socktrail/internal/capture"
 )
@@ -63,11 +64,12 @@ func l2Description(f *flow) string {
 	if f.Key.EtherType != 0x0806 || f.ARP == nil {
 		return fmt.Sprintf("%d frames", f.Packets)
 	}
-	text := fmt.Sprintf("requests=%d replies=%d", f.ARP.Requests, f.ARP.Replies)
+	var text strings.Builder
+	fmt.Fprintf(&text, "requests=%d replies=%d", f.ARP.Requests, f.ARP.Replies)
 	for _, addr := range []netip.Addr{f.Key.A.Addr(), f.Key.B.Addr()} {
 		if mac, ok := f.ARP.MACs[addr]; ok {
-			text += fmt.Sprintf(" %s is-at %s", addr, net.HardwareAddr(mac[:]))
+			fmt.Fprintf(&text, " %s is-at %s", addr, net.HardwareAddr(mac[:]))
 		}
 	}
-	return text
+	return text.String()
 }

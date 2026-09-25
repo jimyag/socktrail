@@ -24,24 +24,24 @@ func TestSocketRingOnLoopback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	batches, errs, done := make(chan Batch, 1), make(chan error, 1), make(chan struct{})
 	go func() { s.Run(ctx, nil, batches, errs); close(done) }()
-	defer func() { cancel(); <-done; s.Close() }() // The ring stays mapped until Run returns.
+	defer func() { cancel(); <-done; _ = s.Close() }() // The ring stays mapped until Run returns.
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	go func() {
 		if conn, err := listener.Accept(); err == nil {
-			io.Copy(io.Discard, conn)
-			conn.Close()
+			_, _ = io.Copy(io.Discard, conn)
+			_ = conn.Close()
 		}
 	}()
 	conn, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	message := bytes.Repeat([]byte("0123456789"), 4000)
 	if _, err := conn.Write(message); err != nil {
 		t.Fatal(err)

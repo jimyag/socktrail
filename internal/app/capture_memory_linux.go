@@ -101,6 +101,7 @@ func currentMemoryMax() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	//nolint:gosec // G304: cgroup path comes from the kernel and the leaf name is fixed.
 	data, err := os.ReadFile(filepath.Join(group, "memory.max"))
 	if err != nil {
 		return 0, err
@@ -115,6 +116,7 @@ func cgroupMemoryHeadroom() (uint64, error) {
 	}
 	headroom := ^uint64(0)
 	for group != "/sys/fs/cgroup" {
+		//nolint:gosec // G304: cgroup path comes from the kernel and the leaf name is fixed.
 		maxData, err := os.ReadFile(filepath.Join(group, "memory.max"))
 		if err != nil {
 			return 0, err
@@ -124,6 +126,7 @@ func cgroupMemoryHeadroom() (uint64, error) {
 			if err != nil {
 				return 0, err
 			}
+			//nolint:gosec // G304: cgroup path comes from the kernel and the leaf name is fixed.
 			usedData, err := os.ReadFile(filepath.Join(group, "memory.current"))
 			if err != nil {
 				return 0, err
@@ -148,11 +151,15 @@ func prepareCaptureMemory(names []string, setting string, yes bool) (handled boo
 	}
 	if os.Getenv(memoryScopeEnv) != "" {
 		actual, err := currentMemoryMax()
-		if err != nil || limit == 0 || actual > limit {
-			return false, fmt.Errorf("memory-limited scope was not established: limit=%d, read error=%v", actual, err)
+		if err != nil {
+			return false, fmt.Errorf("read memory-limited scope: %w", err)
+		}
+		if limit == 0 || actual > limit {
+			return false, fmt.Errorf("memory-limited scope was not established: requested=%d, actual=%d", limit, actual)
 		}
 		return false, nil
 	}
+	//nolint:gosec // G115: capture ring size and interface count are positive and bounded.
 	ringBytes := uint64(captureRingSize(len(names))) * uint64(len(names))
 	if limit != 0 {
 		available, err := availableMemory()
@@ -196,6 +203,7 @@ func prepareCaptureMemory(names []string, setting string, yes bool) (handled boo
 	}
 	args = append(args, "-p", fmt.Sprintf("MemoryMax=%d", limit), exe)
 	args = append(args, os.Args[1:]...)
+	//nolint:gosec // G702: systemd-run is fixed and receives arguments directly without a shell.
 	cmd := exec.Command("systemd-run", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), memoryScopeEnv+"=1")

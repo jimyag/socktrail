@@ -2,7 +2,6 @@ package sockstream
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net"
 	"os"
@@ -31,8 +30,7 @@ func captureBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	chunks, _, stats, err := Start(ctx, info.Sys().(*syscall.Stat_t).Ino, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +40,7 @@ func captureBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	payload := make([]byte, 20000)
 	for i := range payload {
 		payload[i] = byte(i * 7)
@@ -50,7 +48,7 @@ func captureBothDirections(t *testing.T) {
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			io.Copy(io.Discard, conn)
+			_, _ = io.Copy(io.Discard, conn)
 		}
 	}()
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -58,10 +56,10 @@ func captureBothDirections(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := conn.LocalAddr().String()
-	conn.Write(payload[:1000])                                                               // write(2): one user buffer.
-	(&net.Buffers{payload[1000:1500], payload[1500:1600], payload[1600:3000]}).WriteTo(conn) // writev(2): an iovec array.
-	conn.Write(payload[3000:])                                                               // Crosses the 16 KiB budget.
-	conn.Close()
+	_, _ = conn.Write(payload[:1000])                                                               // write(2): one user buffer.
+	_, _ = (&net.Buffers{payload[1000:1500], payload[1500:1600], payload[1600:3000]}).WriteTo(conn) // writev(2): an iovec array.
+	_, _ = conn.Write(payload[3000:])                                                               // Crosses the 16 KiB budget.
+	_ = conn.Close()
 
 	streams := map[bool][]byte{true: make([]byte, 16384), false: make([]byte, 16384)}
 	got := map[bool]int{}
@@ -98,8 +96,7 @@ func TestCapturesQUICLongHeaderDatagrams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	chunks, _, _, err := Start(ctx, info.Sys().(*syscall.Stat_t).Ino, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -108,15 +105,15 @@ func TestCapturesQUICLongHeaderDatagrams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer receiver.Close()
+	defer func() { _ = receiver.Close() }()
 	sender, err := net.ListenUDP("udp", nil) // A dual-stack socket bound to the wildcard address.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sender.Close()
+	defer func() { _ = sender.Close() }()
 	long := append([]byte{0xc3, 0, 0, 0, 1}, make([]byte, 1195)...)
-	sender.WriteToUDP([]byte{0x40, 1, 2, 3}, receiver.LocalAddr().(*net.UDPAddr)) // A short header: skipped.
-	sender.WriteToUDP(long, receiver.LocalAddr().(*net.UDPAddr))
+	_, _ = sender.WriteToUDP([]byte{0x40, 1, 2, 3}, receiver.LocalAddr().(*net.UDPAddr)) // A short header: skipped.
+	_, _ = sender.WriteToUDP(long, receiver.LocalAddr().(*net.UDPAddr))
 	port := uint16(sender.LocalAddr().(*net.UDPAddr).Port)
 	deadline := time.After(5 * time.Second)
 	for {

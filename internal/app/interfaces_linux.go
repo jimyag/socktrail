@@ -96,7 +96,7 @@ func defaultInterfaces(interfaces []net.Interface, sysfsNet string) ([]string, [
 	}
 	slices.Sort(physical)
 	slices.Sort(virtual)
-	names := append(physical, virtual...)
+	names := slices.Concat(physical, virtual)
 	if len(names) == 0 {
 		return nil, nil, fmt.Errorf("no active capture interfaces found; specify --interface <name>")
 	}

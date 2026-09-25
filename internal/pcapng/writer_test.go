@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,5 +64,26 @@ func TestWriterProducesAlignedBlocksAndAnnotatedPacket(t *testing.T) {
 	w.maxBytes = w.Bytes() + 4
 	if err := w.Packet(0, frame, len(frame), at, "next"); !errors.Is(err, ErrLimit) || w.Packets != 1 {
 		t.Fatalf("size limit did not stop an entire packet block: error=%v packets=%d", err, w.Packets)
+	}
+}
+
+func TestWriterRejectsOversizedFields(t *testing.T) {
+	var output bytes.Buffer
+	if _, err := New(&output, []string{strings.Repeat("x", math.MaxUint16+1)}, 0); err == nil {
+		t.Fatal("oversized interface name accepted")
+	}
+	w, err := New(&output, []string{"lo"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := []byte{1}
+	if err := w.Packet(0, frame, 1, time.Time{}, strings.Repeat("x", math.MaxUint16+1)); err == nil {
+		t.Fatal("oversized comment accepted")
+	}
+	if err := w.Packet(0, frame, math.MaxUint32+1, time.Time{}, ""); err == nil {
+		t.Fatal("oversized wire length accepted")
+	}
+	if w.Packets != 0 {
+		t.Fatalf("rejected fields wrote %d packets", w.Packets)
 	}
 }

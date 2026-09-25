@@ -122,14 +122,14 @@ func startCapture(dir string, interfaces []string, selected *flow, pid processID
 	}
 	writer, err := pcapng.New(file, interfaces, recordingLimit)
 	if err != nil {
-		file.Close()
-		os.Remove(file.Name())
+		_ = file.Close()
+		_ = os.Remove(file.Name())
 		return nil, err
 	}
 	path, err := filepath.Abs(file.Name())
 	if err != nil {
-		file.Close()
-		os.Remove(file.Name())
+		_ = file.Close()
+		_ = os.Remove(file.Name())
 		return nil, err
 	}
 	session := &captureSession{file: file, writer: writer, path: path, until: time.Now().Add(recordingDuration), interfaces: make(map[string]uint32), flow: target, pid: pid}

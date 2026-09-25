@@ -42,8 +42,10 @@ func h2cClient(t *testing.T, dataLen int, requests ...[]hpack.HeaderField) []byt
 }
 
 var grpcRequest = []hpack.HeaderField{
-	{Name: ":method", Value: "POST"}, {Name: ":scheme", Value: "http"},
-	{Name: ":authority", Value: "orders.internal.test:50051"}, {Name: ":path", Value: "/orders.Orders/Get"},
+	{Name: ":method", Value: "POST"},
+	{Name: ":scheme", Value: "http"},
+	{Name: ":authority", Value: "orders.internal.test:50051"},
+	{Name: ":path", Value: "/orders.Orders/Get"},
 	{Name: "content-type", Value: "application/grpc"},
 }
 

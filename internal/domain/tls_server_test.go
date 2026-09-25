@@ -65,7 +65,7 @@ func replayHandshake(t *testing.T, client, server *tls.Config, swap bool) Eviden
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	var mu sync.Mutex
 	var log []tlsWrite
 	done := make(chan struct{})
@@ -75,15 +75,15 @@ func replayHandshake(t *testing.T, client, server *tls.Config, swap bool) Eviden
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		tls.Server(recordingConn{conn, true, &mu, &log}, server).Handshake()
+		defer func() { _ = conn.Close() }()
+		_ = tls.Server(recordingConn{conn, true, &mu, &log}, server).Handshake()
 	}()
 	conn, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	tls.Client(recordingConn{conn, false, &mu, &log}, client).Handshake()
-	conn.Close()
+	_ = tls.Client(recordingConn{conn, false, &mu, &log}, client).Handshake()
+	_ = conn.Close()
 	<-done
 
 	type segment struct {

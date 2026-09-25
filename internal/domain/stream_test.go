@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/binary"
+	"slices"
 	"testing"
 	"time"
 )
@@ -107,16 +108,26 @@ func TestProxyTunnelsExposeTargetAndInnerClientHello(t *testing.T) {
 		kind, via  string
 		proxy, grp string
 	}{
-		{name: "CONNECT then TLS", segments: [][]byte{[]byte(connect), clientHello("inner.example.test", false)},
-			kind: "tls", via: "CONNECT", proxy: "api.example.test", grp: "inner.example.test"},
-		{name: "407 retry on the same connection", segments: [][]byte{[]byte(connect), []byte(withAuth), clientHello("inner.example.test", false)},
-			kind: "tls", via: "CONNECT", proxy: "api.example.test", grp: "inner.example.test"},
-		{name: "CONNECT carrying SSH", segments: [][]byte{[]byte(connect), []byte("SSH-2.0-OpenSSH_9.6\r\n")},
-			kind: "proxy", via: "CONNECT", proxy: "api.example.test", grp: "api.example.test"},
-		{name: "SOCKS5 with auth split across segments", segments: [][]byte{socksAuth[:4], socksAuth[4:], socksRequest, clientHello("inner.example.test", false)},
-			kind: "tls", via: "SOCKS5", proxy: "socks.example.test", grp: "inner.example.test"},
-		{name: "SOCKS5 IPv4 target", segments: [][]byte{{5, 1, 0}, {5, 1, 0, 1, 192, 0, 2, 7, 1, 187}, []byte("GET / HTTP/1.1\r\nHost: plain.example.test\r\n\r\n")},
-			kind: "http", via: "SOCKS5", proxy: "192.0.2.7", grp: "plain.example.test"},
+		{
+			name: "CONNECT then TLS", segments: [][]byte{[]byte(connect), clientHello("inner.example.test", false)},
+			kind: "tls", via: "CONNECT", proxy: "api.example.test", grp: "inner.example.test",
+		},
+		{
+			name: "407 retry on the same connection", segments: [][]byte{[]byte(connect), []byte(withAuth), clientHello("inner.example.test", false)},
+			kind: "tls", via: "CONNECT", proxy: "api.example.test", grp: "inner.example.test",
+		},
+		{
+			name: "CONNECT carrying SSH", segments: [][]byte{[]byte(connect), []byte("SSH-2.0-OpenSSH_9.6\r\n")},
+			kind: "proxy", via: "CONNECT", proxy: "api.example.test", grp: "api.example.test",
+		},
+		{
+			name: "SOCKS5 with auth split across segments", segments: [][]byte{socksAuth[:4], socksAuth[4:], socksRequest, clientHello("inner.example.test", false)},
+			kind: "tls", via: "SOCKS5", proxy: "socks.example.test", grp: "inner.example.test",
+		},
+		{
+			name: "SOCKS5 IPv4 target", segments: [][]byte{{5, 1, 0}, {5, 1, 0, 1, 192, 0, 2, 7, 1, 187}, []byte("GET / HTTP/1.1\r\nHost: plain.example.test\r\n\r\n")},
+			kind: "http", via: "SOCKS5", proxy: "192.0.2.7", grp: "plain.example.test",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, seq := New(1), uint32(1)
@@ -141,12 +152,18 @@ func TestSOCKS4AndPROXYProtocolPreambles(t *testing.T) {
 		kind, via, proxy, client string
 		group                    string
 	}{
-		{name: "SOCKS4a", segments: [][]byte{socks4a[:5], socks4a[5:], clientHello("inner.example.test", false)},
-			kind: "tls", via: "SOCKS4", proxy: "s4.example.test", group: "inner.example.test"},
-		{name: "PROXY v1 then TLS", segments: [][]byte{[]byte("PROXY TCP4 203.0.113.9 192.0.2.10 51234 443\r"), append([]byte("\n"), clientHello("lb.example.test", false)...)},
-			kind: "tls", client: "203.0.113.9:51234", group: "lb.example.test"},
-		{name: "PROXY v2 then HTTP", segments: [][]byte{v2[:10], v2[10:], []byte("GET / HTTP/1.1\r\nHost: h.example.test\r\n\r\n")},
-			kind: "http", client: "203.0.113.9:51234", group: "h.example.test"},
+		{
+			name: "SOCKS4a", segments: [][]byte{socks4a[:5], socks4a[5:], clientHello("inner.example.test", false)},
+			kind: "tls", via: "SOCKS4", proxy: "s4.example.test", group: "inner.example.test",
+		},
+		{
+			name: "PROXY v1 then TLS", segments: [][]byte{[]byte("PROXY TCP4 203.0.113.9 192.0.2.10 51234 443\r"), append([]byte("\n"), clientHello("lb.example.test", false)...)},
+			kind: "tls", client: "203.0.113.9:51234", group: "lb.example.test",
+		},
+		{
+			name: "PROXY v2 then HTTP", segments: [][]byte{v2[:10], v2[10:], []byte("GET / HTTP/1.1\r\nHost: h.example.test\r\n\r\n")},
+			kind: "http", client: "203.0.113.9:51234", group: "h.example.test",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, seq := New(1), uint32(1)
@@ -204,7 +221,7 @@ func TestTLSClientHelloAcrossRecordsAndLateSNI(t *testing.T) {
 	body := original[9:]
 	extOffset := 34 + 1 + 2 + 2 + 1 + 1
 	padding := append([]byte{0, 21, 1, 144}, make([]byte, 400)...)
-	extensions := append(padding, body[extOffset+2:]...)
+	extensions := slices.Concat(padding, body[extOffset+2:])
 	body = append([]byte(nil), body[:extOffset]...)
 	body = append(body, byte(len(extensions)>>8), byte(len(extensions)))
 	body = append(body, extensions...)

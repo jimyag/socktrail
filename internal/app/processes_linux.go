@@ -127,6 +127,7 @@ func (t *processTable) addAncestors(id processID) {
 func (t *processTable) readProc(id processID) *processMeta {
 	m := &processMeta{seen: time.Now()}
 	dir := filepath.Join(t.procRoot, strconv.Itoa(id.PID))
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 	if err != nil {
 		return m
@@ -136,8 +137,10 @@ func (t *processTable) readProc(id processID) *processMeta {
 	if err != nil || clockErr != nil || !processStartMatches(id.StartNS, ticks, clockTicks) {
 		return m
 	}
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	comm, _ := os.ReadFile(filepath.Join(dir, "comm"))
 	m.Name, m.Cgroup = procname.Clean(comm), readCgroupPath(dir)
+	//nolint:gosec // G703: parent is a numeric PID parsed from procfs.
 	if parentStat, err := os.ReadFile(filepath.Join(t.procRoot, strconv.Itoa(parent), "stat")); err == nil && parent > 0 {
 		if _, parentTicks, err := parseProcessStat(parentStat); err == nil {
 			m.Parent = processID{PID: parent, StartNS: ticksToNS(parentTicks, clockTicks)}
@@ -186,6 +189,7 @@ func (t *processTable) cgroupOf(m *processMeta) string {
 // readCgroupPath returns a process's cgroup v2 path; under cgroup v1 alone,
 // its systemd hierarchy path.
 func readCgroupPath(procDir string) string {
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	data, err := os.ReadFile(filepath.Join(procDir, "cgroup"))
 	if err != nil {
 		return ""
@@ -215,9 +219,9 @@ func serviceOf(path string) (string, string) {
 		return "", "unknown cgroup"
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		if strings.HasSuffix(parts[i], ".service") || strings.HasSuffix(parts[i], ".scope") {
-			short := containerID.ReplaceAllStringFunc(parts[i], func(id string) string { return id[:12] })
+	for i, part := range slices.Backward(parts) {
+		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
+			short := containerID.ReplaceAllStringFunc(part, func(id string) string { return id[:12] })
 			return "/" + strings.Join(parts[:i+1], "/"), short
 		}
 	}
@@ -284,6 +288,7 @@ func (t *processTable) executableName(id processID) string {
 	if err != nil {
 		return ""
 	}
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 	if err != nil {
 		return ""
@@ -300,7 +305,7 @@ func (t *processTable) executableName(id processID) string {
 // service: the master of a server's workers, or the shell a command ran in.
 func (t *processTable) treeRoot(id processID) processID {
 	service, _ := serviceOf(t.cgroupOf(t.meta(id)))
-	for depth := 0; depth < maxAncestors; depth++ {
+	for range maxAncestors {
 		m := t.procs[id]
 		if m == nil || m.Parent.PID <= 1 {
 			break

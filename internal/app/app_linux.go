@@ -78,11 +78,13 @@ type processID struct {
 
 func (p participant) id() processID { return processID{PID: p.PID, StartNS: p.StartNS} }
 
-type ioBytes struct{ RX, TX uint64 }
-type processIO struct {
-	Name string
-	ioBytes
-}
+type (
+	ioBytes   struct{ RX, TX uint64 }
+	processIO struct {
+		Name string
+		ioBytes
+	}
+)
 
 type pendingIOSample struct {
 	Process   processID
@@ -1182,7 +1184,7 @@ func Run() error {
 		cancelRun()
 		captureWG.Wait() // A ring stays mapped until its reader has stopped.
 		for _, s := range captureSockets {
-			s.Close()
+			_ = s.Close()
 		}
 	}()
 	// The rings share 16 MiB, at least 4 MiB each. A ring cuts a GSO frame to
@@ -1282,7 +1284,7 @@ func Run() error {
 	var recording *captureSession
 	defer func() {
 		if recording != nil {
-			recording.Close()
+			_ = recording.Close()
 		}
 	}()
 	stopRecording := func(reason string) {
@@ -1653,9 +1655,12 @@ func printReport(c collector, interfaceName string, limit int, probeStats *probe
 		}
 		if len(f.TLSActors) > 0 {
 			ids := slices.SortedFunc(maps.Keys(f.TLSActors), func(a, b processID) int { return a.PID - b.PID })
+			var builder strings.Builder
+			builder.WriteString(detail)
 			for _, id := range ids {
-				detail += fmt.Sprintf(" OpenSSL-PID=%d", id.PID)
+				fmt.Fprintf(&builder, " OpenSSL-PID=%d", id.PID)
 			}
+			detail = builder.String()
 		}
 		if f.DomainConflict {
 			detail += " DOMAIN-CONFLICT"

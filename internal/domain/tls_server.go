@@ -50,6 +50,7 @@ func (s *Stream) AddServer(seq uint32, payload []byte, length int) {
 		}
 		f.started, f.expected = true, seq
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	if int32(seq-f.expected) > 0 {
 		if length > len(payload) || len(f.pending) >= maxPendingParts || f.pendingBytes+len(payload) > maxServerFlight {
 			f.stop()
@@ -68,6 +69,7 @@ func (s *Stream) AddServer(seq uint32, payload []byte, length int) {
 	for delivered := true; delivered && !f.done; {
 		delivered = false
 		for pendingSeq, segment := range f.pending {
+			//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 			if int32(pendingSeq-f.expected) <= 0 {
 				delete(f.pending, pendingSeq)
 				f.pendingBytes -= len(segment)
@@ -84,12 +86,14 @@ func (s *Stream) AddServer(seq uint32, payload []byte, length int) {
 
 // add feeds a segment that starts at or before the next expected byte.
 func (f *serverFlight) add(seq uint32, payload []byte, truncated bool, e *Evidence) {
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	if d := int32(seq - f.expected); d < 0 {
 		if int(-d) >= len(payload) {
 			return // A retransmission.
 		}
 		payload = payload[-d:]
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	f.expected += uint32(len(payload))
 	if err := f.feed(payload, e); err != nil || truncated {
 		f.stop()
@@ -185,6 +189,7 @@ func parseServerHello(data []byte) (uint16, string, error) {
 	if _, err := c.take(sessionLen + 3); err != nil { // Session ID, cipher suite, compression.
 		return 0, "", err
 	}
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	version, alpn := uint16(legacy), ""
 	if c.off == len(c.data) {
 		return version, "", nil

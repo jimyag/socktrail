@@ -55,7 +55,7 @@ func TestProcessTreesAndServices(t *testing.T) {
 	} {
 		table.observe(e)
 	}
-	os.RemoveAll(filepath.Join(root, "200")) // The script exits; the table keeps it.
+	_ = os.RemoveAll(filepath.Join(root, "200")) // The script exits; the table keeps it.
 
 	if m := table.procs[script]; m == nil || m.Name != "deploy.sh" || m.Parent != bash {
 		t.Fatalf("ancestor not read from /proc: %+v", m)
@@ -99,8 +99,10 @@ func TestServicePageAndProcessFilter(t *testing.T) {
 	c.pidIO = map[processID]processIO{curl: {"curl", ioBytes{RX: 100, TX: 10}}, worker: {"nginx", ioBytes{RX: 10, TX: 100}}}
 	local := keyFor(netip.MustParseAddrPort("127.0.0.1:40000"), netip.MustParseAddrPort("127.0.0.1:80"), 6)
 	upstream := keyFor(netip.MustParseAddrPort("192.0.2.1:41000"), netip.MustParseAddrPort("198.51.100.2:443"), 6)
-	c.flows[local] = &flow{Key: local, Client: participant{PID: 300, StartNS: curl.StartNS, Name: "curl"}, Server: participant{PID: 401, StartNS: worker.StartNS, Name: "nginx"},
-		IO: map[processID]ioBytes{curl: {RX: 100, TX: 10}, worker: {RX: 10, TX: 100}}}
+	c.flows[local] = &flow{
+		Key: local, Client: participant{PID: 300, StartNS: curl.StartNS, Name: "curl"}, Server: participant{PID: 401, StartNS: worker.StartNS, Name: "nginx"},
+		IO: map[processID]ioBytes{curl: {RX: 100, TX: 10}, worker: {RX: 10, TX: 100}},
+	}
 	c.flows[upstream] = &flow{Key: upstream, Client: participant{PID: 401, StartNS: worker.StartNS, Name: "nginx"}}
 	u := &terminalUI{processes: newProcessTable(root)}
 

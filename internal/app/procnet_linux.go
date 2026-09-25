@@ -106,6 +106,7 @@ func socketPIDs(procRoot string) map[uint64]int {
 func (inv *socketInventory) load() {
 	inv.sockets, inv.local, inv.pids, inv.processes = make(map[socketTuple]uint64), make(map[netip.Addr]bool), nil, make(map[int]participant)
 	for name, protocol := range map[string]uint8{"tcp": 6, "tcp6": 6, "udp": 17, "udp6": 17} {
+		//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 		if data, err := os.ReadFile(filepath.Join(inv.procRoot, "net", name)); err == nil {
 			parseProcNet(data, protocol, inv.sockets)
 		}
@@ -212,10 +213,12 @@ func (inv *socketInventory) owner(inode uint64) (participant, bool) {
 	}
 	var p participant
 	base := filepath.Join(inv.procRoot, strconv.Itoa(pid))
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	stat, statErr := os.ReadFile(filepath.Join(base, "stat"))
 	_, ticks, parseErr := parseProcessStat(stat)
 	clockTicks, clockErr := systemClockTicks()
 	if statErr == nil && parseErr == nil && clockErr == nil {
+		//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 		comm, _ := os.ReadFile(filepath.Join(base, "comm"))
 		p = participant{PID: pid, StartNS: ticksToNS(ticks, clockTicks), Name: procname.Clean(comm)}
 	}

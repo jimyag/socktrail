@@ -47,14 +47,14 @@ func TestDefaultDirUsesXDGDataHome(t *testing.T) {
 func TestFailedDownloadPreservesInstalledDatabase(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, CountryFile)
-	if err := os.WriteFile(path, []byte("old database"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("old database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		gz := gzip.NewWriter(w)
-		gz.Write([]byte("invalid mmdb"))
-		gz.Close()
+		_, _ = gz.Write([]byte("invalid mmdb"))
+		_ = gz.Close()
 	}))
 	defer server.Close()
 	if err := download(context.Background(), dir, server.URL, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), server.Client()); err == nil {

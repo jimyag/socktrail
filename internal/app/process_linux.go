@@ -110,11 +110,12 @@ func processStartMatches(startNS, startTicks, clockTicks uint64) bool {
 }
 
 func readProcText(path string) ([]byte, bool, error) {
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxProcText+1))
 	if err != nil {
 		return nil, false, err
@@ -136,6 +137,7 @@ func readProcessDetails(id processID) processDetails {
 func readProcessDetailsAt(procRoot string, id processID, clockTicks uint64) processDetails {
 	base := filepath.Join(procRoot, strconv.Itoa(id.PID))
 	statPath := filepath.Join(base, "stat")
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	statData, err := os.ReadFile(statPath)
 	if err != nil {
 		return processDetails{errorText: fmt.Sprintf("process exited or stat unavailable: %v", err)}
@@ -148,10 +150,12 @@ func readProcessDetailsAt(procRoot string, id processID, clockTicks uint64) proc
 		return processDetails{errorText: "process exited or PID was reused; launch details unavailable"}
 	}
 	detail := processDetails{parentPID: parent}
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	if statData, err := os.ReadFile(filepath.Join(procRoot, "stat")); err == nil {
 		for line := range strings.Lines(string(statData)) {
 			if boot, ok := strings.CutPrefix(line, "btime "); ok {
 				if seconds, parseErr := strconv.ParseInt(strings.TrimSpace(boot), 10, 64); parseErr == nil {
+					//nolint:gosec // G115: kernel process start tick count fits the supported uptime range.
 					detail.started = time.Unix(seconds, 0).Add(time.Duration(startTicks/clockTicks)*time.Second+time.Duration(startTicks%clockTicks)*time.Second/time.Duration(clockTicks)).Local().Format("2006-01-02 15:04:05") + " (approx)"
 				}
 				break
@@ -203,6 +207,7 @@ func readProcessDetailsAt(procRoot string, id processID, clockTicks uint64) proc
 		slices.Sort(detail.environment)
 	}
 	// The PID can exit and be reused while its other /proc files are read.
+	//nolint:gosec // G304: procfs path is built from an internal root, numeric PID, or fixed leaf name.
 	statData, err = os.ReadFile(statPath)
 	if err != nil {
 		return processDetails{errorText: "process exited while reading launch details"}

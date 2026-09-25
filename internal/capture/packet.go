@@ -119,6 +119,7 @@ func DecodeNetwork(data []byte, etherType uint16, outgoing bool) (Packet, bool) 
 	if etherType < 0x0600 {
 		etherType = EtherTypeLLC
 	}
+	//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
 	return Packet{EtherType: etherType, IPBytes: uint32(len(data)), Outgoing: outgoing}, true
 }
 
@@ -152,9 +153,10 @@ func decodeIPv4(ip []byte, outgoing bool) (Packet, bool) {
 		Source:      netip.AddrPortFrom(src, 0),
 		Destination: netip.AddrPortFrom(dst, 0),
 		Protocol:    ip[9],
-		IPBytes:     uint32(totalLen),
-		Outgoing:    outgoing,
-		Truncated:   len(ip) < min(totalLen, ipSnapLength),
+		//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
+		IPBytes:   uint32(totalLen),
+		Outgoing:  outgoing,
+		Truncated: len(ip) < min(totalLen, ipSnapLength),
 	}
 	if flags := binary.BigEndian.Uint16(ip[6:8]); flags&0x3fff != 0 {
 		p.Fragmented, p.FragmentID, p.FragmentOffset = true, uint32(binary.BigEndian.Uint16(ip[4:6])), flags&0x1fff
@@ -177,9 +179,10 @@ func decodeIPv6(ip []byte, outgoing bool) (Packet, bool) {
 		Source:      netip.AddrPortFrom(src, 0),
 		Destination: netip.AddrPortFrom(dst, 0),
 		Protocol:    ip[6],
-		IPBytes:     uint32(length),
-		Outgoing:    outgoing,
-		Truncated:   len(ip) < min(length, ipSnapLength),
+		//nolint:gosec // G115: captured packet length is bounded before encoding its wire-length field.
+		IPBytes:   uint32(length),
+		Outgoing:  outgoing,
+		Truncated: len(ip) < min(length, ipSnapLength),
 	}
 	next, offset := ip[6], 40
 	for range 8 {

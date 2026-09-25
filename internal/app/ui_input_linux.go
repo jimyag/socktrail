@@ -38,6 +38,7 @@ type uiInput struct {
 // which it reports as a quit: nobody could stop the capture otherwise.
 func readKeys(out chan<- uiInput) {
 	defer func() { out <- uiInput{key: "quit"} }()
+	//nolint:gosec // G115: terminal file descriptor fits the kernel poll field.
 	fd := int32(os.Stdin.Fd())
 	buffer := make([]byte, 128)
 	var pending []byte

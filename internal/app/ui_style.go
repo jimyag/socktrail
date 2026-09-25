@@ -132,8 +132,10 @@ func label(name string) string { return styleCyan.paint(name) }
 // topPages are the top line's page keys, and pageEntries each page's entry.
 const topPages = "1 PID  2 SRC  3 DST  4 PROTO  5 SVC  d DOMAINS  0 IFACES"
 
-var pageEntries = map[viewMode]string{viewPID: "1 PID", viewSource: "2 SRC", viewTarget: "3 DST", viewProtocol: "4 PROTO",
-	viewService: "5 SVC", viewDomain: "d DOMAINS", viewInterfaces: "0 IFACES"}
+var pageEntries = map[viewMode]string{
+	viewPID: "1 PID", viewSource: "2 SRC", viewTarget: "3 DST", viewProtocol: "4 PROTO",
+	viewService: "5 SVC", viewDomain: "d DOMAINS", viewInterfaces: "0 IFACES",
+}
 
 // topKeys colors the top line's "key name" entries, which two spaces
 // separate: the key in the accent color and the name in the given style, or

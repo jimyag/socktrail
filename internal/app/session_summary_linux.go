@@ -43,6 +43,7 @@ func (s *sessionSummary) sample(collectors map[string]*collector) {
 	sample := sessionSample{
 		at:  time.Now(),
 		cpu: time.Duration(usage.Utime.Sec+usage.Stime.Sec)*time.Second + time.Duration(usage.Utime.Usec+usage.Stime.Usec)*time.Microsecond,
+		//nolint:gosec // G115: page size and resident page count are nonnegative kernel measurements.
 		rss: pages * uint64(os.Getpagesize()), peakRSS: uint64(max(0, usage.Maxrss)) * 1024,
 	}
 	for _, c := range collectors {
@@ -70,12 +71,12 @@ func (s *sessionSummary) add(next sessionSample) {
 
 func (s sessionSummary) print(w io.Writer, interfaces int, packets, ipBytes, dropped, ringLost uint64) {
 	if s.first.at.IsZero() {
-		fmt.Fprintf(w, "socktrail stopped (%d interfaces)\n", interfaces)
-		fmt.Fprintln(w, "  CPU, RSS and rates unavailable (process sampling failed)")
-		fmt.Fprintf(w, "  IP packets  total %s\n  IP bytes    total %s\n", summaryCount(float64(packets)), summaryBytes(ipBytes))
-		fmt.Fprintf(w, "  drops       AF_PACKET %d  PID ring %d\n", dropped, ringLost)
+		_, _ = fmt.Fprintf(w, "socktrail stopped (%d interfaces)\n", interfaces)
+		_, _ = fmt.Fprintln(w, "  CPU, RSS and rates unavailable (process sampling failed)")
+		_, _ = fmt.Fprintf(w, "  IP packets  total %s\n  IP bytes    total %s\n", summaryCount(float64(packets)), summaryBytes(ipBytes))
+		_, _ = fmt.Fprintf(w, "  drops       AF_PACKET %d  PID ring %d\n", dropped, ringLost)
 		if interfaces > 1 {
-			fmt.Fprintln(w, "  Multi-interface totals may count the same packet more than once.")
+			_, _ = fmt.Fprintln(w, "  Multi-interface totals may count the same packet more than once.")
 		}
 		return
 	}
@@ -83,14 +84,14 @@ func (s sessionSummary) print(w io.Writer, interfaces int, packets, ipBytes, dro
 	if elapsed <= 0 {
 		elapsed = 1
 	}
-	fmt.Fprintf(w, "socktrail stopped (%s, %d interfaces)\n", s.last.at.Sub(s.first.at).Truncate(time.Second), interfaces)
-	fmt.Fprintf(w, "  CPU         avg %-12s peak %-12s (sampled; 100%% = 1 core)\n", fmt.Sprintf("%.1f%%", float64(s.last.cpu-s.first.cpu)/elapsed/float64(time.Second)*100), fmt.Sprintf("%.1f%%", s.peakCPU))
-	fmt.Fprintf(w, "  RSS         avg %-12s peak %s\n", summaryBytes(uint64(s.rssByteSeconds/elapsed)), summaryBytes(s.last.peakRSS))
-	fmt.Fprintf(w, "  IP packets  total %-10s avg %-12s peak %s/s\n", summaryCount(float64(packets)), summaryCount(float64(packets)/elapsed)+"/s", summaryCount(s.peakPPS))
-	fmt.Fprintf(w, "  IP bytes    total %-10s avg %-12s peak %s/s\n", summaryBytes(ipBytes), summaryBytes(uint64(float64(ipBytes)/elapsed))+"/s", summaryBytes(uint64(s.peakBPS)))
-	fmt.Fprintf(w, "  drops       AF_PACKET %d  PID ring %d\n", dropped, ringLost)
+	_, _ = fmt.Fprintf(w, "socktrail stopped (%s, %d interfaces)\n", s.last.at.Sub(s.first.at).Truncate(time.Second), interfaces)
+	_, _ = fmt.Fprintf(w, "  CPU         avg %-12s peak %-12s (sampled; 100%% = 1 core)\n", fmt.Sprintf("%.1f%%", float64(s.last.cpu-s.first.cpu)/elapsed/float64(time.Second)*100), fmt.Sprintf("%.1f%%", s.peakCPU))
+	_, _ = fmt.Fprintf(w, "  RSS         avg %-12s peak %s\n", summaryBytes(uint64(s.rssByteSeconds/elapsed)), summaryBytes(s.last.peakRSS))
+	_, _ = fmt.Fprintf(w, "  IP packets  total %-10s avg %-12s peak %s/s\n", summaryCount(float64(packets)), summaryCount(float64(packets)/elapsed)+"/s", summaryCount(s.peakPPS))
+	_, _ = fmt.Fprintf(w, "  IP bytes    total %-10s avg %-12s peak %s/s\n", summaryBytes(ipBytes), summaryBytes(uint64(float64(ipBytes)/elapsed))+"/s", summaryBytes(uint64(s.peakBPS)))
+	_, _ = fmt.Fprintf(w, "  drops       AF_PACKET %d  PID ring %d\n", dropped, ringLost)
 	if interfaces > 1 {
-		fmt.Fprintln(w, "  Multi-interface totals may count the same packet more than once.")
+		_, _ = fmt.Fprintln(w, "  Multi-interface totals may count the same packet more than once.")
 	}
 }
 

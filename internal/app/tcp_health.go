@@ -15,6 +15,7 @@ const maxTrackedTCPSegments = 128
 type sequenceRange struct{ start, end uint32 }
 
 func (r sequenceRange) overlaps(other sequenceRange) bool {
+	//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 	return int32(r.start-other.end) < 0 && int32(other.start-r.end) < 0
 }
 
@@ -140,7 +141,9 @@ func (h *tcpHealth) observe(p capture.Packet, loopback bool) {
 		if p.SYN {
 			start++
 		}
+		//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 		span := sequenceRange{start: start, end: start + uint32(len(p.Payload))}
+		//nolint:modernize // This packet hot path avoids a callback in the overlap scan.
 		for _, prior := range h.seen[index] {
 			if span.overlaps(prior) {
 				retransmitted = true

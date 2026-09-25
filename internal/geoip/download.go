@@ -22,7 +22,7 @@ func Download(ctx context.Context, dir string) error {
 }
 
 func download(ctx context.Context, dir, baseURL string, month time.Time, client *http.Client) error {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create GeoIP directory: %w", err)
 	}
 	for _, item := range []struct{ slug, file string }{{"country", CountryFile}, {"asn", ASNFile}} {
@@ -43,7 +43,7 @@ func downloadFile(ctx context.Context, client *http.Client, url, path string) er
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %s", resp.Status)
 	}
@@ -51,13 +51,13 @@ func downloadFile(ctx context.Context, client *http.Client, url, path string) er
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".dbip-*.mmdb")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() { _ = tmp.Close() }()
 	n, err := io.Copy(tmp, io.LimitReader(gz, maxDatabaseSize+1))
 	if err != nil {
 		return err
@@ -74,12 +74,12 @@ func downloadFile(ctx context.Context, client *http.Client, url, path string) er
 	r, err := geoip2.Open(tmp.Name())
 	if err != nil {
 		if r != nil {
-			r.Close()
+			_ = r.Close()
 		}
 		return fmt.Errorf("invalid MMDB: %w", err)
 	}
 	if err := validate(r, filepath.Base(path)); err != nil {
-		r.Close()
+		_ = r.Close()
 		return fmt.Errorf("unexpected MMDB type: %w", err)
 	}
 	if err := r.Close(); err != nil {

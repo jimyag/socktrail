@@ -150,15 +150,19 @@ func splitLongPacket(data []byte) (longPacket, int, bool) {
 	offset += scidLength
 	if packetType == initialType {
 		tokenLength, ok := readVarint(data, &offset)
+		//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 		if !ok || tokenLength > uint64(len(data)-offset) {
 			return longPacket{}, 0, false
 		}
+		//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 		offset += int(tokenLength)
 	}
 	packetLength, ok := readVarint(data, &offset)
+	//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 	if !ok || packetLength < 17 || packetLength > uint64(len(data)-offset) {
 		return longPacket{}, 0, false
 	}
+	//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 	end := offset + int(packetLength)
 	return longPacket{raw: data[:end], version: version, dcid: dcid, pnOffset: offset, initial: packetType == initialType}, end, true
 }
@@ -203,6 +207,7 @@ func (t *Tracker) open(packet longPacket) ([]byte, uint64, error) {
 	header[0] = first
 	var truncatedPN uint64
 	for i := range pnLength {
+		//nolint:gosec // G602: index is bounded by a fixed-size QUIC mask or even-length ICMP message.
 		header[packet.pnOffset+i] ^= mask[i+1]
 		truncatedPN = truncatedPN<<8 | uint64(header[packet.pnOffset+i])
 	}
@@ -212,6 +217,7 @@ func (t *Tracker) open(packet longPacket) ([]byte, uint64, error) {
 	}
 	nonce := keys.iv
 	for i := range 8 {
+		//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 		nonce[4+i] ^= byte(pn >> (56 - 8*i))
 	}
 	plain, err := keys.aead.Open(nil, nonce[:], packet.raw[packet.pnOffset+pnLength:], header)
@@ -295,7 +301,9 @@ func expandLabel(secret []byte, label string, length int) ([]byte, error) {
 		return nil, errors.New("invalid HKDF label")
 	}
 	info := make([]byte, 0, 4+len(fullLabel))
+	//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 	info = binary.BigEndian.AppendUint16(info, uint16(length))
+	//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 	info = append(info, byte(len(fullLabel)))
 	info = append(info, fullLabel...)
 	info = append(info, 0) // Zero-length Context.
@@ -342,12 +350,15 @@ func (t *Tracker) frames(plain []byte) error {
 				return errors.New("truncated QUIC CRYPTO offset")
 			}
 			length, ok := readVarint(plain, &offset)
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			if !ok || length > uint64(len(plain)-offset) {
 				return errors.New("truncated QUIC CRYPTO data")
 			}
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			if err := t.addCrypto(start, plain[offset:offset+int(length)]); err != nil {
 				return err
 			}
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			offset += int(length)
 		case 0x1c, 0x1d: // CONNECTION_CLOSE.
 			fields := 1
@@ -360,9 +371,11 @@ func (t *Tracker) frames(plain []byte) error {
 				}
 			}
 			reasonLength, ok := readVarint(plain, &offset)
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			if !ok || reasonLength > uint64(len(plain)-offset) {
 				return errors.New("truncated QUIC close reason")
 			}
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			offset += int(reasonLength)
 		default:
 			return fmt.Errorf("unsupported QUIC Initial frame %x", kind)
@@ -378,6 +391,7 @@ func (t *Tracker) addCrypto(start uint64, data []byte) error {
 	end := start + uint64(len(data))
 	if start < uint64(len(t.crypto)) {
 		overlap := min(end, uint64(len(t.crypto))) - start
+		//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 		if !bytes.Equal(t.crypto[int(start):int(start+overlap)], data[:overlap]) {
 			return errors.New("conflicting QUIC CRYPTO retransmission")
 		}
@@ -431,6 +445,7 @@ func (t *Tracker) pullParts() {
 			}
 			delete(t.parts, start)
 			t.pendingSize -= len(part)
+			//nolint:gosec // G115: QUIC length was checked against remaining input or is a fixed-width wire field.
 			used := int(uint64(len(t.crypto)) - start)
 			if used < len(part) {
 				t.crypto = append(t.crypto, part[used:]...)
