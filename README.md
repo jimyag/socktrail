@@ -107,6 +107,7 @@ sudo ./socktrail --interface lo --interface eth0
 sudo ./socktrail --interface eth0 --duration 30s --output json
 sudo ./socktrail --netns container:0123456789ab --interface eth0
 sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
+./socktrail --read /path/to/socktrail-capture.pcapng
 ./socktrail --download-geoip-db
 ./socktrail --version
 ```

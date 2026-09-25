@@ -76,6 +76,15 @@ sudo ./socktrail --interface eth0 --record-before 10s
 
 这些历史帧按平时的长度截断（前 16 KiB 多一点），归属按帧到达时所在的流判断；PID 录制时按按下 `c` 那一刻的进程关联挑选。开启后每个帧都要复制一份，高负载下会多占 CPU 和最多 32 MiB 内存，所以默认关闭；它只用于交互界面，不能和 `--duration` 一起使用。
 
+### 读回录制文件
+
+```sh
+socktrail --read ~/.local/state/socktrail/captures/socktrail-XXXX.pcapng
+socktrail --read /path/to/capture.pcapng --output json > replay.json
+```
+
+在终端中读回会打开静态的连接界面；重定向文本输出时打印连接报告，`--output json` 输出快照并设置 `source: "pcapng"`。读回只接受 socktrail 录制的以太网、微秒时间戳 PCAPNG（最多 64 MiB），无需 `sudo` 或加载探针。录制时写入的进程、方向、应用和域名注释会补充报文解析；仅从注释恢复的域名在证据中标为 `recorded`，不会伪装成重新解析出的 Host 或 SNI。文件没有保存进程的命令行、父进程、socket I/O、实时内核指标或监听端口，它们在离线界面中不可用。界面一次读取文件并展示最终快照，不模拟录制时的每秒变化。
+
 ## 按进程、服务过滤
 
 只关心某些进程时，启动时指定，界面、文本快照和 JSON 都只显示它们、它们参与的连接和它们的 socket 字节：
@@ -155,7 +164,7 @@ sudo ./socktrail --interface lo --duration 15s --port 443
 
 ## JSON 快照
 
-`--output json` 把同一份快照写成 JSON，只能和 `--duration` 一起用；标准输出只有这一个文档，便于 `jq` 处理或前后对比：
+`--output json` 把同一份快照写成 JSON；实时采集时需要 `--duration`，读回文件时改用 `--read`。标准输出只有这一个文档，便于 `jq` 处理或前后对比：
 
 ```sh
 sudo ./socktrail --interface eth0 --duration 30s --output json > snapshot.json
@@ -163,6 +172,7 @@ jq '.reports[0].flows[] | select(.evidence.sni) | [.source, .target, .evidence.s
 ```
 
 字段名是接口的一部分：以后只会增加字段；删改已有字段时 `version` 加一。时间用 RFC 3339，字节都是整数，没有值的字段省略。
+离线读回快照额外设置顶层 `source: "pcapng"`；未录制的探针和 socket 指标不可从文件恢复。
 
 | 字段 | 内容 |
 | --- | --- |

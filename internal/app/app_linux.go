@@ -1161,6 +1161,7 @@ func Run() error {
 	opensslProbe := flag.Bool("openssl-probe", true, "observe SNI in local processes using the system OpenSSL library (default: on)")
 	socketSniff := flag.Bool("socket-sniff", true, "read the first 16 KiB each local TCP socket sends and receives, and the QUIC Initials UDP sockets send, to name connections whose handshake packets are not captured (default: on)")
 	drops := flag.Bool("drops", false, "aggregate kernel packet drop reasons (extra tracepoint overhead)")
+	readFile := flag.String("read", "", "read a socktrail PCAPNG recording without loading probes")
 	captureDir := flag.String("capture-dir", "", "directory for on-demand PCAPNG recordings (default: XDG state directory)")
 	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
 	dohList := flag.String("doh-list", "", "additional comma-separated DoH service names for encrypted DNS labeling")
@@ -1208,7 +1209,7 @@ func Run() error {
 	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" && *output != "ndjson" || *recordBefore < 0 || *refresh <= 0 {
 		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json|ndjson] [--refresh 60s] [--record-before 10s]")
 	}
-	if *output == "json" && *duration == 0 {
+	if *output == "json" && *duration == 0 && *readFile == "" {
 		return fmt.Errorf("--output json needs --duration: it formats the snapshot")
 	}
 	if *logFile != "" && (*duration != 0 || *output != "text") {
@@ -1216,6 +1217,12 @@ func Run() error {
 	}
 	if *recordBefore > 0 && (*duration > 0 || *output == "ndjson") {
 		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
+	}
+	if *readFile != "" {
+		if *duration != 0 || *output == "ndjson" || len(netnsSpecs) > 0 || len(interfaceNames) > 0 || *drops || *recordBefore != 0 {
+			return fmt.Errorf("--read cannot combine with --duration, --output ndjson, --netns, --interface, --drops or --record-before")
+		}
+		return replayPCAPNG(*readFile, *output, *limit, uint16(*port), filter, compiledFilter, geo)
 	}
 	targets, namespaces, err := resolveCaptureTargets(netnsSpecs, interfaceNames)
 	if err != nil {

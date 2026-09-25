@@ -226,6 +226,7 @@ type terminalUI struct {
 	tabHits           [2]hitSpan
 	dragging          bool
 	closed            bool
+	offline           bool
 }
 
 func openUI(interfaceNames []string, netNS uint64, collectors map[string]*collector) (*terminalUI, error) {
@@ -482,7 +483,9 @@ func (u *terminalUI) handleKey(key string) bool {
 	case "!":
 		u.status = true
 	case "c":
-		u.captureToggle = true
+		if !u.offline {
+			u.captureToggle = true
+		}
 	}
 	return false
 }
@@ -1365,8 +1368,12 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	}
 	// Mouse clicks find the keys in the plain line, which must read as the
 	// styled one does.
-	u.topLine = " socktrail   " + title + rate + mark + "  " + topPages
-	styled := styleBold.paint(styleBar.paint(" socktrail ")) + "  " + styleBold.paint(title) + rate + styledMark + "  " + topKeys(topPages, pageEntries[u.mode], style{})
+	brand := " socktrail "
+	if u.offline {
+		brand = " socktrail REPLAY "
+	}
+	u.topLine = brand + "  " + title + rate + mark + "  " + topPages
+	styled := styleBold.paint(styleBar.paint(brand)) + "  " + styleBold.paint(title) + rate + styledMark + "  " + topKeys(topPages, pageEntries[u.mode], style{})
 	if scope != "" {
 		u.topLine += " │ " + scope
 		styled += styleFaint.paint(" │ ") + topKeys(scope, "", styleFaint)
@@ -1439,8 +1446,16 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	} else if u.help {
 		lines = append(lines, styleAccent.paint("HELP")+"  a overview (merged interfaces)  0 interfaces  1 PID  2 source IP  3 target IP  4 protocol  5 groups  6 log  7 ports  d domains  i next interface")
 		lines = append(lines, "b: cycle grouping in service/log pages; E: reveal/hide environment secrets in process details")
-		lines = append(lines, "↑↓/jk select  Enter switch focus  Tab/Shift+Tab: top pages or bottom tabs  PgUp/PgDn page  c capture  ←→ columns")
-		lines = append(lines, "g: show/hide GeoIP, or download it when missing; s: rate/total sort  !: status  q: quit")
+		captureHelp := "c capture"
+		if u.offline {
+			captureHelp = "recording unavailable in replay"
+		}
+		lines = append(lines, "↑↓/jk select  Enter switch focus  Tab/Shift+Tab: top pages or bottom tabs  PgUp/PgDn page  "+captureHelp+"  ←→ columns")
+		geoHelp := "g: show/hide GeoIP, or download it when missing"
+		if u.offline {
+			geoHelp = "g: show/hide installed GeoIP"
+		}
+		lines = append(lines, geoHelp+"; s: rate/total sort  !: status  q: quit")
 		lines = append(lines, "Mouse: click any table header to sort/reverse; click rows/tabs, wheel to scroll, drag divider")
 		lines = append(lines, "Names: HTTP Host, TLS/QUIC SNI ([ECH] = ECH offered), PROXY target, OPENSSL process SNI, DNS answer hint. No HTTPS request count.")
 	} else if u.status {
@@ -1804,11 +1819,16 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		layout := processLayout(processes, depths)
 		u.detailLayout = layout
 		p := processes[u.selectedProcess]
-		if u.processInfoID != p.id() || time.Since(u.processInfoAt) >= 2*time.Second {
+		if u.processInfoID != p.id() || !u.offline && time.Since(u.processInfoAt) >= 2*time.Second {
 			if u.processInfoID != p.id() {
 				u.processEnvScroll = 0
 			}
-			u.processInfoID, u.processInfo, u.processInfoAt = p.id(), readProcessDetails(p.id()), time.Now()
+			u.processInfoID, u.processInfoAt = p.id(), time.Now()
+			if u.offline {
+				u.processInfo = processDetails{errorText: "launch details were not recorded in PCAPNG"}
+			} else {
+				u.processInfo = readProcessDetails(p.id())
+			}
 		}
 		info := u.processInfo
 		detailLines := make([]string, 0, 8)

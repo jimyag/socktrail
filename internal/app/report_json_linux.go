@@ -14,6 +14,7 @@ import (
 // fields; a change other than an added field raises Version.
 type jsonSnapshot struct {
 	Version         int             `json:"version"`
+	Source          string          `json:"source,omitempty"` // "pcapng" for an offline recording.
 	Netns           uint64          `json:"netns"`
 	Interfaces      []string        `json:"interfaces"`
 	Filter          string          `json:"filter,omitempty"` // The --process, --pid and --cgroup selection, when given.

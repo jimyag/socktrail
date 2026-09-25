@@ -76,6 +76,9 @@ func (e Evidence) Group() string {
 		}
 	case "dns", "dns_process":
 		return e.DNS
+	case "recorded":
+		_, name, _ := strings.Cut(e.DNS, " ")
+		return name
 	}
 	switch {
 	case e.ProxyAuthority != nil:
@@ -110,6 +113,9 @@ func (e Evidence) Listed() bool {
 
 // Label is the domain page row: evidence source, group and an ECH marker.
 func (e Evidence) Label() string {
+	if e.Kind == "recorded" {
+		return e.DNS
+	}
 	kind := strings.ToUpper(e.Kind)
 	if e.EncryptedDNS != nil && *e.EncryptedDNS == "DoT" && (kind == "OTHER" || kind == "") {
 		kind = "TLS"
@@ -173,6 +179,8 @@ func (e Evidence) Detail() string {
 		parts = append(parts, "name from this process's recent DNS answer for the peer")
 	} else if e.Kind == "dns" {
 		parts = append(parts, "name from a DNS answer for the peer, not Host/SNI")
+	} else if e.Kind == "recorded" {
+		parts = append(parts, "label retained in the PCAPNG packet annotation")
 	}
 	if e.ParseError != "" {
 		parts = append(parts, "parse error: "+e.ParseError)
@@ -193,6 +201,12 @@ type Stream struct {
 
 func New(initialSeq uint32) *Stream {
 	return &Stream{expected: initialSeq, lastProgress: time.Now()} // Maps come with their first entry: most streams never need them.
+}
+
+func NewRecordedLabel(label string) *Stream {
+	// Reuse the existing name slot: a recording only retains the display
+	// label, not the original Host/SNI/DNS evidence fields.
+	return &Stream{parser: parser{evidence: Evidence{Kind: "recorded", DNS: label}}}
 }
 
 func NewEncryptedDNS(kind string) *Stream {
