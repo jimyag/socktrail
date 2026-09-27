@@ -35,4 +35,4 @@ release:
     name: socktrail
 
 changelog:
-  use: github-native
+  use: git
