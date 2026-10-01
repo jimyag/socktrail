@@ -103,16 +103,21 @@ func retransmits(f *flow) (uint64, string) {
 }
 
 // flowRTT returns the round-trip time to show and its source: a local
-// socket's smoothed RTT from the kernel, which follows the whole connection,
-// or else the capture's one handshake sample.
+// socket's smoothed RTT from the kernel once the kernel has measured one,
+// or the capture's one handshake sample when the socket is observed but its
+// first ACK has not arrived yet.
 func flowRTT(f *flow) (time.Duration, string) {
-	for _, side := range kernelSides(f) {
+	sides := kernelSides(f)
+	for _, side := range sides {
 		if rtt := f.Health.Kernel[side].RTT; rtt > 0 {
 			return rtt, "kernel"
 		}
 	}
 	if f.Health.SynRTT > 0 {
 		return f.Health.SynRTT, "SYN"
+	}
+	if len(sides) > 0 {
+		return 0, "kernel"
 	}
 	return 0, ""
 }

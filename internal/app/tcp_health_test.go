@@ -82,6 +82,23 @@ func TestKernelTCPStateArrivesBeforeCapturedPacket(t *testing.T) {
 	}
 }
 
+// A flow observed on a local socket before its first ACK still reports the
+// kernel as its RTT source: rhythm-sensitive captures (loopback smoke tests)
+// would otherwise look as if the socket was never attached.
+func TestFlowRTTReportsKernelBeforeFirstSample(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:40000"), netip.MustParseAddrPort("127.0.0.1:8080")
+	c := newTestCollector()
+	c.roles = make(map[flowKey]roles)
+	c.roleSeen = make(map[flowKey]time.Time)
+	c.event(probe.Event{Protocol: 6, Role: "out", Operation: "connect", PID: 7, StartNS: 1, Process: "curl", Local: client, Remote: server})
+	c.event(probe.Event{Protocol: 6, Role: "out", Operation: "send", AppBytes: 10, PID: 7, StartNS: 1, Process: "curl", Local: client, Remote: server, TCP: probe.TCPInfo{Cwnd: 10, RTTVar: 250 * time.Millisecond}})
+	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, HasPorts: true, SYN: true, TCPSeq: 1, IPBytes: 60, Outgoing: true})
+	f := c.flows[keyFor(client, server, 6)]
+	if rtt, source := flowRTT(f); rtt != 0 || source != "kernel" {
+		t.Fatalf("RTT %s from %q, want 0 from the kernel before its first sample", rtt, source)
+	}
+}
+
 func TestTCPLimitFromKernelCounters(t *testing.T) {
 	base := probe.TCPInfo{
 		RTT: 20 * time.Millisecond, SegsOut: 100,
