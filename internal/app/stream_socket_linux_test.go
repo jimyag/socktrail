@@ -2,6 +2,7 @@ package app
 
 import (
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ func TestListenStreamSocketReplacesStaleSocket(t *testing.T) {
 		t.Fatalf("the stale socket file should still exist: %v", err)
 	}
 
-	hub, err := listenStreamSocket(path)
+	hub, err := listenStreamSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenStreamSocket on a stale socket: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestListenStreamSocketRefusesNonSocketPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := listenStreamSocket(path); err == nil {
+	if _, err := listenStreamSocket(path, 0o600); err == nil {
 		t.Fatal("a regular file at the socket path should be refused")
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "keep me" {
@@ -62,19 +63,19 @@ func TestListenStreamSocketRefusesNonSocketPath(t *testing.T) {
 
 func TestListenStreamSocketRefusesLiveSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "live.sock")
-	first, err := listenStreamSocket(path)
+	first, err := listenStreamSocket(path, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.close()
-	if _, err := listenStreamSocket(path); err == nil {
+	if _, err := listenStreamSocket(path, 0o600); err == nil {
 		t.Fatal("a second listener on the same path should be refused")
 	}
 }
 
 func TestStreamHubDeliversFramesToClients(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socktrail.sock")
-	hub, err := listenStreamSocket(path)
+	hub, err := listenStreamSocket(path, 0o660)
 	if err != nil {
 		t.Fatalf("listenStreamSocket: %v", err)
 	}
@@ -84,8 +85,8 @@ func TestStreamHubDeliversFramesToClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("socket mode = %o, want 600", perm)
+	if perm := info.Mode().Perm(); perm != 0o660 {
+		t.Errorf("socket mode = %o, want 660: the mode argument must be applied", perm)
 	}
 
 	conn, err := net.Dial("unix", path)
@@ -136,5 +137,19 @@ func TestStreamHubDropsSlowClient(t *testing.T) {
 	}
 	if hub.active() {
 		t.Error("the client that fell behind is still registered")
+	}
+}
+
+func TestParseSocketMode(t *testing.T) {
+	for value, want := range map[string]fs.FileMode{"0600": 0o600, "0660": 0o660, "777": 0o777} {
+		got, err := parseSocketMode(value)
+		if err != nil || got != want {
+			t.Errorf("parseSocketMode(%q) = %o, %v; want %o", value, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "abc", "0999", "1777"} {
+		if _, err := parseSocketMode(bad); err == nil {
+			t.Errorf("parseSocketMode(%q) should be rejected", bad)
+		}
 	}
 }

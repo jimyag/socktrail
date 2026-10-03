@@ -78,7 +78,7 @@ func TestStreamSummaryListsEveryProcess(t *testing.T) {
 // before any increment, all wrapped in frames it can tell apart.
 func TestStreamGreetSendsHandshakeBeforeIncrements(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socktrail.sock")
-	hub, err := listenStreamSocket(path)
+	hub, err := listenStreamSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenStreamSocket: %v", err)
 	}

@@ -1170,6 +1170,7 @@ func Run() error {
 	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in streamed output")
 	logFile := flag.String("log-file", "", "write connection changes to a 0600 NDJSON file while the interactive screen runs")
 	socketPath := flag.String("socket", "", "serve the stream on this Unix domain socket instead of standard output; needs --output ndjson or msgpack")
+	socketMode := flag.String("socket-mode", "0600", "permission bits for the socket file, octal; a consumer running as another user needs 0660 and a shared group")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
@@ -1228,6 +1229,10 @@ func Run() error {
 	}
 	if *socketPath != "" && !streamingOutput(*output) {
 		return fmt.Errorf("--socket needs --output ndjson or msgpack: it carries the live stream")
+	}
+	socketFileMode, err := parseSocketMode(*socketMode)
+	if err != nil {
+		return err
 	}
 	if *logFile != "" && (*duration != 0 || *output != "text") {
 		return fmt.Errorf("--log-file requires the interactive screen")
@@ -1510,7 +1515,7 @@ func Run() error {
 		if *socketPath == "" {
 			stream, err = newStreamSink(*output, os.Stdout, nil)
 		} else {
-			hub, hubErr := listenStreamSocket(*socketPath)
+			hub, hubErr := listenStreamSocket(*socketPath, socketFileMode)
 			if hubErr != nil {
 				return hubErr
 			}

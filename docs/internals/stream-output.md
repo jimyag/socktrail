@@ -21,6 +21,7 @@
 |---|---|---|
 | `--output` | 增加 `msgpack` | 编码格式：`text`、`json`、`ndjson`、`msgpack` |
 | `--socket` | 路径 | 输出到 Unix domain socket，替代标准输出。只对 `ndjson` 和 `msgpack` 有效 |
+| `--socket-mode` | 八进制权限位，默认 `0600` | socket 文件的权限。消费方在别的账号时需要 `0660` 加一个共享组 |
 
 用法：
 
@@ -223,7 +224,7 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 - 路径不存在：直接 `net.Listen("unix", path)`
 - 路径存在且是 socket：先尝试 `net.Dial("unix", path)`。连得上说明已有实例在监听，报错退出并提示路径；连不上说明是上次进程被强杀留下的 stale 文件，`os.Remove` 后重新监听
 - 路径存在但不是 socket：报错退出，不删除。那可能是用户自己的文件，删掉无法恢复
-- 创建后 `os.Chmod(path, 0o600)`。数据含域名、PID 和流量计数，权限与 `--log-file` 一致（`internal/app/change_log.go` 用 0600）
+- 创建后 `os.Chmod(path, mode)`，默认 `0600`。数据含域名、PID 和流量计数，所以默认只给属主；而 socktrail 通常以 root 运行，消费方在别的账号时就用 `--socket-mode 0660` 加一个共享组，不要放开给所有人
 - 退出时（`--duration` 到时、Ctrl-C、SIGTERM、SIGHUP）关闭监听并删除 socket 文件
 
 **客户端异常**
@@ -310,6 +311,7 @@ func (c *streamCodec) encode(v any) ([]byte, error) {
 socktrail --output bogus                          # usage 里列出 msgpack
 socktrail --output msgpack --read x.pcapng        # 报与 --read 互斥
 socktrail --output text --socket /tmp/s.sock      # 报 --socket 需要流式 --output
+socktrail --socket-mode 0999 --output msgpack     # 报权限位非法
 socktrail --man | grep msgpack                    # 手册提到 msgpack
 socktrail --completion bash | grep msgpack        # 补全值里有 msgpack
 socktrail --completion bash | grep socket         # 补全值里有 socket

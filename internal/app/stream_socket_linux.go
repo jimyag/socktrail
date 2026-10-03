@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 )
 
@@ -93,11 +94,20 @@ func newStreamHub(path string, listener net.Listener) *streamHub {
 	}
 }
 
+// parseSocketMode reads the octal permission bits for the socket file.
+func parseSocketMode(value string) (fs.FileMode, error) {
+	bits, err := strconv.ParseUint(value, 8, 32)
+	if err != nil || bits > 0o777 {
+		return 0, fmt.Errorf("invalid --socket-mode %q: use octal bits such as 0600 or 0660", value)
+	}
+	return fs.FileMode(bits), nil
+}
+
 // listenStreamSocket opens the socket and starts accepting subscribers. A
 // socket file left behind by a killed process is replaced; any other file at
 // the path is left alone, because removing it could destroy something the user
 // put there.
-func listenStreamSocket(path string) (*streamHub, error) {
+func listenStreamSocket(path string, mode fs.FileMode) (*streamHub, error) {
 	if err := clearStaleSocket(path); err != nil {
 		return nil, err
 	}
@@ -105,12 +115,12 @@ func listenStreamSocket(path string) (*streamHub, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on socket %s: %w", path, err)
 	}
-	// The frames carry domains, PIDs and traffic counts, so keep the socket
-	// owner-only like the change log.
-	if err := os.Chmod(path, 0o600); err != nil {
+	// The frames carry domains, PIDs and traffic counts, so the default stays
+	// owner-only; --socket-mode widens it for a consumer in another account.
+	if err := os.Chmod(path, mode); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(path)
-		return nil, fmt.Errorf("protect socket %s: %w", path, err)
+		return nil, fmt.Errorf("set mode %o on socket %s: %w", mode, path, err)
 	}
 	hub := newStreamHub(path, listener)
 	go hub.accept(listener)
