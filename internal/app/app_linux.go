@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"maps"
 	"net/netip"
 	"os"
@@ -1170,6 +1169,7 @@ func Run() error {
 	output := flag.String("output", "text", "output format: text or json snapshots with --duration, or a live stream: ndjson or msgpack")
 	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in streamed output")
 	logFile := flag.String("log-file", "", "write connection changes to a 0600 NDJSON file while the interactive screen runs")
+	socketPath := flag.String("socket", "", "serve the stream on this Unix domain socket instead of standard output; needs --output ndjson or msgpack")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
@@ -1225,6 +1225,9 @@ func Run() error {
 	}
 	if *output == "json" && *duration == 0 && *readFile == "" {
 		return fmt.Errorf("--output json needs --duration: it formats the snapshot")
+	}
+	if *socketPath != "" && !streamingOutput(*output) {
+		return fmt.Errorf("--socket needs --output ndjson or msgpack: it carries the live stream")
 	}
 	if *logFile != "" && (*duration != 0 || *output != "text") {
 		return fmt.Errorf("--log-file requires the interactive screen")
@@ -1498,29 +1501,34 @@ func Run() error {
 		return collectors[ui.interfaceName]
 	}
 	var summary sessionSummary
-	var streamEncoder *streamCodec
-	var streamWriter io.Writer
-	var streamFormat string
+	var stream *streamSink
 	var lastOutput map[uint64]time.Time
 	if streamingOutput(*output) {
-		streamEncoder, err = newStreamCodec(*output)
+		if *socketPath == "" {
+			stream, err = newStreamSink(*output, os.Stdout, nil)
+		} else {
+			hub, hubErr := listenStreamSocket(*socketPath)
+			if hubErr != nil {
+				return hubErr
+			}
+			defer hub.close()
+			stream, err = newStreamSink(*output, nil, hub)
+		}
 		if err != nil {
 			return err
 		}
-		streamWriter, streamFormat = os.Stdout, *output
 	} else if *logFile != "" {
 		writer, err := openChangeLog(*logFile)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = writer.Close() }()
-		streamEncoder, err = newStreamCodec("ndjson")
+		stream, err = newStreamSink("ndjson", writer, nil)
 		if err != nil {
 			return err
 		}
-		streamWriter, streamFormat = writer, "ndjson"
 	}
-	if streamEncoder != nil {
+	if stream != nil {
 		lastOutput = make(map[uint64]time.Time)
 	}
 	if ui != nil {
@@ -1622,7 +1630,7 @@ func Run() error {
 					inv.refresh(collectorsByNS[id], time.Now())
 				}
 			}
-			if ui != nil && !ui.closed || streamEncoder != nil {
+			if ui != nil && !ui.closed || stream != nil {
 				if ui != nil && !ui.closed {
 					ui.sampleAll(collectors, time.Now())
 				}
@@ -1631,7 +1639,7 @@ func Run() error {
 				host, sources, members = hostCollector(interfaceNames, collectors)
 				correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 				replacements := hostState.update(host, members)
-				if streamEncoder != nil {
+				if stream != nil {
 					scope := newProcessScope(processes, filter)
 					for _, change := range hostState.lastChanges {
 						if !scope.flow(change.Flow, host) || !matchesFilter(compiledFilter, change.Flow, host, processes, geo, "") {
@@ -1639,8 +1647,8 @@ func Run() error {
 						}
 						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
 						row.Changes = change.Changes
-						if err := emit(streamEncoder, streamWriter, row); err != nil {
-							return fmt.Errorf("write %s: %w", streamFormat, err)
+						if err := stream.write(row); err != nil {
+							return fmt.Errorf("write %s: %w", stream.format, err)
 						}
 						lastOutput[change.ID] = time.Now()
 					}
@@ -1650,8 +1658,8 @@ func Run() error {
 						}
 						row := jsonFlowFor(f, id, processes, geo)
 						row.Changes = []string{"refresh"}
-						if err := emit(streamEncoder, streamWriter, row); err != nil {
-							return fmt.Errorf("write %s refresh: %w", streamFormat, err)
+						if err := stream.write(row); err != nil {
+							return fmt.Errorf("write %s refresh: %w", stream.format, err)
 						}
 						lastOutput[id] = time.Now()
 					}

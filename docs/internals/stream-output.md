@@ -77,6 +77,8 @@ hub.broadcast(frame)
 
 **③ 没有客户端时跳过序列化**。`hub.clients` 为空时主循环不编码，只做 `hostState.update`。这让"只是开着采集等人连"不付出编码开销。
 
+客户端集合只由主循环访问，所以不需要锁：`accept` 在独立 goroutine 里跑，把新连接放进有界的 `joining` channel，主循环每个 tick 用 `hub.adopt()` 取走。广播时把帧复制一次给所有客户端共享，因为编解码器复用同一个 buffer；复制只做一次，不是每个客户端一次。
+
 ## 帧协议
 
 连接建立后是连续的 MessagePack 对象，无额外长度前缀（MessagePack 自带长度信息）。每个对象是一个带 `kind` 的帧：
@@ -213,7 +215,8 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 **socket 文件**
 
 - 路径不存在：直接 `net.Listen("unix", path)`
-- 路径已存在：先尝试 `net.Dial("unix", path)`。连得上说明已有实例在监听，报错退出并提示路径；连不上说明是上次进程被强杀留下的 stale 文件，`os.Remove` 后重新监听
+- 路径存在且是 socket：先尝试 `net.Dial("unix", path)`。连得上说明已有实例在监听，报错退出并提示路径；连不上说明是上次进程被强杀留下的 stale 文件，`os.Remove` 后重新监听
+- 路径存在但不是 socket：报错退出，不删除。那可能是用户自己的文件，删掉无法恢复
 - 创建后 `os.Chmod(path, 0o600)`。数据含域名、PID 和流量计数，权限与 `--log-file` 一致（`internal/app/change_log.go` 用 0600）
 - 退出时（`--duration` 到时、Ctrl-C、SIGTERM、SIGHUP）关闭监听并删除 socket 文件
 
@@ -231,9 +234,9 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 
 | 文件 | 改动 |
 |---|---|
-| `internal/app/stream_socket_linux.go` | **新增**。`streamHub`、`streamClient`、监听、注册/注销、广播、socket 文件生命周期 |
-| `internal/app/stream_codec_linux.go` | **新增**。`streamCodec`（json 或 msgpack 编码一行，返回 `[]byte`）、`streamingOutput`、`emit` |
-| `internal/app/app_linux.go` | flag 定义与校验；`streamEncoder` 初始化改为走 codec + hub；两处 `streamEncoder.Encode` 调用点（变化帧、refresh 帧）改为 `codec.encode` + 分发；新客户端全量快照；周期性 `stats` 帧；TUI 开启条件排除 `msgpack` |
+| `internal/app/stream_socket_linux.go` | **已完成**。`streamHub`、`streamClient`、监听与 stale 文件处理、`adopt`/`broadcast`/`close`、`streamSink` |
+| `internal/app/stream_codec_linux.go` | **已完成**。`streamCodec`（json 或 msgpack 编码一行，返回 `[]byte`）、`streamingOutput` |
+| `internal/app/app_linux.go` | flag 定义与校验；流式输出改走 `streamSink`；TUI 开启条件排除 `msgpack`；新客户端全量快照和周期性 `stats` 帧（第 3 阶段） |
 | `internal/app/report_json_linux.go` | 5 个字段补 `msgpack:"...,omitempty"` tag；`processesJSON` 抽出不限 `--limit` 的变体供 `stats` 帧使用 |
 | `go.mod` | 加 `github.com/vmihailenco/msgpack/v5` |
 | `internal/app/stream_codec_linux_test.go` | **新增**。编码一致性与帧定界测试 |
@@ -267,43 +270,52 @@ func (c *streamCodec) encode(v any) ([]byte, error) {
 
 ## 验证方案
 
-**已实现的单元测试**（`internal/app/stream_codec_linux_test.go`，与现有 `*_test.go` 同风格，不引入测试框架）
+**编码层**（`internal/app/stream_codec_linux_test.go`）
 
 1. `TestMsgpackMatchesJSONFields`：`jsonFlow` 填满所有嵌套类型（GeoIP、kernel_tcp、client/server/container、io、evidence、DNS、drops），两边编码后解码回 `map[string]any`，递归断言每一层的键集合一致。文件里的 `MsgpackFlow()` 构造器供其余测试复用。
 2. `TestMsgpackMatchesJSONSnapshotFields`：`jsonSnapshot` 的 reports、processes、services、failures、listeners、drops 同样比较。
 3. `TestMsgpackOmitsZeroFieldsLikeJSON`：零值行的 `id`、`connect_latency_us` 在 msgpack 侧也必须缺席，锁住 `omitzero` 与显式 `msgpack:"...,omitempty"` 的对齐。
 4. `TestMsgpackEncodesTimesAsTimestamps`：json 侧是字符串，msgpack 侧解回 `time.Time` 且绝对时间相等。
-5. `TestStreamFramesDecodeInSequence`：连续 `emit` 多行后，msgpack 和 ndjson 都能逐帧解回，验证定界。
+5. `TestStreamFramesDecodeInSequence`：连续写多帧后，msgpack 和 ndjson 都能逐帧解回，验证定界。
 
-**待实现**（后续阶段）
+**传输层**（`internal/app/stream_socket_linux_test.go`）
 
-6. `TestStreamHubSlowClient`：客户端注册后不读，主循环灌入超过缓冲的帧数，断言主循环调用没有阻塞，且该客户端被断开、其他客户端完好。
-7. `TestStreamSocketStaleFile`：预置一个普通文件在 socket 路径上，断言启动时被清理并成功监听；预置一个活跃监听，断言启动报错。
-8. `TestStreamStatsCoversProcessIO`：构造一个进程既有匹配到流的 I/O、又有端口不匹配的 I/O，断言 `stats.ProcessIO` 给出全量、`IOUnmatched` 给出差额，且两者相加等于该进程的 `pidIO` 总量。这条测试锁住 stats 帧存在的理由，防止将来有人把 `process_io` 改成从 `io[]` 聚合。
+6. `TestListenStreamSocketReplacesStaleSocket`：预置一个没有监听者的 socket 文件，断言启动时被替换。
+7. `TestListenStreamSocketRefusesNonSocketPath`：预置普通文件，断言报错且文件内容不变。
+8. `TestListenStreamSocketRefusesLiveSocket`：已有实例监听时，第二个断言报错。
+9. `TestStreamHubDeliversFramesToClients`：真 socket 连接、`adopt`、广播，客户端读回帧；同时断言 socket 权限为 0600，并在广播后改写原 buffer，验证客户端已收到的内容不受影响。
+10. `TestStreamHubDropsSlowClient`：客户端接一个没人读的管道，灌入超过缓冲的帧数，断言广播不阻塞且该客户端被注销。
+11. `TestStreamSinkSkipsEncodingWithoutClients`：用一个无法编码的值证明无订阅者时编解码器根本没被调用。
+
+**待实现**（第 3 阶段）
+
+12. `TestStreamStatsCoversProcessIO`：构造一个进程既有匹配到流的 I/O、又有端口不匹配的 I/O，断言 `stats.ProcessIO` 给出全量、`IOUnmatched` 给出差额，且两者相加等于该进程的 `pidIO` 总量。这条测试锁住 stats 帧存在的理由，防止将来有人把 `process_io` 改成从 `io[]` 聚合。
 
 **root 集成测试**（与现有 root 测试同风格）
 
-9. 起 socktrail 监听临时 socket，用 Go 客户端连接，校验第一个对象是 hello、随后是全量快照、断开再连能拿到新的快照。
-10. `--output msgpack --duration 30s` 输出到管道，用 msgpack 流式解码器逐条解码，断言无残帧。
+13. 起 socktrail 监听临时 socket，用 Go 客户端连接，校验第一个对象是 hello、随后是全量快照、断开再连能拿到新的快照。
+14. `--output msgpack --duration 30s` 输出到管道，用 msgpack 流式解码器逐条解码，断言无残帧。
 
 **不需要权限就能核对的接线**
 
 ```sh
-socktrail --output bogus                    # usage 里列出 msgpack
-socktrail --output msgpack --read x.pcapng  # 报与 --read 互斥
-socktrail --man | grep msgpack              # 手册提到 msgpack
-socktrail --completion bash | grep msgpack  # 补全值里有 msgpack
+socktrail --output bogus                          # usage 里列出 msgpack
+socktrail --output msgpack --read x.pcapng        # 报与 --read 互斥
+socktrail --output text --socket /tmp/s.sock      # 报 --socket 需要流式 --output
+socktrail --man | grep msgpack                    # 手册提到 msgpack
+socktrail --completion bash | grep msgpack        # 补全值里有 msgpack
+socktrail --completion bash | grep socket         # 补全值里有 socket
 ```
 
-`--output msgpack` 的端到端抓包要能加载 eBPF 探针的内核。第 1 阶段在开发机上核对到 flag 校验和编码层为止：该机内核 7.2 超出上游已验证的范围（到 7.0），`udpv6_recvmsg` 的探针加载被内核拒绝，采集起不来，与分析本次改动无关。抓包路径的端到端验证留给第 9、10 条的 root 测试环境。
+`--output msgpack` 的端到端抓包要能加载 eBPF 探针的内核。第 1、2 阶段在开发机上核对到 flag 校验、编码层和 socket 层为止：该机内核 7.2 超出上游已验证的范围（到 7.0），`udpv6_recvmsg` 的探针加载被内核拒绝，采集起不来，与分析本次改动无关。抓包路径的端到端验证留给上面的 root 测试环境。
 
 ## 分阶段实施
 
 每阶段独立可验证，可以单独提交：
 
 1. **编码层（已完成）**：`--output msgpack` 写标准输出，含上面第 1–5 条测试。此时已可用于管道消费，不涉及并发改动。
-2. **传输层**：`--socket` + `streamHub` 广播，含上面第 6、7 条测试。
-3. **订阅语义**：新客户端全量快照和周期性 `stats` 帧，含第 8、9、10 条测试。
+2. **传输层（已完成）**：`--socket` + `streamHub` 广播，含第 6–11 条测试。这一步流里只有连接变化帧，尚未加 `kind` 外壳；envelope 随第 3 阶段的 hello 和 stats 一起引入，因为到那时才需要判别帧类型。
+3. **订阅语义**：新客户端全量快照和周期性 `stats` 帧，含第 12–14 条测试。
 4. **文档**：`docs/user/usage.md` 增加一节，含生成消费方代码的字段说明；`README.zh-CN.md` 与 `README.md` 的特性列表各加一条。
 
 ## 明确不做的取舍

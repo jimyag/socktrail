@@ -197,14 +197,14 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 		{Protocol: "udp", Source: "10.0.0.3:53", Target: "10.0.0.4:40000", Changes: []string{"refresh"}},
 	}
 	t.Run("msgpack", func(t *testing.T) {
-		codec, err := newStreamCodec("msgpack")
+		var out bytes.Buffer
+		sink, err := newStreamSink("msgpack", &out, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var out bytes.Buffer
 		for _, row := range rows {
-			if err := emit(codec, &out, row); err != nil {
-				t.Fatalf("emit: %v", err)
+			if err := sink.write(row); err != nil {
+				t.Fatalf("write: %v", err)
 			}
 		}
 		decoder := msgpack.NewDecoder(&out)
@@ -220,14 +220,14 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 		}
 	})
 	t.Run("ndjson", func(t *testing.T) {
-		codec, err := newStreamCodec("ndjson")
+		var out bytes.Buffer
+		sink, err := newStreamSink("ndjson", &out, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var out bytes.Buffer
 		for _, row := range rows {
-			if err := emit(codec, &out, row); err != nil {
-				t.Fatalf("emit: %v", err)
+			if err := sink.write(row); err != nil {
+				t.Fatalf("write: %v", err)
 			}
 		}
 		decoder := json.NewDecoder(&out)

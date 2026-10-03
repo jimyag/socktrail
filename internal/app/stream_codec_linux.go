@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -57,14 +56,4 @@ func (c *streamCodec) encode(v any) ([]byte, error) {
 		return nil, err
 	}
 	return c.buf.Bytes(), nil
-}
-
-// emit encodes one row and writes it to the stream output.
-func emit(codec *streamCodec, w io.Writer, row any) error {
-	frame, err := codec.encode(row)
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(frame)
-	return err
 }

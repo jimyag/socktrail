@@ -16,6 +16,7 @@ var completionArgs = map[string][]string{
 	"netns":        {"netns"},
 	"read":         {"file"},
 	"log-file":     {"file"},
+	"socket":       {"file"},
 	"config":       {"file"},
 	"capture-dir":  {"dir"},
 	"geoip-dir":    {"dir"},
