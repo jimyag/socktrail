@@ -7,6 +7,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/jimmicro/version v1.1.0
 	github.com/oschwald/geoip2-golang/v2 v2.4.0
+	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
@@ -18,6 +19,7 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 )
 
 tool github.com/cilium/ebpf/cmd/bpf2go

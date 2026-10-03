@@ -19,7 +19,7 @@ var completionArgs = map[string][]string{
 	"config":       {"file"},
 	"capture-dir":  {"dir"},
 	"geoip-dir":    {"dir"},
-	"output":       {"text", "json", "ndjson"},
+	"output":       {"text", "json", "ndjson", "msgpack"},
 	"memory-limit": {"auto", "none", "512MiB", "1GiB"},
 	"completion":   {"bash", "zsh", "fish"},
 }

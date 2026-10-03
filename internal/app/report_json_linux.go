@@ -155,7 +155,7 @@ type jsonReport struct {
 }
 
 type jsonFlow struct {
-	ID               uint64            `json:"id,omitzero"`
+	ID               uint64            `json:"id,omitzero" msgpack:"id,omitempty"`
 	End              string            `json:"end,omitempty"`
 	Changes          []string          `json:"changes,omitempty"`
 	Protocol         string            `json:"protocol"`
@@ -175,7 +175,7 @@ type jsonFlow struct {
 	LastSeen         time.Time         `json:"last_seen"`
 	SYNRTTMicros     int64             `json:"syn_rtt_us,omitempty"`
 	ConnectResult    string            `json:"connect_result,omitempty"`
-	ConnectLatencyUS uint32            `json:"connect_latency_us,omitzero"`
+	ConnectLatencyUS uint32            `json:"connect_latency_us,omitzero" msgpack:"connect_latency_us,omitempty"`
 	RTTMicros        int64             `json:"rtt_us,omitempty"`
 	RTTSource        string            `json:"rtt_source,omitempty"`
 	Retransmits      uint64            `json:"retransmits"`
@@ -236,7 +236,7 @@ type jsonDNS struct {
 	Name      string         `json:"name,omitempty"`
 	Type      string         `json:"type,omitempty"`
 	RCode     string         `json:"rcode,omitempty"`
-	RTTMicros int64          `json:"rtt_us,omitzero"`
+	RTTMicros int64          `json:"rtt_us,omitzero" msgpack:"rtt_us,omitempty"`
 	Recent    []jsonDNSQuery `json:"recent,omitempty"`
 }
 
@@ -245,9 +245,9 @@ type jsonDNSQuery struct {
 	Type      string    `json:"type"`
 	RCode     string    `json:"rcode,omitempty"`
 	Addresses []string  `json:"addresses,omitempty"`
-	RTTMicros int64     `json:"rtt_us,omitzero"`
+	RTTMicros int64     `json:"rtt_us,omitzero" msgpack:"rtt_us,omitempty"`
 	At        time.Time `json:"at"`
-	Answered  bool      `json:"answered,omitzero"`
+	Answered  bool      `json:"answered,omitzero" msgpack:"answered,omitempty"`
 }
 
 type jsonDomain struct {

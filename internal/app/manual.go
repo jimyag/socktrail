@@ -56,7 +56,7 @@ func writeManual(w io.Writer, flags *flag.FlagSet) error {
 	line(".SH DESCRIPTION")
 	line("socktrail captures packets from selected interfaces with AF_PACKET and uses eBPF socket probes and the kernel socket table to associate local traffic with processes.")
 	line("It shows connections, IP traffic, application protocols, and domain names found in observable HTTP, TLS, QUIC, proxy and DNS data.")
-	line("Without \\fB\\-\\-duration\\fR or \\fB\\-\\-output ndjson\\fR it runs an interactive screen; see \\fBSCREEN KEYS\\fR.")
+	line("Without \\fB\\-\\-duration\\fR or a streamed \\fB\\-\\-output\\fR (\\fBndjson\\fR, \\fBmsgpack\\fR) it runs an interactive screen; see \\fBSCREEN KEYS\\fR.")
 	line("Capture and the probes need root, or the file capabilities that \\fBtask install\\fR sets.")
 
 	line(".SH OPTIONS")
