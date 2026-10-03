@@ -81,6 +81,7 @@ type streamHub struct {
 	listener net.Listener
 	joining  chan *streamClient
 	clients  map[*streamClient]struct{}
+	pending  []*streamClient // Adopted but not yet greeted; capture loop only.
 }
 
 func newStreamHub(path string, listener net.Listener) *streamHub {
@@ -158,10 +159,24 @@ func (h *streamHub) adopt() {
 		select {
 		case client := <-h.joining:
 			h.clients[client] = struct{}{}
+			h.pending = append(h.pending, client)
 		default:
 			return
 		}
 	}
+}
+
+// takePending returns the clients that still owe a handshake and clears the
+// list. A client that fell behind and was dropped in the meantime is skipped.
+func (h *streamHub) takePending() []*streamClient {
+	var pending []*streamClient
+	for _, client := range h.pending {
+		if _, ok := h.clients[client]; ok {
+			pending = append(pending, client)
+		}
+	}
+	h.pending = nil
+	return pending
 }
 
 func (h *streamHub) active() bool {
@@ -179,10 +194,14 @@ func (h *streamHub) broadcast(frame []byte) {
 	shared := bytes.Clone(frame)
 	for client := range h.clients {
 		if !client.offer(shared) {
-			client.close()
-			delete(h.clients, client)
+			h.drop(client)
 		}
 	}
+}
+
+func (h *streamHub) drop(client *streamClient) {
+	client.close()
+	delete(h.clients, client)
 }
 
 func (h *streamHub) close() {
@@ -202,6 +221,7 @@ drain:
 		client.close()
 	}
 	clear(h.clients)
+	h.pending = nil
 	if h.path != "" {
 		// The listener already unlinks on close; this covers a hub without one.
 		_ = os.Remove(h.path)
@@ -225,21 +245,84 @@ func newStreamSink(format string, writer io.Writer, hub *streamHub) (*streamSink
 	return &streamSink{codec: codec, format: format, writer: writer, hub: hub}, nil
 }
 
-// write emits one row. With a hub and no subscribers nothing is encoded at
-// all, so a capture that nobody is watching costs no serialization work.
-func (s *streamSink) write(row any) error {
-	if s.hub != nil {
-		s.hub.adopt()
-		if !s.hub.active() {
-			return nil
-		}
-		frame, err := s.codec.encode(row)
+// flow emits one connection change.
+func (s *streamSink) flow(row jsonFlow) error {
+	if s.hub == nil {
+		return s.writeRow(row)
+	}
+	return s.writeFrame(streamFrame{Kind: streamKindFlow, Flow: &row})
+}
+
+// writeFrame broadcasts one metadata frame. Standard output carries no frame
+// kinds, so this is a no-op without a hub.
+func (s *streamSink) writeFrame(frame streamFrame) error {
+	if s.hub == nil || !s.hub.active() {
+		return nil
+	}
+	raw, err := s.encodeFrame(frame)
+	if err != nil {
+		return err
+	}
+	s.hub.broadcast(raw)
+	return nil
+}
+
+// greet sends the handshake to the clients that connected since the last tick.
+// fill runs once, not per client, so the snapshot is built once and shared.
+func (s *streamSink) greet(fill func(send func(any) error) error) error {
+	clients := s.hub.takePending()
+	if len(clients) == 0 {
+		return nil
+	}
+	var frames [][]byte
+	collect := func(v any) error {
+		frame, err := s.encodeFrame(v)
 		if err != nil {
 			return err
 		}
-		s.hub.broadcast(frame)
+		frames = append(frames, frame)
 		return nil
 	}
+	if err := fill(collect); err != nil {
+		return err
+	}
+	for _, client := range clients {
+		for _, frame := range frames {
+			if !client.offer(frame) {
+				s.hub.drop(client)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// adoptClients takes the connections accepted since the last tick.
+func (s *streamSink) adoptClients() {
+	if s.hub != nil {
+		s.hub.adopt()
+	}
+}
+
+// encodeFrame serializes one value for the socket. A bare jsonFlow is wrapped
+// in a frame envelope; metadata already carries its kind.
+func (s *streamSink) encodeFrame(v any) ([]byte, error) {
+	if row, ok := v.(jsonFlow); ok {
+		v = streamFrame{Kind: streamKindFlow, Flow: &row}
+	}
+	raw, err := s.codec.encode(v)
+	if err != nil {
+		return nil, err
+	}
+	// The codec reuses its buffer and the hub hands this frame to several
+	// clients, so it leaves as a copy.
+	return bytes.Clone(raw), nil
+}
+
+// writeRow writes one bare row, which is what standard output and the change
+// log carry. Nothing is encoded while the hub has no subscribers, so a capture
+// nobody is watching costs no serialization work.
+func (s *streamSink) writeRow(row any) error {
 	frame, err := s.codec.encode(row)
 	if err != nil {
 		return err

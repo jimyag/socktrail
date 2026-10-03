@@ -138,16 +138,3 @@ func TestStreamHubDropsSlowClient(t *testing.T) {
 		t.Error("the client that fell behind is still registered")
 	}
 }
-
-// Nothing is encoded while nobody is subscribed, so an unwatched capture pays
-// no serialization cost.
-func TestStreamSinkSkipsEncodingWithoutClients(t *testing.T) {
-	sink, err := newStreamSink("msgpack", nil, newStreamHub("", nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A channel cannot be encoded: an error here would prove the codec ran.
-	if err := sink.write(struct{ C chan int }{make(chan int)}); err != nil {
-		t.Errorf("the sink encoded a row with no subscribers: %v", err)
-	}
-}

@@ -1502,8 +1502,11 @@ func Run() error {
 	}
 	var summary sessionSummary
 	var stream *streamSink
+	var streamStart time.Time
+	var lastStats time.Time
 	var lastOutput map[uint64]time.Time
 	if streamingOutput(*output) {
+		streamStart, lastStats = time.Now(), time.Now()
 		if *socketPath == "" {
 			stream, err = newStreamSink(*output, os.Stdout, nil)
 		} else {
@@ -1640,14 +1643,63 @@ func Run() error {
 				correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 				replacements := hostState.update(host, members)
 				if stream != nil {
+					stream.adoptClients()
 					scope := newProcessScope(processes, filter)
+					buildStats := func(at time.Time) streamSummary {
+						return streamSummary{
+							At:               at,
+							IPPackets:        host.packets,
+							IPBytes:          host.bytes,
+							ProcessIO:        allProcessesJSON(host, processes, scope),
+							IOUnmatchedBytes: host.ioUnmatched,
+							IOUnindexed:      streamIOBytes{RXBytes: host.ioUnindexed.RX, TXBytes: host.ioUnindexed.TX},
+							ExpiredPIDIO:     streamIOBytes{RXBytes: host.expiredPIDIO.RX, TXBytes: host.expiredPIDIO.TX},
+							ExpiredPIDCount:  host.expiredPIDCount,
+							Probes:           probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
+						}
+					}
+					// A subscriber receives the handshake, the current view and the
+					// first summary before any increment, so it never has to guess
+					// the state it joined in.
+					if err := stream.greet(func(send func(any) error) error {
+						hello := streamHello{
+							Version: 1, Mode: "live", Interfaces: interfaceNames,
+							Filter:  strings.TrimSpace(filter.String() + " " + *filterExpression),
+							Probes:  probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
+							Started: streamStart,
+						}
+						if err := send(streamFrame{Kind: streamKindHello, Hello: &hello}); err != nil {
+							return err
+						}
+						for id, f := range hostState.displayed {
+							if !scope.flow(f, host) {
+								continue
+							}
+							row := jsonFlowFor(f, id, processes, geo)
+							row.Changes = []string{"snapshot"}
+							if err := send(row); err != nil {
+								return err
+							}
+						}
+						stats := buildStats(time.Now())
+						return send(streamFrame{Kind: streamKindStats, Stats: &stats})
+					}); err != nil {
+						return fmt.Errorf("write %s handshake: %w", stream.format, err)
+					}
+					if now := time.Now(); now.Sub(lastStats) >= *refresh {
+						stats := buildStats(now)
+						if err := stream.writeFrame(streamFrame{Kind: streamKindStats, Stats: &stats}); err != nil {
+							return fmt.Errorf("write %s stats: %w", stream.format, err)
+						}
+						lastStats = now
+					}
 					for _, change := range hostState.lastChanges {
 						if !scope.flow(change.Flow, host) || !matchesFilter(compiledFilter, change.Flow, host, processes, geo, "") {
 							continue
 						}
 						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
 						row.Changes = change.Changes
-						if err := stream.write(row); err != nil {
+						if err := stream.flow(row); err != nil {
 							return fmt.Errorf("write %s: %w", stream.format, err)
 						}
 						lastOutput[change.ID] = time.Now()
@@ -1658,7 +1710,7 @@ func Run() error {
 						}
 						row := jsonFlowFor(f, id, processes, geo)
 						row.Changes = []string{"refresh"}
-						if err := stream.write(row); err != nil {
+						if err := stream.flow(row); err != nil {
 							return fmt.Errorf("write %s refresh: %w", stream.format, err)
 						}
 						lastOutput[id] = time.Now()
@@ -1895,21 +1947,9 @@ func Run() error {
 			}
 		}
 	} else if *output == "json" {
-		snapshot := jsonSnapshot{Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Drops: dropsJSON(dropTotals), Probes: jsonProbes{
-			PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
-			ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
-			OpenSSL:       jsonProbe{Status: tlsStatus},
-			SocketStream:  jsonProbe{Status: streamStatus},
-			NAT:           jsonNAT{Status: natStatus},
-		}}
-		if tlsStats != nil {
-			snapshot.Probes.OpenSSL.Received, snapshot.Probes.OpenSSL.Dropped, snapshot.Probes.OpenSSL.Invalid = tlsStats.Received.Load(), tlsStats.Dropped.Load(), tlsStats.Invalid.Load()
-		}
-		if streamStats != nil {
-			snapshot.Probes.SocketStream = jsonProbe{streamStatus, streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load()}
-		}
-		if nat != nil {
-			snapshot.Probes.NAT = natTotals(natByNS, natStatus)
+		snapshot := jsonSnapshot{
+			Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Drops: dropsJSON(dropTotals),
+			Probes: probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
 		}
 		scope := newProcessScope(processes, filter)
 		// A service's connections span every interface, like the host view.

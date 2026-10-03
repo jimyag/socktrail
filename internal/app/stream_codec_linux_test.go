@@ -203,7 +203,7 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, row := range rows {
-			if err := sink.write(row); err != nil {
+			if err := sink.flow(row); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 		}
@@ -226,7 +226,7 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, row := range rows {
-			if err := sink.write(row); err != nil {
+			if err := sink.flow(row); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 		}

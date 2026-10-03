@@ -4,9 +4,57 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+type streamFrame struct {
+	Kind  string         `json:"kind"`
+	Hello *streamHello   `json:"hello,omitempty"`
+	Flow  *jsonFlow      `json:"flow,omitempty"`
+	Stats *streamSummary `json:"stats,omitempty"`
+}
+
+// Frame kinds on the socket stream. Standard output stays one bare row per
+// change; only the subscription protocol needs to tell frames apart.
+const (
+	streamKindHello = "hello"
+	streamKindFlow  = "flow"
+	streamKindStats = "stats"
+)
+
+// streamHello is the first frame of every connection.
+type streamHello struct {
+	Version    int        `json:"version"`
+	Mode       string     `json:"mode"`
+	Interfaces []string   `json:"interfaces"`
+	Filter     string     `json:"filter,omitempty"`
+	Probes     jsonProbes `json:"probes"`
+	Started    time.Time  `json:"started"`
+}
+
+// streamSummary is the periodic summary. It is what lets a subscriber total
+// per-process traffic without undercounting: process_io is the whole pidIO
+// table, while the other fields name the bytes that never reached a flow.
+type streamSummary struct {
+	At               time.Time       `json:"at"`
+	IPPackets        uint64          `json:"ip_packets"`
+	IPBytes          uint64          `json:"ip_bytes"`
+	ProcessIO        []jsonProcessIO `json:"process_io"`
+	IOUnmatchedBytes uint64          `json:"io_unmatched_bytes"`
+	IOUnindexed      streamIOBytes   `json:"io_unindexed"`
+	ExpiredPIDIO     streamIOBytes   `json:"expired_pid_io"`
+	ExpiredPIDCount  uint64          `json:"expired_pid_count"`
+	Probes           jsonProbes      `json:"probes"`
+}
+
+// streamIOBytes is a byte count per direction. These are socket I/O bytes, not
+// IP packet bytes, and the two are never added together.
+type streamIOBytes struct {
+	RXBytes uint64 `json:"rx_bytes"`
+	TXBytes uint64 `json:"tx_bytes"`
+}
 
 // streamingOutput reports whether --output writes one row per change instead
 // of the interactive screen or a one-shot snapshot.

@@ -81,32 +81,35 @@ hub.broadcast(frame)
 
 ## 帧协议
 
-连接建立后是连续的 MessagePack 对象，无额外长度前缀（MessagePack 自带长度信息）。每个对象是一个带 `kind` 的帧：
+`--socket` 模式下，连接建立后是连续的 MessagePack 对象，无额外长度前缀（MessagePack 自带长度信息）。每个对象是一个带 `kind` 的帧：
 
 ```go
 type streamFrame struct {
-    Kind  string       `json:"kind"`            // hello, snapshot, flow or stats
-    Hello *streamHello `json:"hello,omitempty"`
-    Flow  *jsonFlow    `json:"flow,omitempty"`
-    Stats *streamStats `json:"stats,omitempty"`
+    Kind  string         `json:"kind"`            // hello, flow or stats
+    Hello *streamHello   `json:"hello,omitempty"`
+    Flow  *jsonFlow      `json:"flow,omitempty"`
+    Stats *streamSummary `json:"stats,omitempty"`
 }
 ```
 
-用统一 envelope 而不是裸 `jsonFlow`，是因为流里不止连接变化一种对象：订阅者要按进程统计流量，就必须拿到周期性汇总帧（见下）。用 `kind` 判别比"尝试解码再看字段是否存在"更直接。`jsonFlow` 本身的字段和 JSON 快照的 `flows[]` 完全一致，只是外面包了一层 `flow`。
+用统一 envelope 而不是裸 `jsonFlow`，是因为订阅流里不止连接变化一种对象：订阅者要按进程统计流量，就必须拿到周期汇总帧（见下）。用 `kind` 判别比"尝试解码再看字段是否存在"更直接。`jsonFlow` 本身的字段和 JSON 快照的 `flows[]` 完全一致，只是外面包了一层 `flow`。
 
-NDJSON 保持裸 `jsonFlow` 不变，现有 `jq` 用法和消费方不受影响。代价是 NDJSON 流拿不到 `stats` 帧；按进程统计流量这一场景走 MessagePack。这是有意的：NDJSON 是已发布的行为，MessagePack 是新增特性，没有兼容负担。
+**envelope 跟传输绑定，不跟编码绑定**：带 `--socket` 就是订阅协议，用 envelope；不带就是行流，每行一个裸 `jsonFlow`（ndjson 和 msgpack 都一样）。标准输出的格式一个字没改，所以现有 `jq` 用法和 NDJSON 消费方不受影响。代价是不带 `--socket` 的流拿不到 `stats` 帧，也就无法按进程统计流量；订阅协议从 `--socket` 开始。
 
 ### 帧序列
 
 ```text
 连接建立
-  → hello      版本、采集范围、探针状态
-  → snapshot   当前所有进行中连接，每条 changes: ["snapshot"]
-  → flow       增量变化，changes 为 new/name/state/process/drops/end/refresh
-  → stats      周期性汇总，每 --refresh（默认 60 秒）
+  → hello       版本、采集范围、探针状态
+  → flow 帧们    当前所有进行中连接，每条 changes: ["snapshot"]
+  → stats        一份汇总，让订阅者立刻有 process_io
+  → flow 帧      之后是增量变化，changes 为 new/name/state/process/drops/end/refresh
+  → stats        每 --refresh（默认 60 秒）重复一次
 ```
 
-新客户端注册的顺序保证：客户端连上后由主循环在下一个 tick 处理，先发 hello 和当时的全量快照，再发该 tick 及之后的增量，不存在"快照与增量之间的变化丢失"。
+快照没有单独的 `kind`：它就是一串 `flow` 帧，用 `changes: ["snapshot"]` 标出来。这样只解 `flow` 的消费方不用认识第三种帧类型就能处理历史。
+
+顺序保证：客户端连上后由主循环在下一个 tick 处理，先发 hello 和当时全量快照，再发该 tick 及之后的增量，不存在"快照与增量之间的变化丢失"。
 
 ```go
 // 每个连接的第 1 帧。
@@ -137,22 +140,23 @@ pidIO（进程全量 socket I/O，不受接口和 --port 限制）
 另有：进程 5 分钟无 I/O 后明细回收，累计字节保留在 expiredPIDIO
 ```
 
-所以 `Σ(所有流的 io[]) ≤ pidIO 总量`，差额就是 `ioUnmatched`。这些差额值目前只在文本报告里打印（`printPIDIO` 的 `expired PID detail` 行），JSON 快照的 `processes[]` 和流里都没有。按[数据口径](../user/measurement.md)"缺口必须可见"的约定，订阅者能拿到它，否则自己算出的进程流量会系统性少算而毫不知情。
+所以 `Σ(所有流的 io[]) ≤ pidIO 总量`，差额就是 `ioUnmatched`。这些差额值原本只在文本报告里打印（`printPIDIO` 的 `expired PID detail` 行），JSON 快照的 `processes[]` 里没有，流里的 `flow` 帧也没有。按[数据口径](../user/measurement.md)"缺口必须可见"的约定，订阅者能拿到它，否则自己算出的进程流量会系统性少算而毫不知情。
 
 ```go
-// 周期性汇总帧。
-type streamStats struct {
-    At              time.Time        `json:"at"`
-    IPPackets       uint64           `json:"ip_packets"`
-    IPBytes         uint64           `json:"ip_bytes"`
-    ProcessIO       []jsonProcessIO  `json:"process_io"`      // 全部进程，不受 --limit
-    IOUnmatched     streamIOBytes    `json:"io_unmatched"`    // 没能关联到所选流的 socket I/O
-    IOUnindexed     streamIOBytes    `json:"io_unindexed"`
-    ExpiredPIDIO    streamIOBytes    `json:"expired_pid_io"`
-    ExpiredPIDCount uint64           `json:"expired_pid_count"`
-    Probes          jsonProbes       `json:"probes"`
+// 周期汇总帧。
+type streamSummary struct {
+    At               time.Time       `json:"at"`
+    IPPackets        uint64          `json:"ip_packets"`
+    IPBytes          uint64          `json:"ip_bytes"`
+    ProcessIO        []jsonProcessIO `json:"process_io"`         // 全部进程，不受 --limit
+    IOUnmatchedBytes uint64          `json:"io_unmatched_bytes"` // 没能关联到所选流的 socket I/O
+    IOUnindexed      streamIOBytes   `json:"io_unindexed"`
+    ExpiredPIDIO     streamIOBytes   `json:"expired_pid_io"`
+    ExpiredPIDCount  uint64          `json:"expired_pid_count"`
+    Probes           jsonProbes      `json:"probes"`
 }
 
+// 分方向的字节数。这些是 socket I/O 字节，与 IP 报文字节是两种口径。
 type streamIOBytes struct {
     RXBytes uint64 `json:"rx_bytes"`
     TXBytes uint64 `json:"tx_bytes"`
@@ -161,11 +165,13 @@ type streamIOBytes struct {
 
 `process_io` 是 `processesJSON` 去掉 `--limit` 的结果，字段与 JSON 快照的 `processes[]` 相同，元素内部的 `rx_bytes`/`tx_bytes` 就是 `pidIO` 的全量值。有了它，订阅者不必自己维护全量状态也能拿到权威的按进程流量。
 
-`stats` 与 `flow` 的口径差异必须保留：`streamIOBytes` 和 `process_io` 是 socket I/O 字节，`ip_bytes`、`ip_packets` 是采集点的 IP 字节，两者不相加。这与[数据口径](../user/measurement.md)的约定一致，`io_unmatched` 等字段只用于说明进程统计的缺口，不参与任何总量。
+`stats` 与 `flow` 的口径差异必须保留：`streamIOBytes` 和 `process_io` 是 socket I/O 字节，`ip_bytes`、`ip_packets` 是采集点的 IP 字节，两者不相加。这与[数据口径](../user/measurement.md)的约定一致，`io_unmatched_bytes` 等字段只用于说明进程统计的缺口，不参与任何总量。
+
+`probes` 来自与 JSON 快照同一个 `probesJSON`，所以订阅者对数据可信度的判断和 `--output json` 一致。
 
 ### 消费方如何完成两件事
 
-**按进程统计流量**：取最近一个 `stats` 帧的 `process_io`，按 `(pid, start_ns)` 聚合 —— 进程身份是 PID 加启动时间，PID 会复用，只用 `pid` 做键会把新旧进程混在一起。输出时要带上 `io_unmatched`、`io_unindexed`、`expired_pid_io` 说明缺口。不能用 `flow` 帧里的 `io[]` 聚合成"进程总流量"，那会少算。
+**按进程统计流量**：取最近一个 `stats` 帧的 `process_io`，按 `(pid, start_ns)` 聚合 —— 进程身份是 PID 加启动时间，PID 会复用，只用 `pid` 做键会把新旧进程混在一起。输出时要带上 `io_unmatched_bytes`、`io_unindexed`、`expired_pid_io` 说明缺口。不能用 `flow` 帧里的 `io[]` 聚合成"进程总流量"，那会少算。
 
 **按进程查连接**：遍历 `flow` 帧时按 `client`、`server`、`io[]` 里的 `(pid, start_ns)` 建反向索引。注意三点：
 
@@ -236,8 +242,8 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 |---|---|
 | `internal/app/stream_socket_linux.go` | **已完成**。`streamHub`、`streamClient`、监听与 stale 文件处理、`adopt`/`broadcast`/`close`、`streamSink` |
 | `internal/app/stream_codec_linux.go` | **已完成**。`streamCodec`（json 或 msgpack 编码一行，返回 `[]byte`）、`streamingOutput` |
-| `internal/app/app_linux.go` | flag 定义与校验；流式输出改走 `streamSink`；TUI 开启条件排除 `msgpack`；新客户端全量快照和周期性 `stats` 帧（第 3 阶段） |
-| `internal/app/report_json_linux.go` | 5 个字段补 `msgpack:"...,omitempty"` tag；`processesJSON` 抽出不限 `--limit` 的变体供 `stats` 帧使用 |
+| `internal/app/app_linux.go` | flag 定义与校验；流式输出改走 `streamSink`；TUI 开启条件排除 `msgpack`；新客户端握手与全量快照、周期性 `stats` 帧 |
+| `internal/app/report_json_linux.go` | 5 个字段补 `msgpack:"...,omitempty"` tag；`processesJSON` 抽出不限 `--limit` 的变体；抽出 `probesJSON` 供快照和 hello 共用 |
 | `go.mod` | 加 `github.com/vmihailenco/msgpack/v5` |
 | `internal/app/stream_codec_linux_test.go` | **新增**。编码一致性与帧定界测试 |
 | `internal/app/completion.go`、`internal/app/manual.go` | `--output` 的补全值和手册描述加上 `msgpack` |
@@ -285,16 +291,18 @@ func (c *streamCodec) encode(v any) ([]byte, error) {
 8. `TestListenStreamSocketRefusesLiveSocket`：已有实例监听时，第二个断言报错。
 9. `TestStreamHubDeliversFramesToClients`：真 socket 连接、`adopt`、广播，客户端读回帧；同时断言 socket 权限为 0600，并在广播后改写原 buffer，验证客户端已收到的内容不受影响。
 10. `TestStreamHubDropsSlowClient`：客户端接一个没人读的管道，灌入超过缓冲的帧数，断言广播不阻塞且该客户端被注销。
-11. `TestStreamSinkSkipsEncodingWithoutClients`：用一个无法编码的值证明无订阅者时编解码器根本没被调用。
+11. `TestStreamSinkSkipsEncodingWithoutClients`：sink 带一个 nil 编解码器，无客户端时写入不 panic，证明编解码器根本没被碰到。
 
-**待实现**（第 3 阶段）
+**订阅层**（`internal/app/stream_summary_linux_test.go`）
 
-12. `TestStreamStatsCoversProcessIO`：构造一个进程既有匹配到流的 I/O、又有端口不匹配的 I/O，断言 `stats.ProcessIO` 给出全量、`IOUnmatched` 给出差额，且两者相加等于该进程的 `pidIO` 总量。这条测试锁住 stats 帧存在的理由，防止将来有人把 `process_io` 改成从 `io[]` 聚合。
+12. `TestStreamSummaryCoversBytesMissingFromFlows`：一个进程既有匹配到流的 I/O（100 B）、又有没有对应流的 I/O（50 B）。断言流的 `io[]` 只有 100 B，而 `process_io` 是 150 B、`ioUnmatchedBytes` 是 50 B。这条测试锁住 stats 帧存在的理由：从 `io[]` 聚合进程流量会系统性少算。
+13. `TestStreamSummaryListsEveryProcess`：`processesJSON` 按 `--limit` 截断，`allProcessesJSON` 不截断，共 3 个进程时后者必须给出 3 行。
+14. `TestStreamGreetSendsHandshakeBeforeIncrements`：真 socket 上按顺序解出 hello、flow、stats 三个帧，断言每个 `kind` 正确、`flow` 帧确实包着 `jsonFlow`。
 
 **root 集成测试**（与现有 root 测试同风格）
 
-13. 起 socktrail 监听临时 socket，用 Go 客户端连接，校验第一个对象是 hello、随后是全量快照、断开再连能拿到新的快照。
-14. `--output msgpack --duration 30s` 输出到管道，用 msgpack 流式解码器逐条解码，断言无残帧。
+15. 起 socktrail 监听临时 socket，用 Go 客户端连接，校验第一个对象是 hello、随后是全量快照、断开再连能拿到新的快照。
+16. `--output msgpack --duration 30s` 输出到管道，用 msgpack 流式解码器逐条解码，断言无残帧。
 
 **不需要权限就能核对的接线**
 
@@ -314,14 +322,14 @@ socktrail --completion bash | grep socket         # 补全值里有 socket
 每阶段独立可验证，可以单独提交：
 
 1. **编码层（已完成）**：`--output msgpack` 写标准输出，含上面第 1–5 条测试。此时已可用于管道消费，不涉及并发改动。
-2. **传输层（已完成）**：`--socket` + `streamHub` 广播，含第 6–11 条测试。这一步流里只有连接变化帧，尚未加 `kind` 外壳；envelope 随第 3 阶段的 hello 和 stats 一起引入，因为到那时才需要判别帧类型。
-3. **订阅语义**：新客户端全量快照和周期性 `stats` 帧，含第 12–14 条测试。
+2. **传输层（已完成）**：`--socket` + `streamHub` 广播，含第 6–11 条测试。这一步流里只有连接变化帧，没有 `kind` 外壳。
+3. **订阅语义（已完成）**：envelope、hello、新客户端全量快照、周期性 `stats` 帧，含第 12–14 条测试。
 4. **文档**：`docs/user/usage.md` 增加一节，含生成消费方代码的字段说明；`README.zh-CN.md` 与 `README.md` 的特性列表各加一条。
 
 ## 明确不做的取舍
 
 - **不做逐帧 gap 通知**。慢客户端的处理是断开，不是丢弃后补一个"缺了 N 帧"的通知，断开加重连已经保证不静默丢数据。进程流量的缺口由周期性 `stats` 帧暴露，那是口径缺口，与单个客户端丢帧是两回事。
-- **不给 NDJSON 加 `stats` 帧**。它已发布，加 envelope 会破坏现有消费方；需要按进程统计就用 MessagePack。
+- **不给标准输出加 envelope**。它已发布，改行结构会破坏现有 `jq` 用法和消费方；订阅协议从 `--socket` 开始，与编码无关。
 - **不做 per-client 过滤**。要在同一台机器上按不同条件订阅，起两个进程。
 - **不做 HTTP/WebSocket 传输**。UDS 覆盖本机消费场景，跨机需求不在本期。
 - **不改 `--log-file` 的编码**。它是给人和 `jq` 看的变化日志，保持 NDJSON。
