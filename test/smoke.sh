@@ -43,9 +43,11 @@ jq -e 'any(.reports[0].flows[]; .evidence.sni == "smoke.test" and (.openssl_pids
 
 # The socket subscription: a subscriber must receive hello, the current view and
 # a summary. Requests keep running so the snapshot is not empty.
-"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --duration 15s &
+"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --socket-mode 0640 --duration 15s &
 stream=$!
 sleep 6 # The probes need the same warm-up before the subscriber connects.
+mode=$(stat -c %a "$work/stream.sock")
+[ "$mode" = "640" ] || { echo "socket mode is $mode, want 640" >&2; exit 1; }
 for _ in $(seq 20); do
 	curl -fsS -o /dev/null -H 'Host: smoke.test' http://127.0.0.1:18080/ || true
 	sleep 0.5
