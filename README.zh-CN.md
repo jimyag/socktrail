@@ -48,6 +48,7 @@ socktrail 是用于观察实时网络流量的 Linux 终端程序。它从所选
 - 用 `~/.config/socktrail/config` 保存默认参数，用 `--completion` 生成 bash、zsh 或 fish 补全脚本，用 `socktrail --man | man -l -` 阅读完整手册。`socktrail -h` 列出全部过滤键，界面里按 `/` 过滤时 `Tab` 可补全键名和取值。
 - 输出限时文本快照或 JSON 文档。
 - 按连接变化实时输出 NDJSON，并在 `6 LOG` 页查看最近的变化。
+- 把流发到 Unix domain socket，供本机进程按 MessagePack 帧订阅：握手、全量快照，以及周期性的按进程 socket I/O 汇总。
 - 在 `7 PORTS` 页查看 TCP/UDP 监听端口、所属进程、accept 队列和失败尝试。
 - 按进程、目标和内核错误排查出站 TCP 建连失败，并查看成功或失败的建连时延。
 - 从本地文件显示 Docker 容器名、Compose 服务名，以及有 kubelet 日志链接时的 Kubernetes Pod 名；读不到元数据时回退到短容器 ID。

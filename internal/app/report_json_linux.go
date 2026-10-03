@@ -8,6 +8,9 @@ import (
 
 	"github.com/jimyag/socktrail/internal/domain"
 	"github.com/jimyag/socktrail/internal/geoip"
+	"github.com/jimyag/socktrail/internal/probe"
+	"github.com/jimyag/socktrail/internal/sockstream"
+	"github.com/jimyag/socktrail/internal/tlsprobe"
 )
 
 // jsonSnapshot is the --output json document. docs/user/usage.md lists its
@@ -155,7 +158,7 @@ type jsonReport struct {
 }
 
 type jsonFlow struct {
-	ID               uint64            `json:"id,omitzero"`
+	ID               uint64            `json:"id,omitzero" msgpack:"id,omitempty"`
 	End              string            `json:"end,omitempty"`
 	Changes          []string          `json:"changes,omitempty"`
 	Protocol         string            `json:"protocol"`
@@ -175,7 +178,7 @@ type jsonFlow struct {
 	LastSeen         time.Time         `json:"last_seen"`
 	SYNRTTMicros     int64             `json:"syn_rtt_us,omitempty"`
 	ConnectResult    string            `json:"connect_result,omitempty"`
-	ConnectLatencyUS uint32            `json:"connect_latency_us,omitzero"`
+	ConnectLatencyUS uint32            `json:"connect_latency_us,omitzero" msgpack:"connect_latency_us,omitempty"`
 	RTTMicros        int64             `json:"rtt_us,omitempty"`
 	RTTSource        string            `json:"rtt_source,omitempty"`
 	Retransmits      uint64            `json:"retransmits"`
@@ -236,7 +239,7 @@ type jsonDNS struct {
 	Name      string         `json:"name,omitempty"`
 	Type      string         `json:"type,omitempty"`
 	RCode     string         `json:"rcode,omitempty"`
-	RTTMicros int64          `json:"rtt_us,omitzero"`
+	RTTMicros int64          `json:"rtt_us,omitzero" msgpack:"rtt_us,omitempty"`
 	Recent    []jsonDNSQuery `json:"recent,omitempty"`
 }
 
@@ -245,9 +248,9 @@ type jsonDNSQuery struct {
 	Type      string    `json:"type"`
 	RCode     string    `json:"rcode,omitempty"`
 	Addresses []string  `json:"addresses,omitempty"`
-	RTTMicros int64     `json:"rtt_us,omitzero"`
+	RTTMicros int64     `json:"rtt_us,omitzero" msgpack:"rtt_us,omitempty"`
 	At        time.Time `json:"at"`
-	Answered  bool      `json:"answered,omitzero"`
+	Answered  bool      `json:"answered,omitzero" msgpack:"answered,omitempty"`
 }
 
 type jsonDomain struct {
@@ -416,13 +419,48 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 
 // processesJSON lists PID socket I/O like printPIDIO.
 func processesJSON(c *collector, limit int, processes *processTable, scope *processScope) []jsonProcessIO {
+	return processRowsJSON(c, limit, processes, scope)
+}
+
+// allProcessesJSON lists every process with socket I/O. The stream's stats frame
+// needs the whole set: a subscriber that only received the --limit rows could
+// not total per-process traffic.
+func allProcessesJSON(c *collector, processes *processTable, scope *processScope) []jsonProcessIO {
+	return processRowsJSON(c, 0, processes, scope)
+}
+
+// processRowsJSON lists PID socket I/O like printPIDIO; limit <= 0 lists all.
+func processRowsJSON(c *collector, limit int, processes *processTable, scope *processScope) []jsonProcessIO {
 	rows := []jsonProcessIO{}
 	for _, id := range pidIOOrder(c.pidIO) {
-		if v := c.pidIO[id]; scope.process(id, v.Name) && len(rows) < limit {
+		if v := c.pidIO[id]; scope.process(id, v.Name) && (limit <= 0 || len(rows) < limit) {
 			rows = append(rows, jsonProcessIO{*processJSON(participant{PID: id.PID, StartNS: id.StartNS, Name: v.Name}, processes), v.RX, v.TX})
 		}
 	}
 	return rows
+}
+
+// probesJSON reports which probes loaded and what they lost. The JSON snapshot
+// and the stream handshake share it, so a subscriber sees the same reliability
+// picture as a --output json run.
+func probesJSON(probeStats *probe.Statistics, tlsStatus string, tlsStats *tlsprobe.Statistics, streamStatus string, streamStats *sockstream.Statistics, natStatus string, natByNS map[uint64]*natTable, nat *natTable) jsonProbes {
+	probes := jsonProbes{
+		PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
+		ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
+		OpenSSL:       jsonProbe{Status: tlsStatus},
+		SocketStream:  jsonProbe{Status: streamStatus},
+		NAT:           jsonNAT{Status: natStatus},
+	}
+	if tlsStats != nil {
+		probes.OpenSSL.Received, probes.OpenSSL.Dropped, probes.OpenSSL.Invalid = tlsStats.Received.Load(), tlsStats.Dropped.Load(), tlsStats.Invalid.Load()
+	}
+	if streamStats != nil {
+		probes.SocketStream = jsonProbe{streamStatus, streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load()}
+	}
+	if nat != nil {
+		probes.NAT = natTotals(natByNS, natStatus)
+	}
+	return probes
 }
 
 // servicesJSON lists socket I/O by service like printServices, all of them.

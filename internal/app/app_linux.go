@@ -1166,9 +1166,11 @@ func Run() error {
 	geoDir := flag.String("geoip-dir", "", "directory containing optional DB-IP Lite MMDB files (default: XDG data directory)")
 	dohList := flag.String("doh-list", "", "additional comma-separated DoH service names for encrypted DNS labeling")
 	downloadGeo := flag.Bool("download-geoip-db", false, "download the current DB-IP Lite country and ASN databases, then exit")
-	output := flag.String("output", "text", "output format: text or json snapshots with --duration, or live ndjson")
-	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in ndjson output")
+	output := flag.String("output", "text", "output format: text or json snapshots with --duration, or a live stream: ndjson or msgpack")
+	refresh := flag.Duration("refresh", time.Minute, "repeat unchanged active flows at this interval in streamed output")
 	logFile := flag.String("log-file", "", "write connection changes to a 0600 NDJSON file while the interactive screen runs")
+	socketPath := flag.String("socket", "", "serve the stream on this Unix domain socket instead of standard output; needs --output ndjson or msgpack")
+	socketMode := flag.String("socket-mode", "0600", "permission bits for the socket file, octal; a consumer running as another user needs 0660 and a shared group")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
@@ -1219,21 +1221,28 @@ func Run() error {
 	geo := geoip.Open(*geoDir)
 	defer func() { geo.Close() }()
 	autoInterfaces := len(interfaceNames) == 0
-	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" && *output != "ndjson" || *recordBefore < 0 || *refresh <= 0 {
-		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json|ndjson] [--refresh 60s] [--record-before 10s]")
+	if *port > 65535 || *limit < 1 || *output != "text" && *output != "json" && !streamingOutput(*output) || *recordBefore < 0 || *refresh <= 0 {
+		return fmt.Errorf("usage: socktrail [--interface <name>] [--duration 15s] [--port 443] [--limit 30] [--output text|json|ndjson|msgpack] [--refresh 60s] [--record-before 10s]")
 	}
 	if *output == "json" && *duration == 0 && *readFile == "" {
 		return fmt.Errorf("--output json needs --duration: it formats the snapshot")
 	}
+	if *socketPath != "" && !streamingOutput(*output) {
+		return fmt.Errorf("--socket needs --output ndjson or msgpack: it carries the live stream")
+	}
+	socketFileMode, err := parseSocketMode(*socketMode)
+	if err != nil {
+		return err
+	}
 	if *logFile != "" && (*duration != 0 || *output != "text") {
 		return fmt.Errorf("--log-file requires the interactive screen")
 	}
-	if *recordBefore > 0 && (*duration > 0 || *output == "ndjson") {
+	if *recordBefore > 0 && (*duration > 0 || streamingOutput(*output)) {
 		return fmt.Errorf("--record-before applies to recordings made with c on the interactive screen, not to --duration snapshots")
 	}
 	if *readFile != "" {
-		if *duration != 0 || *output == "ndjson" || len(netnsSpecs) > 0 || len(interfaceNames) > 0 || *drops || *recordBefore != 0 {
-			return fmt.Errorf("--read cannot combine with --duration, --output ndjson, --netns, --interface, --drops or --record-before")
+		if *duration != 0 || streamingOutput(*output) || len(netnsSpecs) > 0 || len(interfaceNames) > 0 || *drops || *recordBefore != 0 {
+			return fmt.Errorf("--read cannot combine with --duration, --output ndjson or msgpack, --netns, --interface, --drops or --record-before")
 		}
 		return replayPCAPNG(*readFile, *output, *limit, uint16(*port), filter, compiledFilter, geo)
 	}
@@ -1260,7 +1269,7 @@ func Run() error {
 		return err
 	}
 	captureInterfaces = interfaceNames
-	if *duration == 0 && *output != "ndjson" && *debugPID {
+	if *duration == 0 && !streamingOutput(*output) && *debugPID {
 		return fmt.Errorf("--debug-pid-events requires --duration to keep the interactive screen readable")
 	}
 	netNSInode := namespaces[0].inode
@@ -1451,7 +1460,7 @@ func Run() error {
 	var hostState hostViewState
 	hostState.update(host, members)
 	var ui *terminalUI
-	if *duration == 0 && *output != "ndjson" {
+	if *duration == 0 && !streamingOutput(*output) {
 		ui, err = openUI(interfaceNames, netNSInode, collectors)
 		if err != nil {
 			return err
@@ -1497,19 +1506,37 @@ func Run() error {
 		return collectors[ui.interfaceName]
 	}
 	var summary sessionSummary
-	var streamEncoder *json.Encoder
+	var stream *streamSink
+	var streamStart time.Time
+	var lastStats time.Time
 	var lastOutput map[uint64]time.Time
-	if *output == "ndjson" {
-		streamEncoder = json.NewEncoder(os.Stdout)
+	if streamingOutput(*output) {
+		streamStart, lastStats = time.Now(), time.Now()
+		if *socketPath == "" {
+			stream, err = newStreamSink(*output, os.Stdout, nil)
+		} else {
+			hub, hubErr := listenStreamSocket(*socketPath, socketFileMode)
+			if hubErr != nil {
+				return hubErr
+			}
+			defer hub.close()
+			stream, err = newStreamSink(*output, nil, hub)
+		}
+		if err != nil {
+			return err
+		}
 	} else if *logFile != "" {
 		writer, err := openChangeLog(*logFile)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = writer.Close() }()
-		streamEncoder = json.NewEncoder(writer)
+		stream, err = newStreamSink("ndjson", writer, nil)
+		if err != nil {
+			return err
+		}
 	}
-	if streamEncoder != nil {
+	if stream != nil {
 		lastOutput = make(map[uint64]time.Time)
 	}
 	if ui != nil {
@@ -1611,7 +1638,7 @@ func Run() error {
 					inv.refresh(collectorsByNS[id], time.Now())
 				}
 			}
-			if ui != nil && !ui.closed || streamEncoder != nil {
+			if ui != nil && !ui.closed || stream != nil {
 				if ui != nil && !ui.closed {
 					ui.sampleAll(collectors, time.Now())
 				}
@@ -1620,16 +1647,65 @@ func Run() error {
 				host, sources, members = hostCollector(interfaceNames, collectors)
 				correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 				replacements := hostState.update(host, members)
-				if streamEncoder != nil {
+				if stream != nil {
+					stream.adoptClients()
 					scope := newProcessScope(processes, filter)
+					buildStats := func(at time.Time) streamSummary {
+						return streamSummary{
+							At:               at,
+							IPPackets:        host.packets,
+							IPBytes:          host.bytes,
+							ProcessIO:        allProcessesJSON(host, processes, scope),
+							IOUnmatchedBytes: host.ioUnmatched,
+							IOUnindexed:      streamIOBytes{RXBytes: host.ioUnindexed.RX, TXBytes: host.ioUnindexed.TX},
+							ExpiredPIDIO:     streamIOBytes{RXBytes: host.expiredPIDIO.RX, TXBytes: host.expiredPIDIO.TX},
+							ExpiredPIDCount:  host.expiredPIDCount,
+							Probes:           probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
+						}
+					}
+					// A subscriber receives the handshake, the current view and the
+					// first summary before any increment, so it never has to guess
+					// the state it joined in.
+					if err := stream.greet(func(send func(any) error) error {
+						hello := streamHello{
+							Version: 1, Mode: "live", Interfaces: interfaceNames,
+							Filter:  strings.TrimSpace(filter.String() + " " + *filterExpression),
+							Probes:  probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
+							Started: streamStart,
+						}
+						if err := send(streamFrame{Kind: streamKindHello, Hello: &hello}); err != nil {
+							return err
+						}
+						for id, f := range hostState.displayed {
+							if !scope.flow(f, host) {
+								continue
+							}
+							row := jsonFlowFor(f, id, processes, geo)
+							row.Changes = []string{"snapshot"}
+							if err := send(row); err != nil {
+								return err
+							}
+						}
+						stats := buildStats(time.Now())
+						return send(streamFrame{Kind: streamKindStats, Stats: &stats})
+					}); err != nil {
+						return fmt.Errorf("write %s handshake: %w", stream.format, err)
+					}
+					if now := time.Now(); now.Sub(lastStats) >= *refresh {
+						stats := buildStats(now)
+						if err := stream.writeFrame(streamFrame{Kind: streamKindStats, Stats: &stats}); err != nil {
+							return fmt.Errorf("write %s stats: %w", stream.format, err)
+						}
+						lastStats = now
+					}
 					for _, change := range hostState.lastChanges {
 						if !scope.flow(change.Flow, host) || !matchesFilter(compiledFilter, change.Flow, host, processes, geo, "") {
 							continue
 						}
 						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
 						row.Changes = change.Changes
-						if err := streamEncoder.Encode(row); err != nil {
-							return fmt.Errorf("write ndjson: %w", err)
+						if err := stream.flow(row); err != nil {
+							return fmt.Errorf("write %s: %w", stream.format, err)
 						}
 						lastOutput[change.ID] = time.Now()
 					}
@@ -1639,8 +1715,8 @@ func Run() error {
 						}
 						row := jsonFlowFor(f, id, processes, geo)
 						row.Changes = []string{"refresh"}
-						if err := streamEncoder.Encode(row); err != nil {
-							return fmt.Errorf("write ndjson refresh: %w", err)
+						if err := stream.flow(row); err != nil {
+							return fmt.Errorf("write %s refresh: %w", stream.format, err)
 						}
 						lastOutput[id] = time.Now()
 					}
@@ -1876,21 +1952,9 @@ func Run() error {
 			}
 		}
 	} else if *output == "json" {
-		snapshot := jsonSnapshot{Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Drops: dropsJSON(dropTotals), Probes: jsonProbes{
-			PID:           jsonProbe{Received: probeStats.Received.Load(), KernelLost: probeStats.KernelLost.Load(), Dropped: probeStats.Dropped.Load(), Invalid: probeStats.Invalid.Load()},
-			ConnectResult: jsonProbe{Status: probeStats.ConnectStatus, Received: probeStats.ConnectEvents.Load()},
-			OpenSSL:       jsonProbe{Status: tlsStatus},
-			SocketStream:  jsonProbe{Status: streamStatus},
-			NAT:           jsonNAT{Status: natStatus},
-		}}
-		if tlsStats != nil {
-			snapshot.Probes.OpenSSL.Received, snapshot.Probes.OpenSSL.Dropped, snapshot.Probes.OpenSSL.Invalid = tlsStats.Received.Load(), tlsStats.Dropped.Load(), tlsStats.Invalid.Load()
-		}
-		if streamStats != nil {
-			snapshot.Probes.SocketStream = jsonProbe{streamStatus, streamStats.Received.Load(), streamStats.KernelLost.Load(), streamStats.Dropped.Load(), streamStats.Invalid.Load()}
-		}
-		if nat != nil {
-			snapshot.Probes.NAT = natTotals(natByNS, natStatus)
+		snapshot := jsonSnapshot{
+			Version: 1, Netns: netNSInode, Interfaces: interfaceNames, GeoIP: geo.Status(), Drops: dropsJSON(dropTotals),
+			Probes: probesJSON(probeStats, tlsStatus, tlsStats, streamStatus, streamStats, natStatus, natByNS, nat),
 		}
 		scope := newProcessScope(processes, filter)
 		// A service's connections span every interface, like the host view.
@@ -1952,7 +2016,7 @@ func Run() error {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(snapshot)
-	} else if *output == "ndjson" {
+	} else if streamingOutput(*output) {
 		return nil
 	} else {
 		scope := newProcessScope(processes, filter)
