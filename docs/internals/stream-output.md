@@ -247,7 +247,9 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 | `internal/app/report_json_linux.go` | 5 个字段补 `msgpack:"...,omitempty"` tag；`processesJSON` 抽出不限 `--limit` 的变体；抽出 `probesJSON` 供快照和 hello 共用 |
 | `go.mod` | 加 `github.com/vmihailenco/msgpack/v5` |
 | `internal/app/stream_codec_linux_test.go` | **新增**。编码一致性与帧定界测试 |
-| `internal/app/completion.go`、`internal/app/manual.go` | `--output` 的补全值和手册描述加上 `msgpack` |
+| `internal/app/completion.go`、`internal/app/manual.go` | `--output` 的补全值和手册描述加上 `msgpack`，`--socket` 补全路径 |
+| `test/streamcheck/main.go` | **新增**。不依赖 socktrail 类型的帧解码器，供端到端检查用 |
+| `test/smoke.sh`、`.github/workflows/check.yaml` | root job 里并行验证标准输出裸行流和 socket 订阅协议 |
 
 第 1 阶段只动上面这些；`stream_socket_linux.go` 和 hub 属于第 2 阶段。
 
@@ -300,10 +302,12 @@ func (c *streamCodec) encode(v any) ([]byte, error) {
 13. `TestStreamSummaryListsEveryProcess`：`processesJSON` 按 `--limit` 截断，`allProcessesJSON` 不截断，共 3 个进程时后者必须给出 3 行。
 14. `TestStreamGreetSendsHandshakeBeforeIncrements`：真 socket 上按顺序解出 hello、flow、stats 三个帧，断言每个 `kind` 正确、`flow` 帧确实包着 `jsonFlow`。
 
-**root 集成测试**（与现有 root 测试同风格）
+**端到端**（`test/smoke.sh`，CI 的 root job 以 root 调用；解码器是 `test/streamcheck`）
 
-15. 起 socktrail 监听临时 socket，用 Go 客户端连接，校验第一个对象是 hello、随后是全量快照、断开再连能拿到新的快照。
-16. `--output msgpack --duration 30s` 输出到管道，用 msgpack 流式解码器逐条解码，断言无残帧。
+15. `--output msgpack` 与 JSON 快照的采集并行跑一次，`streamcheck pipe` 逐条解码标准输出的行，断言每行有 `protocol`、`source`、`target`，且不带 `kind`（标准输出必须是裸行）。
+16. 另起一次采集开 `--socket`，`streamcheck socket` 连上去，断言第 1 帧是 hello、能读到一个 `changes: ["snapshot"]` 的行、以及一个带 `process_io` 的 `stats` 帧。
+
+`streamcheck` 用泛型 `map[string]any` 解码，不引用 socktrail 的类型，所以它同时演示了任意语言的消费方该怎么做。
 
 **不需要权限就能核对的接线**
 
@@ -317,7 +321,7 @@ socktrail --completion bash | grep msgpack        # 补全值里有 msgpack
 socktrail --completion bash | grep socket         # 补全值里有 socket
 ```
 
-`--output msgpack` 的端到端抓包要能加载 eBPF 探针的内核。第 1、2 阶段在开发机上核对到 flag 校验、编码层和 socket 层为止：该机内核 7.2 超出上游已验证的范围（到 7.0），`udpv6_recvmsg` 的探针加载被内核拒绝，采集起不来，与分析本次改动无关。抓包路径的端到端验证留给上面的 root 测试环境。
+`--output msgpack` 的端到端抓包要能加载 eBPF 探针的内核。开发机上只能核对到 flag 校验、编码层和 socket 层：该机内核 7.2 超出上游已验证的范围（到 7.0），`udpv6_recvmsg` 的探针加载被内核拒绝，采集起不来。这与本次改动无关。第 15、16 条因此在 CI 的 root job 里执行。`streamcheck` 的两个模式另外用假帧序列单独验证过：正确的序列通过，缺 `process_io` 的 `stats` 帧和带 envelope 的裸行都被拒绝。
 
 ## 分阶段实施
 
@@ -326,7 +330,8 @@ socktrail --completion bash | grep socket         # 补全值里有 socket
 1. **编码层（已完成）**：`--output msgpack` 写标准输出，含上面第 1–5 条测试。此时已可用于管道消费，不涉及并发改动。
 2. **传输层（已完成）**：`--socket` + `streamHub` 广播，含第 6–11 条测试。这一步流里只有连接变化帧，没有 `kind` 外壳。
 3. **订阅语义（已完成）**：envelope、hello、新客户端全量快照、周期性 `stats` 帧，含第 12–14 条测试。
-4. **文档**：`docs/user/usage.md` 增加一节，含生成消费方代码的字段说明；`README.zh-CN.md` 与 `README.md` 的特性列表各加一条。
+4. **文档（已完成）**：`docs/user/usage.md` 增加一节，`README.zh-CN.md` 与 `README.md` 的特性列表各加一条。
+5. **端到端（已完成）**：`test/streamcheck` 加 `test/smoke.sh` 与 CI root job，含第 15、16 条。
 
 ## 明确不做的取舍
 
