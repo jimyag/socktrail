@@ -279,7 +279,11 @@ func (s *streamSink) writeFrame(frame streamFrame) error {
 
 // greet sends the handshake to the clients that connected since the last tick.
 // fill runs once, not per client, so the snapshot is built once and shared.
+// Without a socket there is no handshake: standard output is a bare row stream.
 func (s *streamSink) greet(fill func(send func(any) error) error) error {
+	if s.hub == nil {
+		return nil
+	}
 	clients := s.hub.takePending()
 	if len(clients) == 0 {
 		return nil

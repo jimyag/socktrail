@@ -142,3 +142,21 @@ func TestStreamSinkSkipsEncodingWithoutClients(t *testing.T) {
 		t.Errorf("the sink encoded a summary with no subscribers: %v", err)
 	}
 }
+
+// Standard output has no handshake. The capture loop calls these on every sink,
+// so without a hub they must do nothing rather than dereference a nil hub.
+// The CI smoke test caught this as a panic at the first tick of a bare
+// `--output msgpack` run.
+func TestStreamSinkWithoutHubIsANoOp(t *testing.T) {
+	sink := &streamSink{format: "msgpack"}
+	sink.adoptClients()
+	if err := sink.greet(func(send func(any) error) error {
+		t.Error("the handshake ran without a hub")
+		return nil
+	}); err != nil {
+		t.Errorf("greet without a hub: %v", err)
+	}
+	if err := sink.writeFrame(streamFrame{Kind: streamKindStats}); err != nil {
+		t.Errorf("writeFrame without a hub: %v", err)
+	}
+}
