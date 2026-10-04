@@ -100,7 +100,7 @@
 - 验证手段：
   - 单元测试：伪造 `/proc` 用 `processes_linux_test.go` 里的 `fakeProc`。
   - 探针 root 测试：`sudo go test ./internal/probe`。
-  - 冒烟测试：`sudo test/smoke.sh <二进制>`。
+  - 冒烟测试：`sudo test/smoke.sh <socktrail> <streamcheck>`，后者由 `go build ./test/streamcheck` 构建。
   - lint：`golangci-lint run`。
   - 界面用 PTY 渲染检查。
 - 提交信息沿用 `type(scope): summary` 格式，并加 `-s` 签名。

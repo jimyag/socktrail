@@ -60,7 +60,8 @@ jobs:
       - name: Snapshot smoke test
         run: |
           go build -o "$RUNNER_TEMP/socktrail" .
-          sudo test/smoke.sh "$RUNNER_TEMP/socktrail"
+          go build -o "$RUNNER_TEMP/streamcheck" ./test/streamcheck
+          sudo test/smoke.sh "$RUNNER_TEMP/socktrail" "$RUNNER_TEMP/streamcheck"
 
   bpf:
     name: BPF objects match sources

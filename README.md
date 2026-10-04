@@ -49,6 +49,7 @@ Packets, processes, and domain evidence answer different questions. socktrail br
 - Keep default flags in `~/.config/socktrail/config`, generate bash, zsh, or fish completion with `--completion`, and read the full manual with `socktrail --man | man -l -`. `socktrail -h` lists every filter key, and `Tab` completes keys and values on the `/` filter prompt.
 - Print a timed snapshot as a text report or a JSON document.
 - Stream connection changes as NDJSON and inspect recent changes in the `6 LOG` view.
+- Serve that stream on a Unix domain socket for local subscribers, as MessagePack frames: a handshake, a full snapshot, then changes plus a periodic per-process socket I/O summary.
 - Inspect listening TCP/UDP ports, owning processes, accept queues, and failed attempts in `7 PORTS`.
 - Diagnose failed outbound TCP connects by process, target, and kernel error; inspect connect latency for successful and failed attempts.
 - Optionally enrich a selected connection with offline DB-IP Lite country and ASN data.

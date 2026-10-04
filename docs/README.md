@@ -12,6 +12,7 @@
 
 - [实现原理](internals/architecture.md)：根目录入口、`internal/app` 主循环、采集与探针、进程关联、NAT 和录制。
 - [解析原理](internals/parsing.md)：应用协议、HTTP、TLS、QUIC、代理与域名证据。
+- [流式输出](internals/stream-output.md)：MessagePack 编码、Unix socket 订阅协议、背压与 socket 生命周期。
 
 ## 计划
 

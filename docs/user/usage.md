@@ -270,3 +270,52 @@ sudo socktrail --output ndjson --duration 30s --refresh 10s > changes.ndjson
 交互界面按 `6` 打开 LOG 页，显示最近 5000 次连接变化，按 `b` 在变化类型、进程和失败连接分组之间切换；失败分组按原因、进程和目标合并，底栏逐条显示失败连接。LOG 的底栏显示所选连接的当前或最后一次观测详情。LOG 保存在进程内存里；启动时指定 `--log-file changes.ndjson` 可同时保存变化和定期刷新记录。文件权限为 0600，达到 64 MiB 时滚动为 `.1`，只保留这一份旧文件。
 
 `3 DST` 页的 `CONN50`、`CONN95` 分别是当前目标组中**成功**出站 TCP 建连时延的 p50、p95；失败尝试在 LOG 页单独查看。没有成功样本时显示 `-`。
+
+## MessagePack 与 Unix socket 订阅
+
+`--socket` 把流式输出发到 Unix domain socket，供本机其他进程订阅；它要求 `--output ndjson` 或 `msgpack`：
+
+```sh
+sudo socktrail --output msgpack --socket /run/socktrail.sock --duration 1h
+```
+
+不带 `--socket` 时，`--output msgpack` 只是把每行换成 MessagePack 编码写到标准输出，字段与 NDJSON 完全相同，可以管交给消费方。带 `--socket` 时走的是订阅协议，见下。
+
+### 帧协议
+
+每帧是一个对象，用 `kind` 区分：
+
+| 帧 | 何时发 | 内容 |
+| --- | --- | --- |
+| `hello` | 连接后第 1 帧 | 格式版本、采集接口、进程过滤条件、各探针状态和采集起始时间 |
+| `flow` | 全量快照与之后的每条变化 | 包着一个 `jsonFlow`，字段与 JSON 快照的 `flows[]` 相同 |
+| `stats` | 握手时一次，之后每 `--refresh` | 按进程的 socket I/O 汇总和缺口计数 |
+
+新客户端依次收到 `hello`、当前视图中每条连接的 `flow` 帧（每条带 `changes: ["snapshot"]`，刚结束的连接带 `end`）、一份 `stats`，之后才是增量。快照与增量按同一组 `--filter` 和进程条件选择连接。`flow` 帧里的计数都是**累计值**，不是增量，消费方按 `id` 覆盖，不要求和。
+
+`stats` 的 `process_io` 是不受 `--limit` 截断的完整进程列表，字段与 JSON 快照的 `processes[]` 相同。它的 `rx_bytes`/`tx_bytes` 是 `sendmsg`/`recvmsg` 的应用字节数，与连接的 IP 报文字节是两种口径，不能相加。也不能用 `flow` 帧的 `io[]` 求和代替：没有匹配到任何流的字节不在 `io[]` 里，`io_unmatched_bytes` 就是这个差额，输出进程流量时要一并说明。
+
+用 Go 消费时按通用 map 解码即可，不需要 socktrail 的类型；完整的检查程序见 `test/streamcheck/main.go`：
+
+```go
+conn, err := net.Dial("unix", "/run/socktrail.sock")
+if err != nil {
+    return err
+}
+decoder := msgpack.NewDecoder(conn)
+for {
+    var frame map[string]any // kind，以及与 kind 同名的 hello、flow 或 stats
+    if err := decoder.Decode(&frame); err != nil {
+        return err
+    }
+    // 按 frame["kind"] 分发
+}
+```
+
+### 权限与生命周期
+
+socket 文件默认 `0600`，消费方要与 socktrail 同用户运行。消费方在别的账号时，用 `--socket-mode 0660` 并把 socket 放进一个共享组。帧里有域名、PID 和流量计数，不要开放给所有人。
+
+启动时：路径上的 socket 拒绝连接（上次进程被强杀留下的）时会被替换；仍有进程监听、没有权限连接或者不是 stream socket（例如 journald 的 datagram socket）时报错退出，不动它；是一个普通文件时同样报错退出并不动它。退出时删除 socket 文件。
+
+客户端读得太慢会被断开，不会拖慢采集；重连后重新收到 `hello` 和全量快照。
