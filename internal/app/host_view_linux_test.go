@@ -219,3 +219,25 @@ func TestHostViewRecordsIdleAndBoundsHistory(t *testing.T) {
 		t.Fatalf("history ring did not evict oldest: length=%d first=%d", len(state.history), state.historyIDs[0])
 	}
 }
+
+// A process whose detail expired is reported as a count and its bytes. The host
+// view must carry both from every namespace, or the stream's stats frame and
+// the text report show expired bytes from no process at all.
+func TestHostViewCarriesExpiredPIDCount(t *testing.T) {
+	now := time.Now()
+	id := processID{PID: 7, StartNS: 1}
+	collectors := map[string]*collector{}
+	for netns, name := range []string{"eth0", "veth0"} {
+		c := &collector{
+			flows: make(map[flowKey]*flow), maxFlows: 10, netns: uint64(netns),
+			pidIO:   map[processID]processIO{id: {Name: "old", RX: 10, TX: 20}},
+			pidSeen: map[processID]time.Time{id: now.Add(-6 * time.Minute)},
+		}
+		c.expire(now)
+		collectors[name] = c
+	}
+	host, _, _ := hostCollector([]string{"eth0", "veth0"}, collectors)
+	if host.expiredPIDCount != 2 || host.expiredPIDIO != (ioBytes{RX: 20, TX: 40}) {
+		t.Errorf("host view: %d expired processes with %+v, want 2 with {RX:20 TX:40}", host.expiredPIDCount, host.expiredPIDIO)
+	}
+}

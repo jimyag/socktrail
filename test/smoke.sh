@@ -3,7 +3,8 @@
 # then checks that the requests were captured and named, the OpenSSL probe
 # saw the client process, and no packet was dropped. It then checks the two
 # MessagePack outputs: a bare row stream on standard output and the socket
-# subscription protocol. Needs root, curl, jq, openssl and python3.
+# subscription protocol, whose snapshot must honor --filter. Needs root, curl,
+# jq, openssl and python3.
 #
 #   sudo test/smoke.sh path/to/socktrail path/to/streamcheck
 set -euo pipefail
@@ -42,19 +43,22 @@ jq -e 'any(.reports[0].flows[]; .evidence.sni == "smoke.test" and (.openssl_pids
 	{ echo "no TLS flow named smoke.test with an OpenSSL process" >&2; exit 1; }
 
 # The socket subscription: a subscriber must receive hello, the current view and
-# a summary. Requests keep running so the snapshot is not empty.
-"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --socket-mode 0640 --duration 15s &
+# a summary. Requests keep running so the snapshot is not empty; the TLS ones
+# fall outside --filter, so no row of theirs may reach the subscriber.
+"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --socket-mode 0640 --filter port:18080 --duration 15s &
 stream=$!
-sleep 6 # The probes need the same warm-up before the subscriber connects.
+# The socket appears once the probes are loaded.
+for _ in $(seq 300); do [ -S "$work/stream.sock" ] && break; sleep 0.1; done
 mode=$(stat -c %a "$work/stream.sock")
 [ "$mode" = "640" ] || { echo "socket mode is $mode, want 640" >&2; exit 1; }
 for _ in $(seq 20); do
 	curl -fsS -o /dev/null -H 'Host: smoke.test' http://127.0.0.1:18080/ || true
+	openssl s_client -connect 127.0.0.1:18443 -servername smoke.test </dev/null >/dev/null 2>&1 || true
 	sleep 0.5
 done &
 traffic=$!
 sleep 3
-"$streamcheck" socket "$work/stream.sock"
+"$streamcheck" socket "$work/stream.sock" 18080
 kill "$traffic" 2>/dev/null || true
 wait "$stream"
 echo "smoke test passed"

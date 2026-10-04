@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"syscall"
 )
 
 // streamClientBuffer is how far one subscriber may fall behind. At roughly
@@ -78,16 +79,14 @@ func (c *streamClient) close() {
 // accepting run on other goroutines; the client set belongs to the capture
 // loop alone, so it needs no lock.
 type streamHub struct {
-	path     string
 	listener net.Listener
 	joining  chan *streamClient
 	clients  map[*streamClient]struct{}
 	pending  []*streamClient // Adopted but not yet greeted; capture loop only.
 }
 
-func newStreamHub(path string, listener net.Listener) *streamHub {
+func newStreamHub(listener net.Listener) *streamHub {
 	return &streamHub{
-		path:     path,
 		listener: listener,
 		joining:  make(chan *streamClient, 16),
 		clients:  make(map[*streamClient]struct{}),
@@ -119,16 +118,16 @@ func listenStreamSocket(path string, mode fs.FileMode) (*streamHub, error) {
 	// owner-only; --socket-mode widens it for a consumer in another account.
 	if err := os.Chmod(path, mode); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(path)
 		return nil, fmt.Errorf("set mode %o on socket %s: %w", mode, path, err)
 	}
-	hub := newStreamHub(path, listener)
+	hub := newStreamHub(listener)
 	go hub.accept(listener)
 	return hub, nil
 }
 
-// clearStaleSocket removes a socket file no process is listening on. A path
-// that still answers belongs to a running instance and is reported as such.
+// clearStaleSocket removes a socket file no process is listening on. Only a
+// refused connection proves that: a socket we may not connect to, or a
+// datagram socket such as journald's, can still belong to a running service.
 func clearStaleSocket(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -140,9 +139,13 @@ func clearStaleSocket(path string) error {
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("socket %s exists and is not a socket", path)
 	}
-	if conn, err := net.Dial("unix", path); err == nil {
+	conn, err := net.Dial("unix", path)
+	if err == nil {
 		_ = conn.Close()
-		return fmt.Errorf("socket %s is already in use by another socktrail", path)
+		return fmt.Errorf("socket %s is already in use", path)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return fmt.Errorf("socket %s exists and may be in use, so it is left alone: %w", path, err)
 	}
 	return os.Remove(path)
 }
@@ -214,6 +217,8 @@ func (h *streamHub) drop(client *streamClient) {
 	delete(h.clients, client)
 }
 
+// close stops accepting and disconnects every client. Closing the listener
+// also removes the socket file, which net.Listen created.
 func (h *streamHub) close() {
 	if h.listener != nil {
 		_ = h.listener.Close()
@@ -232,10 +237,6 @@ drain:
 	}
 	clear(h.clients)
 	h.pending = nil
-	if h.path != "" {
-		// The listener already unlinks on close; this covers a hub without one.
-		_ = os.Remove(h.path)
-	}
 }
 
 // streamSink is where encoded frames go: standard output, the change log, or
@@ -279,6 +280,9 @@ func (s *streamSink) writeFrame(frame streamFrame) error {
 
 // greet sends the handshake to the clients that connected since the last tick.
 // fill runs once, not per client, so the snapshot is built once and shared.
+// The handshake is queued as one buffer: the snapshot can hold maxFlows rows,
+// far more than a client buffer has slots, and frame by frame it would drop
+// every new client of a busy host before the first frame left.
 // Without a socket there is no handshake: standard output is a bare row stream.
 func (s *streamSink) greet(fill func(send func(any) error) error) error {
 	if s.hub == nil {
@@ -288,24 +292,21 @@ func (s *streamSink) greet(fill func(send func(any) error) error) error {
 	if len(clients) == 0 {
 		return nil
 	}
-	var frames [][]byte
+	var handshake []byte
 	collect := func(v any) error {
 		frame, err := s.encodeFrame(v)
 		if err != nil {
 			return err
 		}
-		frames = append(frames, frame)
+		handshake = append(handshake, frame...)
 		return nil
 	}
 	if err := fill(collect); err != nil {
 		return err
 	}
 	for _, client := range clients {
-		for _, frame := range frames {
-			if !client.offer(frame) {
-				s.hub.drop(client)
-				break
-			}
+		if !client.offer(handshake) {
+			s.hub.drop(client)
 		}
 	}
 	return nil
@@ -319,18 +320,14 @@ func (s *streamSink) adoptClients() {
 }
 
 // encodeFrame serializes one value for the socket. A bare jsonFlow is wrapped
-// in a frame envelope; metadata already carries its kind.
+// in a frame envelope; metadata already carries its kind. The bytes are the
+// codec's buffer, valid until the next encode: greet appends them to its
+// handshake and broadcast copies them.
 func (s *streamSink) encodeFrame(v any) ([]byte, error) {
 	if row, ok := v.(jsonFlow); ok {
 		v = streamFrame{Kind: streamKindFlow, Flow: &row}
 	}
-	raw, err := s.codec.encode(v)
-	if err != nil {
-		return nil, err
-	}
-	// The codec reuses its buffer and the hub hands this frame to several
-	// clients, so it leaves as a copy.
-	return bytes.Clone(raw), nil
+	return s.codec.encode(v)
 }
 
 // writeRow writes one bare row, which is what standard output and the change

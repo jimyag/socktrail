@@ -1650,12 +1650,18 @@ func Run() error {
 				if stream != nil {
 					stream.adoptClients()
 					scope := newProcessScope(processes, filter)
+					// The handshake, the changes and the refreshes carry the same
+					// connections; a snapshot row outside them would never change
+					// again for the subscriber.
+					inStream := func(f *flow) bool {
+						return scope.flow(f, host) && matchesFilter(compiledFilter, f, host, processes, geo, "")
+					}
 					buildStats := func(at time.Time) streamSummary {
 						return streamSummary{
 							At:               at,
 							IPPackets:        host.packets,
 							IPBytes:          host.bytes,
-							ProcessIO:        allProcessesJSON(host, processes, scope),
+							ProcessIO:        processesJSON(host, 0, processes, scope), // Every process, not the --limit rows.
 							IOUnmatchedBytes: host.ioUnmatched,
 							IOUnindexed:      streamIOBytes{RXBytes: host.ioUnindexed.RX, TXBytes: host.ioUnindexed.TX},
 							ExpiredPIDIO:     streamIOBytes{RXBytes: host.expiredPIDIO.RX, TXBytes: host.expiredPIDIO.TX},
@@ -1677,7 +1683,7 @@ func Run() error {
 							return err
 						}
 						for id, f := range hostState.displayed {
-							if !scope.flow(f, host) {
+							if !inStream(f) {
 								continue
 							}
 							row := jsonFlowFor(f, id, processes, geo)
@@ -1699,7 +1705,7 @@ func Run() error {
 						lastStats = now
 					}
 					for _, change := range hostState.lastChanges {
-						if !scope.flow(change.Flow, host) || !matchesFilter(compiledFilter, change.Flow, host, processes, geo, "") {
+						if !inStream(change.Flow) {
 							continue
 						}
 						row := jsonFlowFor(change.Flow, change.ID, processes, geo)
@@ -1710,7 +1716,7 @@ func Run() error {
 						lastOutput[change.ID] = time.Now()
 					}
 					for id, f := range hostState.displayed {
-						if last := lastOutput[id]; f.End != flowOngoing || last.IsZero() || time.Since(last) < *refresh || !scope.flow(f, host) || !matchesFilter(compiledFilter, f, host, processes, geo, "") {
+						if last := lastOutput[id]; f.End != flowOngoing || last.IsZero() || time.Since(last) < *refresh || !inStream(f) {
 							continue
 						}
 						row := jsonFlowFor(f, id, processes, geo)

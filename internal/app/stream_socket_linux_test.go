@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"net"
@@ -73,6 +74,54 @@ func TestListenStreamSocketRefusesLiveSocket(t *testing.T) {
 	}
 }
 
+// Only a refused connection proves a socket is stale. A datagram socket refuses
+// a stream connection, and a listener we may not connect to refuses us; both
+// can belong to a running service, so neither path may be removed.
+func TestListenStreamSocketKeepsSocketItCannotCheck(t *testing.T) {
+	for name, listen := range map[string]func(path string) (io.Closer, error){
+		"datagram": func(path string) (io.Closer, error) {
+			return net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+		},
+		// Root connects anyway and finds the listener; anyone else is denied.
+		"no permission": func(path string) (io.Closer, error) {
+			listener, err := net.Listen("unix", path)
+			if err != nil {
+				return nil, err
+			}
+			return listener, os.Chmod(path, 0)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "live.sock")
+			live, err := listen(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = live.Close() }()
+			if _, err := listenStreamSocket(path, 0o600); err == nil {
+				t.Fatal("a socket that may be in use should be refused")
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Errorf("the socket at the path was removed: %v", err)
+			}
+		})
+	}
+}
+
+// Exit removes the socket file, so the next start finds the path free. Nothing
+// but the listener removes it: net.Listen created the file, so Close unlinks it.
+func TestStreamHubCloseRemovesSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socktrail.sock")
+	hub, err := listenStreamSocket(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.close()
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket file outlived the hub: %v", err)
+	}
+}
+
 func TestStreamHubDeliversFramesToClients(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socktrail.sock")
 	hub, err := listenStreamSocket(path, 0o660)
@@ -117,7 +166,7 @@ func TestStreamHubDeliversFramesToClients(t *testing.T) {
 // A client that never reads must be closed, never allowed to stall the capture
 // loop, because a stalled loop drops packets.
 func TestStreamHubDropsSlowClient(t *testing.T) {
-	hub := newStreamHub("", nil)
+	hub := newStreamHub(nil)
 	_, blocked := io.Pipe() // Nobody reads this end, so the write goroutine blocks.
 	client := newStreamClient(blocked)
 	defer client.close()
@@ -137,6 +186,36 @@ func TestStreamHubDropsSlowClient(t *testing.T) {
 	}
 	if hub.active() {
 		t.Error("the client that fell behind is still registered")
+	}
+}
+
+// The handshake carries every connection in view, up to maxFlows of them, so a
+// client must receive it however many rows that is. Queued frame by frame it
+// would overflow the client buffer before the writer took a frame, and every
+// new client of a busy host would be dropped, on every reconnect.
+func TestStreamGreetLargerThanClientBuffer(t *testing.T) {
+	hub := newStreamHub(nil)
+	_, blocked := io.Pipe() // The writer takes the first buffer and blocks on it.
+	client := newStreamClient(blocked)
+	defer client.close()
+	hub.clients[client] = struct{}{}
+	hub.pending = []*streamClient{client}
+	sink, err := newStreamSink("msgpack", nil, hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.greet(func(send func(any) error) error {
+		for range streamClientBuffer + 10 {
+			if err := send(jsonFlow{Protocol: "tcp"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("greet: %v", err)
+	}
+	if !hub.active() {
+		t.Error("a handshake longer than the client buffer dropped the client")
 	}
 }
 

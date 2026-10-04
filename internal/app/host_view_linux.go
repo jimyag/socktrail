@@ -183,6 +183,7 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 	host.pidIO = base.pidIO
 	host.pidSeen = base.pidSeen
 	host.expiredPIDIO = base.expiredPIDIO
+	host.expiredPIDCount = base.expiredPIDCount
 	host.ioUnindexed = base.ioUnindexed
 	host.ioUnmatched = base.ioUnmatched
 	seenNetNS := map[uint64]bool{base.netns: true}
@@ -218,6 +219,7 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 			maps.Copy(host.pidSeen, c.pidSeen)
 			host.expiredPIDIO.RX += c.expiredPIDIO.RX
 			host.expiredPIDIO.TX += c.expiredPIDIO.TX
+			host.expiredPIDCount += c.expiredPIDCount
 			host.ioUnindexed.RX += c.ioUnindexed.RX
 			host.ioUnindexed.TX += c.ioUnindexed.TX
 			host.ioUnmatched += c.ioUnmatched

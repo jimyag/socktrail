@@ -76,6 +76,8 @@ hub.broadcast(frame)
 
 断开而不是丢帧，是为了不让客户端在不知情的情况下拿到不完整数据。客户端重连后按协议收到 hello 加全量快照，天然恢复一致。代价是持续慢的客户端会重连抖动，这是可接受的显式失败。
 
+握手（hello、全量快照和一份 stats）拼成一个缓冲入队，只占一个槽位。快照最多有 `maxFlows` 行，远多于槽位；逐帧入队时，写协程还没取走第一帧队列就满了，连接数过千的主机上每个新客户端都会在握手中途被断开，重连也一样。
+
 **③ 没有客户端时跳过序列化**。`hub.clients` 为空时主循环不编码，只做 `hostState.update`。这让"只是开着采集等人连"不付出编码开销。
 
 客户端集合只由主循环访问，所以不需要锁：`accept` 在独立 goroutine 里跑，把新连接放进有界的 `joining` channel，主循环每个 tick 用 `hub.adopt()` 取走。广播时把帧复制一次给所有客户端共享，因为编解码器复用同一个 buffer；复制只做一次，不是每个客户端一次。
@@ -102,13 +104,15 @@ type streamFrame struct {
 ```text
 连接建立
   → hello       版本、采集范围、探针状态
-  → flow 帧们    当前所有进行中连接，每条 changes: ["snapshot"]
+  → flow 帧们    当前视图中的连接，每条 changes: ["snapshot"]
   → stats        一份汇总，让订阅者立刻有 process_io
   → flow 帧      之后是增量变化，changes 为 new/name/state/process/drops/end/refresh
   → stats        每 --refresh（默认 60 秒）重复一次
 ```
 
-快照没有单独的 `kind`：它就是一串 `flow` 帧，用 `changes: ["snapshot"]` 标出来。这样只解 `flow` 的消费方不用认识第三种帧类型就能处理历史。
+快照没有单独的 `kind`：它就是一串 `flow` 帧，用 `changes: ["snapshot"]` 标出来。这样只解 `flow` 的消费方不用认识第三种帧类型就能处理历史。视图里还留着刚结束的连接，它们的快照行带 `end`。
+
+快照、增量和 refresh 用同一个选择条件：进程范围加 `--filter`。快照里多出一条增量不会覆盖的连接，订阅者就会一直持有它，等不到更新，也等不到 `end`。
 
 顺序保证：客户端连上后由主循环在下一个 tick 处理，先发 hello 和当时全量快照，再发该 tick 及之后的增量，不存在"快照与增量之间的变化丢失"。
 
@@ -209,6 +213,8 @@ enc.SetCustomStructTag("json") // 没有 msgpack tag 时回退到 json tag
 ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 ```
 
+以后新增 `omitzero` 字段也要这样补。`TestOmitzeroFieldsHaveMsgpackTags` 遍历帧和快照能带的所有类型，漏补时直接失败；零值行的对比测试只覆盖顶层字段，发现不了嵌套类型里的遗漏。
+
 ### 差异二：`time.Time` 的编码（实测确认走路线 A）
 
 库把 `time.Time` 编码为 MessagePack timestamp extension（ext type -1，按精度选 timestamp32/64/96），而 JSON 侧是 RFC3339Nano 字符串。实测 `time.Unix(1700000000, 0).UTC()`：msgpack 帧里是 `d6 ff 6553f100`，解码回 `time.Time`，绝对时间与 JSON 侧一致。
@@ -222,7 +228,7 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 **socket 文件**
 
 - 路径不存在：直接 `net.Listen("unix", path)`
-- 路径存在且是 socket：先尝试 `net.Dial("unix", path)`。连得上说明已有实例在监听，报错退出并提示路径；连不上说明是上次进程被强杀留下的 stale 文件，`os.Remove` 后重新监听
+- 路径存在且是 socket：先尝试 `net.Dial("unix", path)`。连得上说明已有进程在监听，报错退出并提示路径；只有连接被拒绝（`ECONNREFUSED`）才说明是上次进程被强杀留下的 stale 文件，`os.Remove` 后重新监听。其他错误一律报错退出、不删除：没有权限连接时对面可能正有服务在监听，datagram socket（如 journald 的）拒绝 stream 连接却仍在使用，删掉它们会让那个服务失去入口
 - 路径存在但不是 socket：报错退出，不删除。那可能是用户自己的文件，删掉无法恢复
 - 创建后 `os.Chmod(path, mode)`，默认 `0600`。数据含域名、PID 和流量计数，所以默认只给属主；而 socktrail 通常以 root 运行，消费方在别的账号时就用 `--socket-mode 0660` 加一个共享组，不要放开给所有人
 - 退出时（`--duration` 到时、Ctrl-C、SIGTERM、SIGHUP）关闭监听并删除 socket 文件
@@ -237,101 +243,11 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 
 现有的 `signal.NotifyContext` 已经覆盖 `SIGINT`、`SIGTERM`、`SIGHUP`，socket 关闭挂在同一个 `defer` 链上，不需要新增信号逻辑。
 
-## 代码改动清单
+## 测试
 
-| 文件 | 改动 |
-|---|---|
-| `internal/app/stream_socket_linux.go` | **已完成**。`streamHub`、`streamClient`、监听与 stale 文件处理、`adopt`/`broadcast`/`close`、`streamSink` |
-| `internal/app/stream_codec_linux.go` | **已完成**。`streamCodec`（json 或 msgpack 编码一行，返回 `[]byte`）、`streamingOutput` |
-| `internal/app/app_linux.go` | flag 定义与校验；流式输出改走 `streamSink`；TUI 开启条件排除 `msgpack`；新客户端握手与全量快照、周期性 `stats` 帧 |
-| `internal/app/report_json_linux.go` | 5 个字段补 `msgpack:"...,omitempty"` tag；`processesJSON` 抽出不限 `--limit` 的变体；抽出 `probesJSON` 供快照和 hello 共用 |
-| `go.mod` | 加 `github.com/vmihailenco/msgpack/v5` |
-| `internal/app/stream_codec_linux_test.go` | **新增**。编码一致性与帧定界测试 |
-| `internal/app/completion.go`、`internal/app/manual.go` | `--output` 的补全值和手册描述加上 `msgpack`，`--socket` 补全路径 |
-| `test/streamcheck/main.go` | **新增**。不依赖 socktrail 类型的帧解码器，供端到端检查用 |
-| `test/smoke.sh`、`.github/workflows/check.yaml` | root job 里并行验证标准输出裸行流和 socket 订阅协议 |
-
-第 1 阶段只动上面这些；`stream_socket_linux.go` 和 hub 属于第 2 阶段。
-
-`*json.Encoder` 和 `*msgpack.Encoder` 的 `Encode(v any) error` 签名相同，但 UDS 模式要拿到字节而不是写 writer，所以统一走 `bytes.Buffer`：
-
-```go
-type streamCodec struct {
-    json    *json.Encoder
-    msgpack *msgpack.Encoder
-    buf     bytes.Buffer
-}
-
-func (c *streamCodec) encode(v any) ([]byte, error) {
-    c.buf.Reset()
-    if c.msgpack != nil {
-        if err := c.msgpack.Encode(v); err != nil {
-            return nil, err
-        }
-    } else if err := c.json.Encode(v); err != nil { // json.Encoder appends '\n'
-        return nil, err
-    }
-    return c.buf.Bytes(), nil
-}
-```
-
-标准输出和 `--log-file` 模式写 `codec.encode` 的字节；UDS 模式把字节交给 hub。
-
-## 验证方案
-
-**编码层**（`internal/app/stream_codec_linux_test.go`）
-
-1. `TestMsgpackMatchesJSONFields`：`jsonFlow` 填满所有嵌套类型（GeoIP、kernel_tcp、client/server/container、io、evidence、DNS、drops），两边编码后解码回 `map[string]any`，递归断言每一层的键集合一致。文件里的 `MsgpackFlow()` 构造器供其余测试复用。
-2. `TestMsgpackMatchesJSONSnapshotFields`：`jsonSnapshot` 的 reports、processes、services、failures、listeners、drops 同样比较。
-3. `TestMsgpackOmitsZeroFieldsLikeJSON`：零值行的 `id`、`connect_latency_us` 在 msgpack 侧也必须缺席，锁住 `omitzero` 与显式 `msgpack:"...,omitempty"` 的对齐。
-4. `TestMsgpackEncodesTimesAsTimestamps`：json 侧是字符串，msgpack 侧解回 `time.Time` 且绝对时间相等。
-5. `TestStreamFramesDecodeInSequence`：连续写多帧后，msgpack 和 ndjson 都能逐帧解回，验证定界。
-
-**传输层**（`internal/app/stream_socket_linux_test.go`）
-
-6. `TestListenStreamSocketReplacesStaleSocket`：预置一个没有监听者的 socket 文件，断言启动时被替换。
-7. `TestListenStreamSocketRefusesNonSocketPath`：预置普通文件，断言报错且文件内容不变。
-8. `TestListenStreamSocketRefusesLiveSocket`：已有实例监听时，第二个断言报错。
-9. `TestStreamHubDeliversFramesToClients`：真 socket 连接、`adopt`、广播，客户端读回帧；同时断言 socket 权限为 0600，并在广播后改写原 buffer，验证客户端已收到的内容不受影响。
-10. `TestStreamHubDropsSlowClient`：客户端接一个没人读的管道，灌入超过缓冲的帧数，断言广播不阻塞且该客户端被注销。
-11. `TestStreamSinkSkipsEncodingWithoutClients`：sink 带一个 nil 编解码器，无客户端时写入不 panic，证明编解码器根本没被碰到。
-
-**订阅层**（`internal/app/stream_summary_linux_test.go`）
-
-12. `TestStreamSummaryCoversBytesMissingFromFlows`：一个进程既有匹配到流的 I/O（100 B）、又有没有对应流的 I/O（50 B）。断言流的 `io[]` 只有 100 B，而 `process_io` 是 150 B、`ioUnmatchedBytes` 是 50 B。这条测试锁住 stats 帧存在的理由：从 `io[]` 聚合进程流量会系统性少算。
-13. `TestStreamSummaryListsEveryProcess`：`processesJSON` 按 `--limit` 截断，`allProcessesJSON` 不截断，共 3 个进程时后者必须给出 3 行。
-14. `TestStreamGreetSendsHandshakeBeforeIncrements`：真 socket 上按顺序解出 hello、flow、stats 三个帧，断言每个 `kind` 正确、`flow` 帧确实包着 `jsonFlow`。
-
-**端到端**（`test/smoke.sh`，CI 的 root job 以 root 调用；解码器是 `test/streamcheck`）
-
-15. `--output msgpack` 与 JSON 快照的采集并行跑一次，`streamcheck pipe` 逐条解码标准输出的行，断言每行有 `protocol`、`source`、`target`，且不带 `kind`（标准输出必须是裸行）。
-16. 另起一次采集开 `--socket`，`streamcheck socket` 连上去，断言第 1 帧是 hello、能读到一个 `changes: ["snapshot"]` 的行、以及一个带 `process_io` 的 `stats` 帧。
-
-`streamcheck` 用泛型 `map[string]any` 解码，不引用 socktrail 的类型，所以它同时演示了任意语言的消费方该怎么做。
-
-**不需要权限就能核对的接线**
-
-```sh
-socktrail --output bogus                          # usage 里列出 msgpack
-socktrail --output msgpack --read x.pcapng        # 报与 --read 互斥
-socktrail --output text --socket /tmp/s.sock      # 报 --socket 需要流式 --output
-socktrail --socket-mode 0999 --output msgpack     # 报权限位非法
-socktrail --man | grep msgpack                    # 手册提到 msgpack
-socktrail --completion bash | grep msgpack        # 补全值里有 msgpack
-socktrail --completion bash | grep socket         # 补全值里有 socket
-```
-
-`--output msgpack` 的端到端抓包要能加载 eBPF 探针的内核。开发机上只能核对到 flag 校验、编码层和 socket 层：该机内核 7.2 超出上游已验证的范围（到 7.0），`udpv6_recvmsg` 的探针加载被内核拒绝，采集起不来。这与本次改动无关。第 15、16 条因此在 CI 的 root job 里执行。`streamcheck` 的两个模式另外用假帧序列单独验证过：正确的序列通过，缺 `process_io` 的 `stats` 帧和带 envelope 的裸行都被拒绝。
-
-## 分阶段实施
-
-每阶段独立可验证，可以单独提交：
-
-1. **编码层（已完成）**：`--output msgpack` 写标准输出，含上面第 1–5 条测试。此时已可用于管道消费，不涉及并发改动。
-2. **传输层（已完成）**：`--socket` + `streamHub` 广播，含第 6–11 条测试。这一步流里只有连接变化帧，没有 `kind` 外壳。
-3. **订阅语义（已完成）**：envelope、hello、新客户端全量快照、周期性 `stats` 帧，含第 12–14 条测试。
-4. **文档（已完成）**：`docs/user/usage.md` 增加一节，`README.zh-CN.md` 与 `README.md` 的特性列表各加一条。
-5. **端到端（已完成）**：`test/streamcheck` 加 `test/smoke.sh` 与 CI root job，含第 15、16 条。
+- 编码一致性：`internal/app/stream_codec_linux_test.go` 把同一行分别按 JSON 和 MessagePack 编码，解回 `map[string]any` 后逐层比较键集合，并锁住零值省略和时间编码。
+- socket 与订阅：`internal/app/stream_socket_linux_test.go` 覆盖 stale 文件替换、不删除可能仍在使用的 socket、慢客户端断开，以及超过客户端缓冲的握手；`stream_summary_linux_test.go` 覆盖 stats 帧的进程汇总和握手帧顺序。
+- 端到端：CI 的 root job 运行 `test/smoke.sh`，用 `test/streamcheck` 解码标准输出的裸行流，并订阅一个带 `--filter` 的 socket，检查握手顺序、`process_io`，以及快照行都在过滤范围内。`streamcheck` 只用通用的 `map[string]any` 解码，也可以当作不依赖 socktrail 类型的消费方示例。
 
 ## 明确不做的取舍
 

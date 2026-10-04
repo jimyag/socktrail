@@ -291,22 +291,24 @@ sudo socktrail --output msgpack --socket /run/socktrail.sock --duration 1h
 | `flow` | 全量快照与之后的每条变化 | 包着一个 `jsonFlow`，字段与 JSON 快照的 `flows[]` 相同 |
 | `stats` | 握手时一次，之后每 `--refresh` | 按进程的 socket I/O 汇总和缺口计数 |
 
-新客户端依次收到 `hello`、当前所有进行中连接的 `flow` 帧（每条带 `changes: ["snapshot"]`）、一份 `stats`，之后才是增量。`flow` 帧里的计数都是**累计值**，不是增量，消费方按 `id` 覆盖，不要求和。
+新客户端依次收到 `hello`、当前视图中每条连接的 `flow` 帧（每条带 `changes: ["snapshot"]`，刚结束的连接带 `end`）、一份 `stats`，之后才是增量。快照与增量按同一组 `--filter` 和进程条件选择连接。`flow` 帧里的计数都是**累计值**，不是增量，消费方按 `id` 覆盖，不要求和。
 
 `stats` 的 `process_io` 是不受 `--limit` 截断的完整进程列表，字段与 JSON 快照的 `processes[]` 相同。它的 `rx_bytes`/`tx_bytes` 是 `sendmsg`/`recvmsg` 的应用字节数，与连接的 IP 报文字节是两种口径，不能相加。也不能用 `flow` 帧的 `io[]` 求和代替：没有匹配到任何流的字节不在 `io[]` 里，`io_unmatched_bytes` 就是这个差额，输出进程流量时要一并说明。
 
-用 Go 消费：
+用 Go 消费时按通用 map 解码即可，不需要 socktrail 的类型；完整的检查程序见 `test/streamcheck/main.go`：
 
 ```go
 conn, err := net.Dial("unix", "/run/socktrail.sock")
+if err != nil {
+    return err
+}
 decoder := msgpack.NewDecoder(conn)
-decoder.SetCustomStructTag("json") // 复用 json 字段名
 for {
-    var frame streamFrame // Kind, Hello, Flow, Stats
+    var frame map[string]any // kind，以及与 kind 同名的 hello、flow 或 stats
     if err := decoder.Decode(&frame); err != nil {
         return err
     }
-    // 按 frame.Kind 分发
+    // 按 frame["kind"] 分发
 }
 ```
 
@@ -314,6 +316,6 @@ for {
 
 socket 文件默认 `0600`，消费方要与 socktrail 同用户运行。消费方在别的账号时，用 `--socket-mode 0660` 并把 socket 放进一个共享组。帧里有域名、PID 和流量计数，不要开放给所有人。
 
-启动时：路径上是没有监听者的 socket（上次进程被强杀留下的）会被替换；已被另一个实例监听时报错退出；是一个普通文件时报错退出并不动它。退出时删除 socket 文件。
+启动时：路径上的 socket 拒绝连接（上次进程被强杀留下的）时会被替换；仍有进程监听、没有权限连接或者不是 stream socket（例如 journald 的 datagram socket）时报错退出，不动它；是一个普通文件时同样报错退出并不动它。退出时删除 socket 文件。
 
 客户端读得太慢会被断开，不会拖慢采集；重连后重新收到 `hello` 和全量快照。

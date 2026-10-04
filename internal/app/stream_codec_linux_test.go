@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +144,31 @@ func TestMsgpackOmitsZeroFieldsLikeJSON(t *testing.T) {
 			t.Errorf("msgpack kept zero-valued %q, json drops it", field)
 		}
 	}
+}
+
+// The library does not read omitzero, so every omitzero field needs an explicit
+// msgpack omitempty tag. The zero-valued row above reaches only top-level
+// fields, so this walks every type a frame or a snapshot can carry.
+func TestOmitzeroFieldsHaveMsgpackTags(t *testing.T) {
+	seen := map[reflect.Type]bool{}
+	var walk func(reflect.Type)
+	walk = func(typ reflect.Type) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct || seen[typ] {
+			return
+		}
+		seen[typ] = true
+		for field := range typ.Fields() {
+			if strings.Contains(field.Tag.Get("json"), ",omitzero") && !strings.Contains(field.Tag.Get("msgpack"), ",omitempty") {
+				t.Errorf("%s.%s is omitzero in json but has no msgpack omitempty tag", typ, field.Name)
+			}
+			walk(field.Type)
+		}
+	}
+	walk(reflect.TypeFor[streamFrame]())
+	walk(reflect.TypeFor[jsonSnapshot]())
 }
 
 // The snapshot types go through the same codec for the socket output.

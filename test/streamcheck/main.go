@@ -2,8 +2,9 @@
 // It decodes frames generically, without socktrail's types, which is also what
 // any other consumer has to do.
 //
-//	streamcheck pipe   <file>   # a bare row-per-object stream from --output msgpack
-//	streamcheck socket <path>   # the subscription protocol on a Unix socket
+//	streamcheck pipe   <file>          # a bare row-per-object stream from --output msgpack
+//	streamcheck socket <path> [port]   # the subscription protocol on a Unix socket;
+//	                                   # with a port, every snapshot row must use it
 package main
 
 import (
@@ -12,20 +13,25 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		fail("usage: streamcheck pipe <file> | streamcheck socket <path>")
+	if len(os.Args) != 3 && (len(os.Args) != 4 || os.Args[1] != "socket") {
+		fail("usage: streamcheck pipe <file> | streamcheck socket <path> [port]")
 	}
 	switch os.Args[1] {
 	case "pipe":
 		checkPipe(os.Args[2])
 	case "socket":
-		checkSocket(os.Args[2])
+		var port string
+		if len(os.Args) == 4 {
+			port = os.Args[3]
+		}
+		checkSocket(os.Args[2], port)
 	default:
 		fail("unknown mode %q: use pipe or socket", os.Args[1])
 	}
@@ -67,7 +73,9 @@ func checkPipe(path string) {
 
 // checkSocket checks the subscription protocol: hello first, then a full
 // snapshot, then a summary, so a subscriber never guesses the state it joined.
-func checkSocket(path string) {
+// With a port, as with --filter port:N, every snapshot row must use it: a row
+// outside the filter would never change again for the subscriber.
+func checkSocket(path, port string) {
 	conn, err := net.Dial("unix", path) //nolint:gosec // The path comes from the command line.
 	if err != nil {
 		fail("dial %s: %v", path, err)
@@ -98,6 +106,11 @@ func checkSocket(path string) {
 			row, ok := frame["flow"].(map[string]any)
 			if !ok {
 				fail("a flow frame carries no flow object: %v", frame)
+			}
+			source, _ := row["source"].(string)
+			target, _ := row["target"].(string)
+			if port != "" && !strings.HasSuffix(source, ":"+port) && !strings.HasSuffix(target, ":"+port) {
+				fail("a snapshot row outside --filter port:%s: %s -> %s", port, source, target)
 			}
 			if changes, ok := row["changes"].([]any); ok {
 				for _, change := range changes {

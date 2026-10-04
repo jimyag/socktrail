@@ -45,7 +45,7 @@ func TestStreamSummaryCoversBytesMissingFromFlows(t *testing.T) {
 		t.Fatalf("flow io[] holds %d TX bytes, want 100", inFlows)
 	}
 
-	rows := allProcessesJSON(c, newProcessTable(t.TempDir()), nil)
+	rows := processesJSON(c, 0, newProcessTable(t.TempDir()), nil)
 	if len(rows) != 1 {
 		t.Fatalf("process_io has %d rows, want 1: %+v", len(rows), rows)
 	}
@@ -69,8 +69,8 @@ func TestStreamSummaryListsEveryProcess(t *testing.T) {
 	if limited := processesJSON(c, 1, processes, nil); len(limited) != 1 {
 		t.Fatalf("processesJSON with limit 1 returned %d rows", len(limited))
 	}
-	if all := allProcessesJSON(c, processes, nil); len(all) != 3 {
-		t.Errorf("allProcessesJSON returned %d rows, want all 3", len(all))
+	if all := processesJSON(c, 0, processes, nil); len(all) != 3 {
+		t.Errorf("processesJSON without a limit returned %d rows, want all 3", len(all))
 	}
 }
 
@@ -134,7 +134,7 @@ func TestStreamGreetSendsHandshakeBeforeIncrements(t *testing.T) {
 // Nothing is encoded while nobody is subscribed. A nil codec proves it: the
 // sink would panic reaching it.
 func TestStreamSinkSkipsEncodingWithoutClients(t *testing.T) {
-	sink := &streamSink{format: "msgpack", hub: newStreamHub("", nil)}
+	sink := &streamSink{format: "msgpack", hub: newStreamHub(nil)}
 	if err := sink.flow(jsonFlow{Protocol: "tcp"}); err != nil {
 		t.Errorf("the sink encoded a flow with no subscribers: %v", err)
 	}

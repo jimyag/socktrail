@@ -417,20 +417,8 @@ func jsonFlowFor(f *flow, id uint64, processes *processTable, geo *geoip.DB) jso
 	return row
 }
 
-// processesJSON lists PID socket I/O like printPIDIO.
+// processesJSON lists PID socket I/O like printPIDIO; limit <= 0 lists all.
 func processesJSON(c *collector, limit int, processes *processTable, scope *processScope) []jsonProcessIO {
-	return processRowsJSON(c, limit, processes, scope)
-}
-
-// allProcessesJSON lists every process with socket I/O. The stream's stats frame
-// needs the whole set: a subscriber that only received the --limit rows could
-// not total per-process traffic.
-func allProcessesJSON(c *collector, processes *processTable, scope *processScope) []jsonProcessIO {
-	return processRowsJSON(c, 0, processes, scope)
-}
-
-// processRowsJSON lists PID socket I/O like printPIDIO; limit <= 0 lists all.
-func processRowsJSON(c *collector, limit int, processes *processTable, scope *processScope) []jsonProcessIO {
 	rows := []jsonProcessIO{}
 	for _, id := range pidIOOrder(c.pidIO) {
 		if v := c.pidIO[id]; scope.process(id, v.Name) && (limit <= 0 || len(rows) < limit) {
