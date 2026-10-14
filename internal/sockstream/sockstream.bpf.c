@@ -413,8 +413,9 @@ int BPF_PROG(stream_send_exit, struct sock *sk, struct msghdr *msg, unsigned lon
     return 0;
 }
 
-// tcp_recvmsg lost its nonblock argument in Linux 5.19. The *_old twins take
-// the earlier signature; the loader keeps the pair that matches the kernel.
+// tcp_recvmsg lost its nonblock argument in Linux 5.19 and its addr_len
+// argument later. The *_4 (neither) and *_old (nonblock) twins take the
+// earlier signatures; the loader keeps the pair that matches the kernel.
 SEC("fentry/tcp_recvmsg")
 int BPF_PROG(stream_recv_enter, struct sock *sk, struct msghdr *msg, unsigned long len, int flags)
 {
@@ -425,6 +426,21 @@ int BPF_PROG(stream_recv_enter, struct sock *sk, struct msghdr *msg, unsigned lo
 SEC("fexit/tcp_recvmsg")
 int BPF_PROG(stream_recv_exit, struct sock *sk, struct msghdr *msg, unsigned long len, int flags,
              int *addr_len, int ret)
+{
+    finish(sk, ret);
+    return 0;
+}
+
+SEC("fentry/tcp_recvmsg")
+int BPF_PROG(stream_recv_enter_4, struct sock *sk, struct msghdr *msg, unsigned long len, int flags)
+{
+    if (flags & MSG_PEEK) return 0;
+    return begin(sk, msg, DIR_RECEIVED, 6);
+}
+
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(stream_recv_exit_4, struct sock *sk, struct msghdr *msg, unsigned long len, int flags,
+             int ret)
 {
     finish(sk, ret);
     return 0;

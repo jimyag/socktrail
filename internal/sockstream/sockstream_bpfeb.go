@@ -89,8 +89,10 @@ const (
 	SockstreamProgDatagramSendExit   = "datagram_send_exit"
 	SockstreamProgSocketFreed        = "socket_freed"
 	SockstreamProgStreamRecvEnter    = "stream_recv_enter"
+	SockstreamProgStreamRecvEnter4   = "stream_recv_enter_4"
 	SockstreamProgStreamRecvEnterOld = "stream_recv_enter_old"
 	SockstreamProgStreamRecvExit     = "stream_recv_exit"
+	SockstreamProgStreamRecvExit4    = "stream_recv_exit_4"
 	SockstreamProgStreamRecvExitOld  = "stream_recv_exit_old"
 	SockstreamProgStreamSendEnter    = "stream_send_enter"
 	SockstreamProgStreamSendExit     = "stream_send_exit"
@@ -145,8 +147,10 @@ type SockstreamProgramSpecs struct {
 	DatagramSendExit   *ebpf.ProgramSpec `ebpf:"datagram_send_exit"`
 	SocketFreed        *ebpf.ProgramSpec `ebpf:"socket_freed"`
 	StreamRecvEnter    *ebpf.ProgramSpec `ebpf:"stream_recv_enter"`
+	StreamRecvEnter4   *ebpf.ProgramSpec `ebpf:"stream_recv_enter_4"`
 	StreamRecvEnterOld *ebpf.ProgramSpec `ebpf:"stream_recv_enter_old"`
 	StreamRecvExit     *ebpf.ProgramSpec `ebpf:"stream_recv_exit"`
+	StreamRecvExit4    *ebpf.ProgramSpec `ebpf:"stream_recv_exit_4"`
 	StreamRecvExitOld  *ebpf.ProgramSpec `ebpf:"stream_recv_exit_old"`
 	StreamSendEnter    *ebpf.ProgramSpec `ebpf:"stream_send_enter"`
 	StreamSendExit     *ebpf.ProgramSpec `ebpf:"stream_send_exit"`
@@ -227,8 +231,10 @@ type SockstreamPrograms struct {
 	DatagramSendExit   *ebpf.Program `ebpf:"datagram_send_exit"`
 	SocketFreed        *ebpf.Program `ebpf:"socket_freed"`
 	StreamRecvEnter    *ebpf.Program `ebpf:"stream_recv_enter"`
+	StreamRecvEnter4   *ebpf.Program `ebpf:"stream_recv_enter_4"`
 	StreamRecvEnterOld *ebpf.Program `ebpf:"stream_recv_enter_old"`
 	StreamRecvExit     *ebpf.Program `ebpf:"stream_recv_exit"`
+	StreamRecvExit4    *ebpf.Program `ebpf:"stream_recv_exit_4"`
 	StreamRecvExitOld  *ebpf.Program `ebpf:"stream_recv_exit_old"`
 	StreamSendEnter    *ebpf.Program `ebpf:"stream_send_enter"`
 	StreamSendExit     *ebpf.Program `ebpf:"stream_send_exit"`
@@ -242,8 +248,10 @@ func (p *SockstreamPrograms) Close() error {
 		p.DatagramSendExit,
 		p.SocketFreed,
 		p.StreamRecvEnter,
+		p.StreamRecvEnter4,
 		p.StreamRecvEnterOld,
 		p.StreamRecvExit,
+		p.StreamRecvExit4,
 		p.StreamRecvExitOld,
 		p.StreamSendEnter,
 		p.StreamSendExit,
