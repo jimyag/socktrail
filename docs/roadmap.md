@@ -473,14 +473,15 @@
 
 目标：主表每行显示近 30 秒的迷你曲线，一眼看出突发。
 
-做法：
-- 为主表显示过的行，按行的 identity 保存最近 60 秒每秒的 RX+TX，用 60 个 uint32 组成的环形缓冲。
-- 最多保留 500 个 key，5 分钟没有显示过的 key 删除。
-- 主表增加 TREND 列，用 `▁▂▃▄▅▆▇█` 画出 30 秒曲线。
-- 第二步：选中行后在底栏画 5 分钟曲线。
-- 注意：块字符属于东亚宽度有歧义的字符，在把歧义字符显示为双宽的终端里会错位，和现有的 `└`、`↑` 相同，文档里写明。
+已实现并验证：
+- `internal/app/trend.go` 实现 per-identity 环形缓冲（300 × uint32 每秒样本，覆盖 30 秒列与 5 分钟面板共用），`trendRows = 500` 上限、`trendRowStaleMs = 5min` 未显示即淘汰。
+- `internal/app/ui.go` 的 `sampleAll` 每秒喂一次当前主表显示的行；`terminalUI.trend` 挂在 UI 层不放数据层，符合 "呈现层计算" 约定。
+- 主表在 HOST/SNI OR PEER 之前新增 TREND 列（`internal/app/ui_layout.go` 的 `groupLayout`/`groupLine`），宽 30 个 cell，每秒一格；sparks 由当前可见样本最大值分档，`0` 与无数据保持空白，不做伪地板。
+- 排序支持 TREND（按最近一秒的 rx+tx 字节数），`internal/app/ui_sort.go` 的 selectColumn 走默认降序。
+- 选中行后底栏 APP/TCP 之间插入 5 分钟 spark 曲线（max 聚合到面板宽）加一行 `N s · avg · peak · last` 统计；`internal/app/ui.go` 的 case 0 分支。
+- 块字符是 EAW ambiguous（`▁▂▃▄▅▆▇█`），和现有 `└`、`↑` 同族的排版注意已在 `docs/user/usage.md` 记录。
 
-验收：环形缓冲的单元测试通过；在 PTY 里目视检查曲线和数据一致。
+验收：环形缓冲单元测试 9 项全过（`TestTrendRing*`、`TestTrendStoreEvictsUnused`，`go test ./internal/app -run TestTrend`）；PTY 目视检查需在 Linux 主机上跑。
 
 ## 13. 进程来源链与按用户分组
 

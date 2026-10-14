@@ -19,7 +19,7 @@ func TestEveryTableHeaderIsClickableAfterHorizontalScroll(t *testing.T) {
 		tab    int
 		main   bool
 	}{
-		{"groups", groupLayout(nil, viewPID, 80), 0, true},
+		{"groups", groupLayout(nil, viewPID, 80, nil), 0, true},
 		{"connections", connectionLayout(&uiRow{}, viewPID, &collector{}, false), 0, false},
 		{"processes", processLayout(nil, nil), 1, false},
 	} {
@@ -61,7 +61,7 @@ func TestEveryTableHeaderIsClickableAfterHorizontalScroll(t *testing.T) {
 			}
 		})
 	}
-	if !strings.Contains(ansi.Strip(groupLayout(nil, viewPID, 80).sortedHeader(sortSpec{key: "ICMP PKT", desc: true})), "ICMP PKT↓") {
+	if !strings.Contains(ansi.Strip(groupLayout(nil, viewPID, 80, nil).sortedHeader(sortSpec{key: "ICMP PKT", desc: true})), "ICMP PKT↓") {
 		t.Fatal("active sort direction is not visible in header")
 	}
 }

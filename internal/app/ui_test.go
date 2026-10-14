@@ -105,7 +105,7 @@ func TestTargetConnectLatencyPercentiles(t *testing.T) {
 	if p50, p95 := connectLatencyPercentiles([]*flow{failed}); p50 != "-" || p95 != "-" {
 		t.Fatalf("failed attempts changed successful latency = %s/%s", p50, p95)
 	}
-	columns := groupLayout([]*uiRow{{label: "127.0.0.1", flows: flows}}, viewTarget, 180).columns
+	columns := groupLayout([]*uiRow{{label: "127.0.0.1", flows: flows}}, viewTarget, 180, nil).columns
 	if columns[12].title != "CONN50" || columns[13].title != "CONN95" {
 		t.Fatalf("destination latency columns missing: %+v", columns)
 	}
@@ -359,12 +359,12 @@ func TestResponsiveTablesKeepFullEndpointsAndDomain(t *testing.T) {
 	f := &flow{Key: keyFor(source, target, 6), Initiator: source, Target: target, Direction: "outbound", TCPState: "established", Domain: domain.New(1)}
 	f.Domain.Add(1, []byte("GET / HTTP/1.1\r\nHost: "+host+"\r\n\r\n"))
 	row := &uiRow{label: "101 client", pidID: processID{101, 1000}, flows: []*flow{f}}
-	mainWide := groupLayout([]*uiRow{row}, viewPID, 300)
+	mainWide := groupLayout([]*uiRow{row}, viewPID, 300, nil)
 	if len([]rune(mainWide.header())) != 300 {
 		t.Fatalf("wide main table did not fill viewport: %d", len([]rune(mainWide.header())))
 	}
-	mainNarrow := groupLayout([]*uiRow{row}, viewPID, 79)
-	if got := groupLine(mainNarrow, row, viewPID, "▸"); !strings.HasSuffix(strings.TrimSpace(got), "+1") {
+	mainNarrow := groupLayout([]*uiRow{row}, viewPID, 79, nil)
+	if got := groupLine(mainNarrow, row, viewPID, "▸", nil); !strings.HasSuffix(strings.TrimSpace(got), "+1") {
 		t.Fatalf("narrow layout did not count the hidden domain: %q", got)
 	}
 	detail := connectionLayout(row, viewPID, &collector{}, false)
@@ -398,19 +398,19 @@ func TestGroupColumnsExpandWhenViewportFits(t *testing.T) {
 		row.ifaces.add(index)
 	}
 
-	wide := groupLayout([]*uiRow{row}, viewPID, 300)
-	if got := groupLine(wide, row, viewPID, "▸"); !strings.Contains(got, "eth0,br0,veth123") || !strings.Contains(got, "HTTP api.example.test, HTTP web.example.test") {
+	wide := groupLayout([]*uiRow{row}, viewPID, 300, nil)
+	if got := groupLine(wide, row, viewPID, "▸", nil); !strings.Contains(got, "eth0,br0,veth123") || !strings.Contains(got, "HTTP api.example.test, HTTP web.example.test") {
 		t.Fatalf("wide table kept folded values: %q", got)
 	}
-	narrow := groupLayout([]*uiRow{row}, viewPID, 100)
-	if got := groupLine(narrow, row, viewPID, "▸"); !strings.Contains(got, "eth0,br0 +1") || !strings.Contains(got, "HTTP api.example.test +1") {
+	narrow := groupLayout([]*uiRow{row}, viewPID, 100, nil)
+	if got := groupLine(narrow, row, viewPID, "▸", nil); !strings.Contains(got, "eth0,br0 +1") || !strings.Contains(got, "HTTP api.example.test +1") {
 		t.Fatalf("narrow table lost compact values: %q", got)
 	}
 
 	first.Initiator, first.Target = netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("192.0.2.2:443")
 	second.Initiator, second.Target = netip.MustParseAddrPort("192.0.2.3:5001"), netip.MustParseAddrPort("192.0.2.4:443")
-	domainWide := groupLayout([]*uiRow{row}, viewDomain, 300)
-	if got := groupLine(domainWide, row, viewDomain, "▸"); !strings.Contains(got, "192.0.2.1 → 192.0.2.2") || !strings.Contains(got, "192.0.2.3 → 192.0.2.4") {
+	domainWide := groupLayout([]*uiRow{row}, viewDomain, 300, nil)
+	if got := groupLine(domainWide, row, viewDomain, "▸", nil); !strings.Contains(got, "192.0.2.1 → 192.0.2.2") || !strings.Contains(got, "192.0.2.3 → 192.0.2.4") {
 		t.Fatalf("wide domain page kept only one peer: %q", got)
 	}
 }
@@ -427,10 +427,10 @@ func TestGroupHintsFitAsManyAsPossibleWithRemainder(t *testing.T) {
 	}
 	want := strings.Join(names[:5], ", ") + " +2"
 	hintWidth := displayWidth(want)
-	base := groupLayout([]*uiRow{row}, viewPID, 0)
+	base := groupLayout([]*uiRow{row}, viewPID, 0, nil)
 	viewport := base.width + hintWidth - base.columns[len(base.columns)-1].width
-	layout := groupLayout([]*uiRow{row}, viewPID, viewport)
-	got := groupLine(layout, row, viewPID, "▸")
+	layout := groupLayout([]*uiRow{row}, viewPID, viewport, nil)
+	got := groupLine(layout, row, viewPID, "▸", nil)
 	if !strings.Contains(got, want) || strings.Contains(got, names[5]) {
 		t.Fatalf("expected five visible domains and +2: %q", got)
 	}
@@ -443,8 +443,8 @@ func TestGroupColumnFitsCurrentPageContent(t *testing.T) {
 	short := &uiRow{label: "123 curl"}
 	long := &uiRow{label: "456 worker-with-long-name"}
 	for _, viewport := range []int{120, 300} {
-		shortLayout := groupLayout([]*uiRow{short}, viewPID, viewport)
-		longLayout := groupLayout([]*uiRow{long}, viewPID, viewport)
+		shortLayout := groupLayout([]*uiRow{short}, viewPID, viewport, nil)
+		longLayout := groupLayout([]*uiRow{long}, viewPID, viewport, nil)
 		if got := shortLayout.columns[0].width; got != displayWidth(short.label) {
 			t.Errorf("viewport %d: short PID GROUP width = %d, want %d", viewport, got, displayWidth(short.label))
 		}

@@ -102,6 +102,8 @@ func sortGroups(rows []*uiRow, mode viewMode, spec sortSpec, sortRate bool) {
 			}
 		case "HOST/SNI OR PEER":
 			order = strings.Compare(groupHint(a, mode), groupHint(b, mode))
+		case "TREND":
+			order = cmp.Compare(a.trend, b.trend)
 		case "IFACE":
 			order = strings.Compare(interfaceList(a.ifaces, 2), interfaceList(b.ifaces, 2))
 		case "LOCAL":

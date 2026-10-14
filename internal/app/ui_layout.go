@@ -176,7 +176,7 @@ func displayTime(value time.Time) string {
 	return value.Format("15:04:05")
 }
 
-func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
+func groupLayout(rows []*uiRow, mode viewMode, viewport int, sparks map[string]string) tableLayout {
 	if mode == viewPorts {
 		return portLayout(rows, viewport)
 	}
@@ -224,6 +224,9 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 	if mode == viewDomain {
 		columns = slices.Insert(columns, len(columns)-1, tableColumn{title: "LOCAL", width: 38})
 	}
+	if mode != viewLog && sparks != nil {
+		columns = slices.Insert(columns, len(columns)-1, tableColumn{title: "TREND", width: trendTopWidth})
+	}
 	base := newTableLayout(columns, 0)
 	extra := max(0, viewport-base.width)
 	ifaceNeed := max(0, fullIfaceWidth-base.columns[1].width)
@@ -234,7 +237,7 @@ func groupLayout(rows []*uiRow, mode viewMode, viewport int) tableLayout {
 	return newTableLayout(columns, viewport, len(columns)-1)
 }
 
-func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) string {
+func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string, sparks map[string]string) string {
 	if mode == viewPorts {
 		return portLine(layout, row, cursor)
 	}
@@ -260,6 +263,9 @@ func groupLine(layout tableLayout, row *uiRow, mode viewMode, cursor string) str
 	values = append(values, first, last)
 	if mode == viewDomain {
 		values = append(values, localAddressCell(row, layout.columns[len(layout.columns)-2].width))
+	}
+	if mode != viewLog && sparks != nil {
+		values = append(values, sparks[row.identity()])
 	}
 	return layout.line(cursor, append(values, hint)...)
 }

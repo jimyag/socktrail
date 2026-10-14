@@ -61,6 +61,10 @@ type uiRow struct {
 	localAddresses       map[netip.Addr]struct{}
 	inbound, outbound    uint64
 	listener             *portInfo
+	// trend is the most recent per-second rx+tx total recorded for this
+	// row's identity, kept on the row so sorting by TREND stays a plain
+	// field compare in sortGroups.
+	trend uint64
 }
 
 func pidGroupLabel(p participant) string {
@@ -188,6 +192,7 @@ type terminalUI struct {
 	pidPrevious       map[processID]ioBytes
 	pidRates          map[processID]rate
 	globalRate        rate
+	trend             *trendStore // Per-second row traffic history; see trend.go.
 	started           time.Time
 	interfaces        []string
 	collectors        map[string]*collector
@@ -251,6 +256,7 @@ func openUI(interfaceNames []string, netNS uint64, collectors map[string]*collec
 		rates: make(map[*flow]rate), pidPrevious: make(map[processID]ioBytes), pidRates: make(map[processID]rate),
 		started: time.Now(), interfaces: slices.Clone(interfaceNames), interfaceName: interfaceNames[0], hostScope: true, netNS: netNS,
 		collectors: collectors, interfacePrevious: make(map[string]counters), interfaceRates: make(map[string]rate),
+		trend: newTrendStore(),
 	}
 	u.mode, u.returnMode = viewPID, viewPID
 	go readKeys(u.keys)
@@ -790,6 +796,34 @@ func (u *terminalUI) sampleAll(collectors map[string]*collector, now time.Time) 
 		}
 	}
 	u.lastSample = now
+
+	// Per-second trend history for the rows the table currently shows.
+	// Rows under a --process/--pid/--cgroup scope or a filter are skipped,
+	// matching how the main table hides them; their rings age out unused
+	// via trendRowStaleMs, so a brief disappearance keeps history.
+	if u.trend != nil {
+		u.trend.tick(now)
+		collect, names := collectors[u.interfaceName], []string{u.interfaceName}
+		if u.hostScope {
+			names = u.interfaces
+			collect, _, _ = hostCollector(names, collectors)
+		}
+		if collect != nil {
+			seen := make(map[string]uint64)
+			for _, row := range u.rows(collect, u.mode) {
+				identity := row.identity()
+				u.trend.add(identity, row.rxRate+row.txRate)
+				seen[identity] = row.rxRate + row.txRate
+			}
+			u.trend.seenRates = seen
+			for identity := range u.trend.rings {
+				if _, ok := seen[identity]; !ok {
+					u.trend.markUnused(identity)
+				}
+			}
+			u.trend.evict()
+		}
+	}
 }
 
 func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
@@ -1083,6 +1117,11 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 		portMatch := mode == viewPorts && row.listener != nil && matchesFilter(u.filterConditions, row.listener.filterFlow(), c, u.processes, u.geo, row.label)
 		if len(row.flows) > 0 || portMatch || !strings.Contains(u.filterApplied, ":") && matchesFilter(u.filterConditions, nil, c, u.processes, u.geo, row.label) {
 			result = append(result, row)
+		}
+	}
+	if u.trend != nil {
+		for _, row := range result {
+			row.trend = u.trend.seenRates[row.identity()]
 		}
 	}
 	sortGroups(result, mode, u.mainSort, u.sortRate)
@@ -1448,7 +1487,16 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 	}
 	lines[1] = strings.ReplaceAll(lines[1], " | ", styleFaint.paint(" | "))
 	lines = append(lines, styleFaint.paint(strings.Repeat("─", width)))
-	layout := groupLayout(rows, u.mode, width)
+	var sparks map[string]string
+	if u.trend != nil && u.mode != viewLog {
+		sparks = make(map[string]string, len(rows))
+		for _, r := range rows {
+			if ring := u.trend.ring(r.identity()); ring != nil {
+				sparks[r.identity()] = ring.sparkn(trendTopWidth)
+			}
+		}
+	}
+	layout := groupLayout(rows, u.mode, width, sparks)
 	u.mainLayout = layout
 	u.mainCanvas = layout.width
 	u.mainX = min(u.mainX, max(0, layout.width-width))
@@ -1460,7 +1508,7 @@ func (u *terminalUI) render(c *collector, probeReceived, probeLost, probeDropped
 		}
 		r := rows[i]
 		lines = append(lines, tableRow(layout, u.mainX, width, i == u.selected, !u.focusBottom, func(layout tableLayout, cursor string) string {
-			return groupLine(layout, r, u.mode, cursor)
+			return groupLine(layout, r, u.mode, cursor, sparks)
 		}))
 	}
 	lines = append(lines, styleFaint.paint("─ drag to resize ─"+strings.Repeat("─", max(0, width-18))))
@@ -1700,6 +1748,11 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 		if diagnosisLine != "" {
 			extra++
 		}
+		trendWidth := min(u.screenWidth-2, 60)
+		trend2Lines := u.trend != nil && u.trend.ring(row.identity()) != nil && trendWidth >= 10
+		if trend2Lines {
+			extra += 2
+		}
 		visible := max(1, u.bottomHeight-7-len(geoLines)-extra) // Tabs, header, APP, TCP, name, EVIDENCE, and GEO lines.
 		start := min(u.flowStart, max(0, len(row.flows)-visible))
 		if u.selectedFlow < start {
@@ -1740,6 +1793,31 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			appLine += "  " + label("OpenSSL PID") + " " + strconv.Itoa(slices.SortedFunc(maps.Keys(selected.TLSActors), func(a, b processID) int { return a.PID - b.PID })[0].PID)
 		}
 		*lines = append(*lines, appLine)
+		if trend2Lines {
+			ring := u.trend.ring(row.identity())
+			*lines = append(*lines, label("5 MIN")+" "+ring.sparkWindow(trendSeconds, trendWidth))
+			var total, peak uint64
+			var last uint32
+			count := int(min(uint32(trendSeconds), ring.count))
+			for age := 0; age < count; age++ {
+				v, ok := ring.at(age)
+				if !ok {
+					break
+				}
+				total += uint64(v)
+				if uint64(v) > peak {
+					peak = uint64(v)
+				}
+				if age == 0 {
+					last = v
+				}
+			}
+			avg := uint64(0)
+			if count > 0 {
+				avg = total / uint64(count)
+			}
+			*lines = append(*lines, "  "+styleFaint.paint(fmt.Sprintf("%d s · avg %sB/s · peak %sB/s · last %sB/s", count, human(avg), human(peak), human(uint64(last)))))
+		}
 		tcpLine := label("TCP") + " -"
 		if detail := kernelDetail(selected); detail != "" {
 			tcpLine = label("TCP") + " " + detail
