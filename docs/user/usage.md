@@ -19,9 +19,16 @@ sudo ./socktrail --netns pid:12345 --interface eth0 --drops
 sudo ./socktrail --openssl-probe=false  # 禁用默认开启的系统 OpenSSL 探针
 sudo ./socktrail --socket-sniff=false   # 禁用默认开启的 socket 层前缀读取
 sudo ./socktrail --drops                 # 按需采集内核丢包原因
+sudo ./socktrail --interface lo --allow-multiple  # 与已有实例并发运行
 ```
 
 `./socktrail --version` 无需抓包权限，会输出构建时的 tag、构建时间和 Go 版本；本地未注入 tag 的构建会回退到 Go 构建信息。
+
+默认同一台机器上只允许运行一个 socktrail：第二个进程在任何抓包资源创建之前退出，并提示 `another socktrail is already running; use --allow-multiple to run more than one`。互斥用 `/tmp/socktrail.lock` 上的 `flock`，进程退出（包括崩溃或被 `SIGKILL`）时由内核自动释放，不需要清理残留锁。确实要并发运行（例如分别抓不同网卡或命名空间）时加 `--allow-multiple`，该次运行完全跳过锁；此时两份采集各自加载全套 eBPF 程序，CPU 开销约翻倍。
+
+锁文件按读取权限创建，其他用户也能取得锁；如果路径上已有别人拥有的、当前用户读不到的锁文件（例如 root 建的 0600 文件），启动会在 stderr 提示这一点并继续运行而不上锁，不会误报“已经在运行”，root 也仍可通过只读描述符取得锁。
+
+锁路径上的符号链接、FIFO 和目录也会被拒绝，并提示后继续运行而不上锁。使用内存限制启动 systemd scope 时，父进程在启动子进程前释放锁，实际抓包的子进程重新取得锁并持有至退出；交接期间若有其他实例抢先取得锁，子进程会拒绝启动。
 
 ### 配置文件
 
