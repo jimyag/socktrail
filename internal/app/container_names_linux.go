@@ -55,6 +55,53 @@ func dockerDataRoot() string {
 	return "/var/lib/docker"
 }
 
+// containerIDLength is the length of a Docker, containerd or Podman
+// container ID, all lowercase hex.
+const containerIDLength = 64
+
+// isContainerID reports whether s is exactly one container ID.
+func isContainerID(s string) bool {
+	if len(s) != containerIDLength {
+		return false
+	}
+	for i := range len(s) {
+		if !isHexDigit(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f'
+}
+
+// shortenContainerIDs replaces every container ID in part with its first 12
+// characters, the short form Docker and kubectl print. Both take a leftmost,
+// non-overlapping pass, so a run of two IDs shortens to two short IDs.
+func shortenContainerIDs(part string) string {
+	if len(part) < containerIDLength { // Too short to hold one.
+		return part
+	}
+	var b strings.Builder
+	b.Grow(len(part))
+	last := 0
+	for i := 0; i+containerIDLength <= len(part); {
+		if !isContainerID(part[i : i+containerIDLength]) {
+			i++
+			continue
+		}
+		b.WriteString(part[last : i+12])
+		i += containerIDLength
+		last = i
+	}
+	if last == 0 {
+		return part
+	}
+	b.WriteString(part[last:])
+	return b.String()
+}
+
 func containerIdentity(cgroup string) (string, string) {
 	var foundID, foundRuntime string
 	for part := range strings.SplitSeq(strings.Trim(cgroup, "/"), "/") {
@@ -62,12 +109,12 @@ func containerIdentity(cgroup string) (string, string) {
 			{"docker-", "docker"}, {"cri-containerd-", "containerd"}, {"libpod-", "podman"},
 		} {
 			if id, ok := strings.CutPrefix(part, prefix.prefix); ok {
-				if id, ok = strings.CutSuffix(id, ".scope"); ok && len(id) == 64 && containerID.MatchString(id) {
+				if id, ok = strings.CutSuffix(id, ".scope"); ok && isContainerID(id) {
 					foundID, foundRuntime = id, prefix.runtime
 				}
 			}
 		}
-		if len(part) == 64 && containerID.MatchString(part) && (strings.Contains(cgroup, "/docker/") || strings.Contains(cgroup, "/kubepods/")) {
+		if isContainerID(part) && (strings.Contains(cgroup, "/docker/") || strings.Contains(cgroup, "/kubepods/")) {
 			if strings.Contains(cgroup, "/docker/") {
 				foundID, foundRuntime = part, "docker"
 			} else {
@@ -154,7 +201,7 @@ func (r *containerNames) refreshPods() {
 			continue
 		}
 		prefix, id, ok := strings.CutLast(name, "-")
-		if !ok || len(id) != 64 || !containerID.MatchString(id) {
+		if !ok || !isContainerID(id) {
 			continue
 		}
 		parts := strings.Split(prefix, "_")

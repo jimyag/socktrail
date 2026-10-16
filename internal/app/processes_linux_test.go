@@ -334,3 +334,37 @@ func TestProcessUserGrouping(t *testing.T) {
 		}
 	}
 }
+
+// The container ID scan replaced a regexp pass over the same cgroup path on
+// every frame; these are the shapes that reach it.
+func TestShortenContainerIDs(t *testing.T) {
+	id := strings.Repeat("3f", 32)
+	other := strings.Repeat("a", 64)
+	short := id[:12]
+	for part, want := range map[string]string{
+		"":                              "",
+		"nginx.service":                 "nginx.service",
+		"docker-" + id + ".scope":       "docker-" + short + ".scope",
+		"cri-containerd-" + id + ".sco": "cri-containerd-" + short + ".sco",
+		id:                              short,
+		id + id:                         short + short,       // Two adjacent IDs.
+		id + "x" + id:                   short + "x" + short, // An ID split by a non-hex byte.
+		"docker-" + id[:63]:             "docker-" + id[:63], // One byte short stays.
+		id + "g":                        short + "g",         // 64 hex digits then a non-hex byte.
+		"g" + id:                        "g" + short,         // A non-hex byte then 64 hex digits.
+		id[:32] + other + id[:32]:       short + other[:12],  // All hex: two leftmost, non-overlapping IDs.
+		strings.Repeat("z", 200) + id:   strings.Repeat("z", 200) + short,
+	} {
+		if got := shortenContainerIDs(part); got != want {
+			t.Errorf("shortenContainerIDs(%q) = %q, want %q", part, got, want)
+		}
+	}
+	for s, want := range map[string]bool{
+		id: true, other: true, "": false, id[:63]: false, id + "g": false,
+		"g" + id: false, strings.ToUpper(id): false, "nginx.service": false,
+	} {
+		if got := isContainerID(s); got != want {
+			t.Errorf("isContainerID(%q) = %v, want %v", s, got, want)
+		}
+	}
+}

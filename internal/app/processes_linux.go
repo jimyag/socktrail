@@ -8,7 +8,6 @@ import (
 	"os/user"
 	pathpkg "path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -258,8 +257,6 @@ func readCgroupPath(procDir string) string {
 	return v2
 }
 
-var containerID = regexp.MustCompile(`[0-9a-f]{64}`)
-
 // serviceOf returns the systemd unit or container a cgroup path belongs to:
 // the path through its innermost .service or .scope directory, and the
 // unit's name with any container ID cut to 12 characters. A path without a
@@ -271,7 +268,7 @@ func serviceOf(path string) (string, string) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	for i, part := range slices.Backward(parts) {
 		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
-			short := containerID.ReplaceAllStringFunc(part, func(id string) string { return id[:12] })
+			short := shortenContainerIDs(part)
 			return "/" + strings.Join(parts[:i+1], "/"), short
 		}
 	}
