@@ -39,9 +39,9 @@ func lockProcess(path string) (*os.File, error) {
 }
 
 // openLockFile creates the lock file readable by other users, so they can take
-// the lock through a read-only descriptor. A symlink at the path is refused
-// rather than followed, and an existing file we may not read is an error the
-// caller continues from without the lock.
+// the lock through a read-only descriptor. Symlinks and non-regular files are
+// refused, and an existing file we may not read is an error the caller
+// continues from without the lock.
 func openLockFile(path string) (*os.File, error) {
 	//nolint:gosec // G302: the lock file holds no data; read bits are for other users.
 	file, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW, 0o644)
@@ -55,8 +55,16 @@ func openLockFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	//nolint:gosec // G304: the lock path is a fixed constant at the call site.
-	file, err = os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	file, err = os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("lock %s is not a regular file", path)
+	}
+	if err != nil {
+		_ = file.Close()
 		return nil, err
 	}
 	return file, nil

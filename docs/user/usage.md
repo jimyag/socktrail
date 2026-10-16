@@ -28,6 +28,8 @@ sudo ./socktrail --interface lo --allow-multiple  # 与已有实例并发运行
 
 锁文件按读取权限创建，其他用户也能取得锁；如果路径上已有别人拥有的、当前用户读不到的锁文件（例如 root 建的 0600 文件），启动会在 stderr 提示这一点并继续运行而不上锁，不会误报“已经在运行”，root 也仍可通过只读描述符取得锁。
 
+锁路径上的符号链接、FIFO 和目录也会被拒绝，并提示后继续运行而不上锁。使用内存限制启动 systemd scope 时，父进程在启动子进程前释放锁，实际抓包的子进程重新取得锁并持有至退出；交接期间若有其他实例抢先取得锁，子进程会拒绝启动。
+
 ### 配置文件
 
 常用参数可以写进配置文件，每次启动自动生效。默认读取 `$XDG_CONFIG_HOME/socktrail/config`；没有设置绝对路径的 `XDG_CONFIG_HOME` 时为 `~/.config/socktrail/config`。以 root 运行时不看 `XDG_CONFIG_HOME`：通过 `sudo socktrail` 启动时读取发起 `sudo` 的用户的 `~/.config/socktrail/config`，否则读取 root 的这个文件，与 GeoIP 目录的规则相同。文件不存在时忽略。`--config /path/to/file` 指定其他文件，这时文件必须存在；`--config none` 不读任何配置文件。

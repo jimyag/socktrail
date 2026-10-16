@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -98,5 +99,43 @@ func TestLockProcessRefusesSymlink(t *testing.T) {
 	lock, err := lockProcess(path)
 	if err != nil || lock != nil {
 		t.Fatalf("lockProcess on a symlink = %v, %v; want no lock and no error", lock, err)
+	}
+}
+
+func TestOpenLockFileRejectsSpecialFiles(t *testing.T) {
+	for _, kind := range []string{"fifo", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lock")
+			if kind == "fifo" {
+				if err := unix.Mkfifo(path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				file, err := openLockFile(path)
+				if file != nil {
+					_ = file.Close()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("accepted a non-regular lock file")
+				}
+			case <-time.After(2 * time.Second):
+				// Unblock a regressed FIFO open before failing the test.
+				writer, err := os.OpenFile(path, os.O_RDWR|unix.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = writer.Close()
+				<-done
+				t.Fatal("opening a non-regular lock file blocked")
+			}
+		})
 	}
 }

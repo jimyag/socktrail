@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -144,7 +145,7 @@ func cgroupMemoryHeadroom() (uint64, error) {
 
 // prepareCaptureMemory runs large captures in a limited systemd scope before
 // any probes or packet rings are allocated. The child verifies its limit.
-func prepareCaptureMemory(names []string, setting string, yes bool) (handled bool, err error) {
+func prepareCaptureMemory(names []string, setting string, yes bool, processLock *os.File) (handled bool, err error) {
 	limit, err := parseCaptureMemoryLimit(setting, len(names))
 	if err != nil {
 		return false, err
@@ -207,6 +208,12 @@ func prepareCaptureMemory(names []string, setting string, yes bool) (handled boo
 	cmd := exec.Command("systemd-run", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), memoryScopeEnv+"=1")
+	// The capture child takes its own lock so it stays protected if this parent dies.
+	if processLock != nil {
+		if err := unix.Flock(int(processLock.Fd()), unix.LOCK_UN); err != nil {
+			return false, fmt.Errorf("release process lock for memory-limited capture: %w", err)
+		}
+	}
 	if err := cmd.Run(); err != nil {
 		return true, fmt.Errorf("memory-limited capture: %w", err)
 	}

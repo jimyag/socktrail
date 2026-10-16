@@ -1247,14 +1247,14 @@ func Run() error {
 		}
 		return replayPCAPNG(*readFile, *output, *limit, uint16(*port), filter, compiledFilter, geo)
 	}
-	// The systemd scope child is the same run as its parent, which holds the lock.
-	if !*allowMultiple && os.Getenv(memoryScopeEnv) == "" {
-		lock, err := lockProcess(processLockPath)
+	var processLock *os.File
+	if !*allowMultiple {
+		processLock, err = lockProcess(processLockPath)
 		if err != nil {
 			return err
 		}
-		if lock != nil {
-			defer func() { _ = lock.Close() }()
+		if processLock != nil {
+			defer func() { _ = processLock.Close() }()
 		}
 	}
 	targets, namespaces, err := resolveCaptureTargets(netnsSpecs, interfaceNames)
@@ -1276,7 +1276,7 @@ func Run() error {
 		interfaceNames = append(interfaceNames, target.name)
 		targetByName[target.name] = target
 	}
-	if handled, err := prepareCaptureMemory(interfaceNames, *memoryLimit, *yes); handled || err != nil {
+	if handled, err := prepareCaptureMemory(interfaceNames, *memoryLimit, *yes, processLock); handled || err != nil {
 		return err
 	}
 	captureInterfaces = interfaceNames
