@@ -32,6 +32,9 @@ func (c *collector) recordDrop(sample dropprobe.Sample, create bool) {
 			f.TCPState = "midstream"
 		}
 		c.flows[key] = f
+		if disposable(f) {
+			c.evictionBlocked = false
+		}
 	}
 	if f == nil {
 		return

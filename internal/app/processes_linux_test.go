@@ -252,16 +252,51 @@ func TestProcessAndCgroupPatterns(t *testing.T) {
 
 func TestServiceOfCgroupPaths(t *testing.T) {
 	id := strings.Repeat("3f", 32)
-	for path, want := range map[string]string{
-		"/system.slice/nginx.service":                               "nginx.service",
-		"/system.slice/docker-" + id + ".scope":                     "docker-3f3f3f3f3f3f.scope",
-		"/user.slice/user-1000.slice/user@1000.service/app.slice/x": "user@1000.service",
-		"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope": "cri-containerd-3f3f3f3f3f3f.scope",
-		"/": "/",
-		"":  "unknown cgroup",
+	for path, want := range map[string][2]string{
+		"/system.slice/nginx.service":                               {"/system.slice/nginx.service", "nginx.service"},
+		"/system.slice/docker-" + id + ".scope":                     {"/system.slice/docker-" + id + ".scope", "docker-3f3f3f3f3f3f.scope"},
+		"/user.slice/user-1000.slice/user@1000.service/app.slice/x": {"/user.slice/user-1000.slice/user@1000.service", "user@1000.service"},
+		"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope": {"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope", "cri-containerd-3f3f3f3f3f3f.scope"},
+		"//parent.service//child.scope/leaf///":                     {"/parent.service//child.scope", "child.scope"},
+		"worker.service":                                            {"/worker.service", "worker.service"},
+		"/plain/path/":                                              {"/plain/path/", "/plain/path/"},
+		"/":                                                         {"/", "/"},
+		"":                                                          {"", "unknown cgroup"},
 	} {
-		if _, label := serviceOf(path); label != want {
-			t.Errorf("service of %q is %q, want %q", path, label, want)
+		if key, label := serviceOf(path); key != want[0] || label != want[1] {
+			t.Errorf("service of %q is (%q, %q), want %q", path, key, label, want)
+		}
+	}
+}
+
+func BenchmarkServiceOf(b *testing.B) {
+	for name, path := range map[string]string{
+		"systemd":   "/user.slice/user-1000.slice/user@1000.service/app.slice/worker.scope",
+		"container": "/system.slice/docker-" + strings.Repeat("3f", 32) + ".scope/child",
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				serviceOf(path)
+			}
+		})
+	}
+}
+
+func TestShortContainerIDs(t *testing.T) {
+	for _, label := range []string{
+		"nginx.service", "", strings.Repeat("a", 63), strings.Repeat("a", 64),
+		strings.Repeat("a", 65), strings.Repeat("a", 127), strings.Repeat("a", 128),
+		"docker-" + strings.Repeat("0123456789abcdef", 4) + ".scope",
+		strings.Repeat("a", 63) + "g" + strings.Repeat("b", 64),
+		strings.Repeat("A", 64), strings.Repeat("a", 64) + "-" + strings.Repeat("b", 64),
+		"cri-containerd-" + strings.Repeat("3f", 32) + ".sco",
+		strings.Repeat("3f", 16) + strings.Repeat("a", 64) + strings.Repeat("3f", 16),
+		strings.Repeat("z", 200) + strings.Repeat("3f", 32),
+	} {
+		want := containerID.ReplaceAllStringFunc(label, func(id string) string { return id[:12] })
+		if got := shortContainerIDs(label); got != want {
+			t.Errorf("shortContainerIDs(%q) = %q, want %q", label, got, want)
 		}
 	}
 }
@@ -335,36 +370,18 @@ func TestProcessUserGrouping(t *testing.T) {
 	}
 }
 
-// The container ID scan replaced a regexp pass over the same cgroup path on
-// every frame; these are the shapes that reach it.
-func TestShortenContainerIDs(t *testing.T) {
-	id := strings.Repeat("3f", 32)
-	other := strings.Repeat("a", 64)
-	short := id[:12]
-	for part, want := range map[string]string{
-		"":                              "",
-		"nginx.service":                 "nginx.service",
-		"docker-" + id + ".scope":       "docker-" + short + ".scope",
-		"cri-containerd-" + id + ".sco": "cri-containerd-" + short + ".sco",
-		id:                              short,
-		id + id:                         short + short,       // Two adjacent IDs.
-		id + "x" + id:                   short + "x" + short, // An ID split by a non-hex byte.
-		"docker-" + id[:63]:             "docker-" + id[:63], // One byte short stays.
-		id + "g":                        short + "g",         // 64 hex digits then a non-hex byte.
-		"g" + id:                        "g" + short,         // A non-hex byte then 64 hex digits.
-		id[:32] + other + id[:32]:       short + other[:12],  // All hex: two leftmost, non-overlapping IDs.
-		strings.Repeat("z", 200) + id:   strings.Repeat("z", 200) + short,
-	} {
-		if got := shortenContainerIDs(part); got != want {
-			t.Errorf("shortenContainerIDs(%q) = %q, want %q", part, got, want)
+func TestServiceIdentityCacheLimit(t *testing.T) {
+	table := newProcessTable("")
+	for i := range maxCgroups + 2 {
+		path := fmt.Sprintf("/system.slice/docker-%064x.scope/child", i)
+		wantKey, wantLabel := serviceOf(path)
+		for range 2 {
+			if key, label := table.serviceIdentityOf(path); key != wantKey || label != wantLabel {
+				t.Fatalf("cached service of %q = (%q, %q), want (%q, %q)", path, key, label, wantKey, wantLabel)
+			}
 		}
 	}
-	for s, want := range map[string]bool{
-		id: true, other: true, "": false, id[:63]: false, id + "g": false,
-		"g" + id: false, strings.ToUpper(id): false, "nginx.service": false,
-	} {
-		if got := isContainerID(s); got != want {
-			t.Errorf("isContainerID(%q) = %v, want %v", s, got, want)
-		}
+	if len(table.services) != maxCgroups {
+		t.Fatalf("cached %d services, want %d", len(table.services), maxCgroups)
 	}
 }

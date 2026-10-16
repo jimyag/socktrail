@@ -264,6 +264,10 @@ func (s *streamSink) flow(row jsonFlow) error {
 	return s.writeFrame(streamFrame{Kind: streamKindFlow, Flow: &row})
 }
 
+func (s *streamSink) active() bool {
+	return s.hub == nil || s.hub.active()
+}
+
 // writeFrame broadcasts one metadata frame. Standard output carries no frame
 // kinds, so this is a no-op without a hub.
 func (s *streamSink) writeFrame(frame streamFrame) error {

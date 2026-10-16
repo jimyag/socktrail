@@ -62,4 +62,7 @@ func (c *collector) connectResult(e probe.Event) {
 	if e.Result != 0 {
 		f.End, f.Closed, f.Last = flowFailed, true, now
 	}
+	if disposable(f) {
+		c.evictionBlocked = false
+	}
 }

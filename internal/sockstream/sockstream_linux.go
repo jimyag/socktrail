@@ -62,7 +62,7 @@ func StartNamespaces(ctx context.Context, netNS []uint64, port uint16) (<-chan C
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read socket stream probe: %w", err)
 	}
-	kernelbtf.KeepRecvmsgVariants(spec, "stream_recv_enter", "stream_recv_exit")
+	kernelbtf.KeepRecvmsgVariants(spec, kernelbtf.Params, "stream_recv_enter", "stream_recv_exit")
 	if haveCookies() {
 		delete(spec.Programs, "socket_freed")
 	} else if err := spec.Variables["has_socket_cookie"].Set(false); err != nil {

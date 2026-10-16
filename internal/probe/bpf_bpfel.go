@@ -100,6 +100,7 @@ const (
 	BpfProgInetAcceptEntry    = "inet_accept_entry"
 	BpfProgKtlsDeviceSendExit = "ktls_device_send_exit"
 	BpfProgKtlsRecvExit       = "ktls_recv_exit"
+	BpfProgKtlsRecvExit4      = "ktls_recv_exit_4"
 	BpfProgKtlsRecvExitOld    = "ktls_recv_exit_old"
 	BpfProgKtlsSendExit       = "ktls_send_exit"
 	BpfProgKtlsSpliceRecvExit = "ktls_splice_recv_exit"
@@ -113,15 +114,18 @@ const (
 	BpfProgTcpConnectResult   = "tcp_connect_result"
 	BpfProgTcpLossProbeExit   = "tcp_loss_probe_exit"
 	BpfProgTcpRecvExit        = "tcp_recv_exit"
+	BpfProgTcpRecvExit4       = "tcp_recv_exit_4"
 	BpfProgTcpRecvExitOld     = "tcp_recv_exit_old"
 	BpfProgTcpRetransmitExit  = "tcp_retransmit_exit"
 	BpfProgTcpSendExit        = "tcp_send_exit"
 	BpfProgTcpV4ConnectExit   = "tcp_v4_connect_exit"
 	BpfProgTcpV6ConnectExit   = "tcp_v6_connect_exit"
 	BpfProgUdpRecvExit        = "udp_recv_exit"
+	BpfProgUdpRecvExit4       = "udp_recv_exit_4"
 	BpfProgUdpRecvExitOld     = "udp_recv_exit_old"
 	BpfProgUdpSendExit        = "udp_send_exit"
 	BpfProgUdpv6RecvExit      = "udpv6_recv_exit"
+	BpfProgUdpv6RecvExit4     = "udpv6_recv_exit_4"
 	BpfProgUdpv6RecvExitOld   = "udpv6_recv_exit_old"
 	BpfProgUdpv6SendExit      = "udpv6_send_exit"
 )
@@ -171,6 +175,7 @@ type BpfProgramSpecs struct {
 	InetAcceptEntry    *ebpf.ProgramSpec `ebpf:"inet_accept_entry"`
 	KtlsDeviceSendExit *ebpf.ProgramSpec `ebpf:"ktls_device_send_exit"`
 	KtlsRecvExit       *ebpf.ProgramSpec `ebpf:"ktls_recv_exit"`
+	KtlsRecvExit4      *ebpf.ProgramSpec `ebpf:"ktls_recv_exit_4"`
 	KtlsRecvExitOld    *ebpf.ProgramSpec `ebpf:"ktls_recv_exit_old"`
 	KtlsSendExit       *ebpf.ProgramSpec `ebpf:"ktls_send_exit"`
 	KtlsSpliceRecvExit *ebpf.ProgramSpec `ebpf:"ktls_splice_recv_exit"`
@@ -184,15 +189,18 @@ type BpfProgramSpecs struct {
 	TcpConnectResult   *ebpf.ProgramSpec `ebpf:"tcp_connect_result"`
 	TcpLossProbeExit   *ebpf.ProgramSpec `ebpf:"tcp_loss_probe_exit"`
 	TcpRecvExit        *ebpf.ProgramSpec `ebpf:"tcp_recv_exit"`
+	TcpRecvExit4       *ebpf.ProgramSpec `ebpf:"tcp_recv_exit_4"`
 	TcpRecvExitOld     *ebpf.ProgramSpec `ebpf:"tcp_recv_exit_old"`
 	TcpRetransmitExit  *ebpf.ProgramSpec `ebpf:"tcp_retransmit_exit"`
 	TcpSendExit        *ebpf.ProgramSpec `ebpf:"tcp_send_exit"`
 	TcpV4ConnectExit   *ebpf.ProgramSpec `ebpf:"tcp_v4_connect_exit"`
 	TcpV6ConnectExit   *ebpf.ProgramSpec `ebpf:"tcp_v6_connect_exit"`
 	UdpRecvExit        *ebpf.ProgramSpec `ebpf:"udp_recv_exit"`
+	UdpRecvExit4       *ebpf.ProgramSpec `ebpf:"udp_recv_exit_4"`
 	UdpRecvExitOld     *ebpf.ProgramSpec `ebpf:"udp_recv_exit_old"`
 	UdpSendExit        *ebpf.ProgramSpec `ebpf:"udp_send_exit"`
 	Udpv6RecvExit      *ebpf.ProgramSpec `ebpf:"udpv6_recv_exit"`
+	Udpv6RecvExit4     *ebpf.ProgramSpec `ebpf:"udpv6_recv_exit_4"`
 	Udpv6RecvExitOld   *ebpf.ProgramSpec `ebpf:"udpv6_recv_exit_old"`
 	Udpv6SendExit      *ebpf.ProgramSpec `ebpf:"udpv6_send_exit"`
 }
@@ -264,6 +272,7 @@ type BpfPrograms struct {
 	InetAcceptEntry    *ebpf.Program `ebpf:"inet_accept_entry"`
 	KtlsDeviceSendExit *ebpf.Program `ebpf:"ktls_device_send_exit"`
 	KtlsRecvExit       *ebpf.Program `ebpf:"ktls_recv_exit"`
+	KtlsRecvExit4      *ebpf.Program `ebpf:"ktls_recv_exit_4"`
 	KtlsRecvExitOld    *ebpf.Program `ebpf:"ktls_recv_exit_old"`
 	KtlsSendExit       *ebpf.Program `ebpf:"ktls_send_exit"`
 	KtlsSpliceRecvExit *ebpf.Program `ebpf:"ktls_splice_recv_exit"`
@@ -277,15 +286,18 @@ type BpfPrograms struct {
 	TcpConnectResult   *ebpf.Program `ebpf:"tcp_connect_result"`
 	TcpLossProbeExit   *ebpf.Program `ebpf:"tcp_loss_probe_exit"`
 	TcpRecvExit        *ebpf.Program `ebpf:"tcp_recv_exit"`
+	TcpRecvExit4       *ebpf.Program `ebpf:"tcp_recv_exit_4"`
 	TcpRecvExitOld     *ebpf.Program `ebpf:"tcp_recv_exit_old"`
 	TcpRetransmitExit  *ebpf.Program `ebpf:"tcp_retransmit_exit"`
 	TcpSendExit        *ebpf.Program `ebpf:"tcp_send_exit"`
 	TcpV4ConnectExit   *ebpf.Program `ebpf:"tcp_v4_connect_exit"`
 	TcpV6ConnectExit   *ebpf.Program `ebpf:"tcp_v6_connect_exit"`
 	UdpRecvExit        *ebpf.Program `ebpf:"udp_recv_exit"`
+	UdpRecvExit4       *ebpf.Program `ebpf:"udp_recv_exit_4"`
 	UdpRecvExitOld     *ebpf.Program `ebpf:"udp_recv_exit_old"`
 	UdpSendExit        *ebpf.Program `ebpf:"udp_send_exit"`
 	Udpv6RecvExit      *ebpf.Program `ebpf:"udpv6_recv_exit"`
+	Udpv6RecvExit4     *ebpf.Program `ebpf:"udpv6_recv_exit_4"`
 	Udpv6RecvExitOld   *ebpf.Program `ebpf:"udpv6_recv_exit_old"`
 	Udpv6SendExit      *ebpf.Program `ebpf:"udpv6_send_exit"`
 }
@@ -295,6 +307,7 @@ func (p *BpfPrograms) Close() error {
 		p.InetAcceptEntry,
 		p.KtlsDeviceSendExit,
 		p.KtlsRecvExit,
+		p.KtlsRecvExit4,
 		p.KtlsRecvExitOld,
 		p.KtlsSendExit,
 		p.KtlsSpliceRecvExit,
@@ -308,15 +321,18 @@ func (p *BpfPrograms) Close() error {
 		p.TcpConnectResult,
 		p.TcpLossProbeExit,
 		p.TcpRecvExit,
+		p.TcpRecvExit4,
 		p.TcpRecvExitOld,
 		p.TcpRetransmitExit,
 		p.TcpSendExit,
 		p.TcpV4ConnectExit,
 		p.TcpV6ConnectExit,
 		p.UdpRecvExit,
+		p.UdpRecvExit4,
 		p.UdpRecvExitOld,
 		p.UdpSendExit,
 		p.Udpv6RecvExit,
+		p.Udpv6RecvExit4,
 		p.Udpv6RecvExitOld,
 		p.Udpv6SendExit,
 	)

@@ -7,10 +7,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
 )
+
+func TestSocketRefreshSharesPIDScanAcrossInventories(t *testing.T) {
+	var scans atomic.Int32
+	scan := sync.OnceValue(func() map[uint64]int {
+		scans.Add(1)
+		return map[uint64]int{123: 42}
+	})
+	loaded := make(chan *socketInventory, 2)
+	for range 2 {
+		inv := &socketInventory{procRoot: t.TempDir(), trackListeners: true, loaded: loaded, done: t.Context().Done()}
+		inv.refresh(nil, time.Now(), scan)
+	}
+	for range 2 {
+		select {
+		case next := <-loaded:
+			if next.pids[123] != 42 {
+				t.Fatal("inventory did not receive the shared PID scan")
+			}
+		case <-t.Context().Done():
+			t.Fatal("inventory refresh did not complete")
+		}
+	}
+	if scans.Load() != 1 {
+		t.Fatalf("PID scans = %d, want 1", scans.Load())
+	}
+}
 
 // procAddr prints an endpoint the way /proc/net/tcp does: 32-bit words in
 // host byte order.

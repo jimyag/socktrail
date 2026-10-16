@@ -8,6 +8,7 @@ import (
 	"os/user"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,6 +265,8 @@ func readCgroupPath(procDir string) string {
 	return v2
 }
 
+var containerID = regexp.MustCompile(`[0-9a-f]{64}`)
+
 // serviceOf returns the systemd unit or container a cgroup path belongs to:
 // the path through its innermost .service or .scope directory, and the
 // unit's name with any container ID cut to 12 characters. A path without a
@@ -272,20 +275,51 @@ func serviceOf(path string) (string, string) {
 	if path == "" {
 		return "", "unknown cgroup"
 	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, part := range slices.Backward(parts) {
-		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
-			short := shortenContainerIDs(part)
-			return "/" + strings.Join(parts[:i+1], "/"), short
+	for unitPath := strings.Trim(path, "/"); unitPath != ""; {
+		parent, part, found := strings.CutLast(unitPath, "/")
+		if !found {
+			parent, part = "", unitPath
 		}
+		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
+			return "/" + unitPath, shortContainerIDs(part)
+		}
+		unitPath = parent
 	}
 	return path, path
 }
 
-// serviceIdentityOf returns the cached service path and label of a cgroup path. The
-// mapping is pure and a host has few distinct cgroups, but every frame asks
-// for the same ones, so calling the uncached function each time was the
-// collector's largest source of short-lived allocations.
+// shortContainerIDs replaces each non-overlapping 64-byte lowercase hex ID.
+func shortContainerIDs(label string) string {
+	if len(label) < 64 {
+		return label
+	}
+	var short strings.Builder
+	written, hexRun := 0, 0
+	for i := range len(label) {
+		c := label[i]
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+			hexRun++
+		} else {
+			hexRun = 0
+		}
+		if hexRun == 64 {
+			if written == 0 {
+				short.Grow(len(label))
+			}
+			idStart := i + 1 - 64
+			short.WriteString(label[written : idStart+12])
+			written, hexRun = i+1, 0
+		}
+	}
+	if written == 0 {
+		return label
+	}
+	short.WriteString(label[written:])
+	return short.String()
+}
+
+// serviceIdentityOf caches only the pure path mapping; container metadata is
+// still resolved by serviceFor so late-arriving names remain visible.
 func (t *processTable) serviceIdentityOf(path string) (string, string) {
 	if cached, ok := t.services[path]; ok {
 		return cached.key, cached.label

@@ -172,7 +172,7 @@ func (inv *socketInventory) loadCurrent() {
 // arrives. Walking every process's descriptors takes tens of milliseconds
 // (30 ms for 6,400 descriptors), longer than a capture ring lasts at 20 Gbps
 // while the main loop does not hand its blocks back.
-func (inv *socketInventory) refresh(collectors map[string]*collector, now time.Time) {
+func (inv *socketInventory) refresh(collectors map[string]*collector, now time.Time, scanPIDs func() map[uint64]int) {
 	inv.read = now
 	if inv.loading || !inv.trackListeners && !anyOwnerless(collectors) {
 		return
@@ -181,7 +181,7 @@ func (inv *socketInventory) refresh(collectors map[string]*collector, now time.T
 	next := &socketInventory{procRoot: inv.procRoot, ns: inv.ns, trackListeners: inv.trackListeners}
 	go func() {
 		next.load()
-		next.pids = socketPIDs(next.procRoot)
+		next.pids = scanPIDs()
 		select {
 		case inv.loaded <- next:
 		case <-inv.done:
@@ -204,11 +204,12 @@ func (inv *socketInventory) apply(next *socketInventory, collectors map[string]*
 
 // refreshNow reads the socket tables and applies them at once, for the final
 // report after capture stopped.
-func (inv *socketInventory) refreshNow(collectors map[string]*collector) {
+func (inv *socketInventory) refreshNow(collectors map[string]*collector, scanPIDs func() map[uint64]int) {
 	if !inv.trackListeners && !anyOwnerless(collectors) {
 		return
 	}
 	inv.load()
+	inv.pids = scanPIDs()
 	for _, c := range collectors {
 		c.applySocketInventory(inv)
 	}
