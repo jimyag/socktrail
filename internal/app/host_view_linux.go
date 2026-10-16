@@ -86,10 +86,14 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 	if s.flowIDs == nil {
 		s.flowIDs = make(map[*flow]uint64)
 	}
-	// The view is rebuilt from scratch each second; sizing the maps from the
-	// previous counts skips the growth and rehash they would otherwise do.
+	// The view is rebuilt from scratch each second; size the maps for merged
+	// connections, but retain an identity entry for every interface observation.
 	mergedFlows := len(host.retired)
-	newIDs := make(map[*flow]uint64, mergedFlows)
+	memberFlows := 0
+	for _, merged := range host.retired {
+		memberFlows += len(members[merged])
+	}
+	newIDs := make(map[*flow]uint64, memberFlows)
 	newActive := make(map[uint64]hostFlowTotal, mergedFlows)
 	newDisplayed := make(map[uint64]*flow, mergedFlows)
 	replacements := make(map[*flow]*flow, mergedFlows)
