@@ -21,7 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	_ "github.com/jimmicro/version"
+	"golang.org/x/sys/unix"
 
 	"github.com/jimyag/socktrail/internal/appproto"
 	"github.com/jimyag/socktrail/internal/capture"
@@ -1175,6 +1177,8 @@ func Run() error {
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
 	allowMultiple := flag.Bool("allow-multiple", false, "run even when another socktrail is already running")
+	pprofAddress := flag.String("pprof", "", "serve Go pprof on a loopback IP:port, such as 127.0.0.1:6060 (default: off)")
+	ebpfStats := flag.Bool("ebpf-stats", false, "collect kernel eBPF runtime and memory statistics at /debug/ebpf; requires --pprof (default: off)")
 	var filter processFilter
 	flag.Var(&filter.names, "process", "show only these processes: names or globs, comma-separated; the kernel keeps 15 bytes of a name")
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
@@ -1193,6 +1197,9 @@ func Run() error {
 	}
 	if err := applyConfig(flag.CommandLine, *configPath); err != nil {
 		return err
+	}
+	if *ebpfStats && *pprofAddress == "" {
+		return fmt.Errorf("--ebpf-stats requires --pprof, such as --pprof 127.0.0.1:6060")
 	}
 	compiledFilter, err := parseFilter(*filterExpression)
 	if err != nil {
@@ -1296,6 +1303,20 @@ func Run() error {
 	defer cancelRun()
 	probeCtx, cancelProbe := context.WithCancel(ctx)
 	defer cancelProbe()
+	if *ebpfStats {
+		stats, err := ebpf.EnableStats(unix.BPF_STATS_RUN_TIME)
+		if err != nil {
+			return fmt.Errorf("enable eBPF statistics (requires Linux 5.8+ and sufficient privileges): %w", err)
+		}
+		defer func() { _ = stats.Close() }()
+	}
+	pprofServer, err := startPprof(*pprofAddress, *ebpfStats)
+	if err != nil {
+		return err
+	}
+	if pprofServer != nil {
+		defer func() { _ = pprofServer.Close() }()
+	}
 	events, probeDone, probeStats, err := probe.StartEmbeddedNamespaces(probeCtx, netNSIDs, uint16(*port))
 	if err != nil {
 		return err
