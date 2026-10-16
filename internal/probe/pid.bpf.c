@@ -490,11 +490,20 @@ int BPF_PROG(tcp_send_exit, struct sock *sk, struct msghdr *msg,
     return 0;
 }
 
-// The recvmsg functions lost their nonblock argument in Linux 5.19. Each has
-// a *_old twin for earlier kernels; the loader keeps the one that matches.
+// The recvmsg functions lost their nonblock argument in Linux 5.19 and
+// their addr_len argument later. Each has a *_old (nonblock) and a *_4
+// (neither) twin; the loader keeps the one that matches the kernel.
 SEC("fexit/tcp_recvmsg")
 int BPF_PROG(tcp_recv_exit, struct sock *sk, struct msghdr *msg,
              unsigned long len, int flags, int *addr_len, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(tcp_recv_exit_4, struct sock *sk, struct msghdr *msg,
+             unsigned long len, int flags, int ret)
 {
     if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
     return 0;
@@ -581,6 +590,14 @@ int BPF_PROG(ktls_recv_exit, struct sock *sk, struct msghdr *msg, unsigned long 
 }
 
 SEC("fexit/tls_sw_recvmsg")
+int BPF_PROG(ktls_recv_exit_4, struct sock *sk, struct msghdr *msg, unsigned long len,
+             int flags, int ret)
+{
+    if (ret > 0) output(sk, 6, ROLE_RECV, OP_RECV, ret, 0, 0, -1);
+    return 0;
+}
+
+SEC("fexit/tls_sw_recvmsg")
 int BPF_PROG(ktls_recv_exit_old, struct sock *sk, struct msghdr *msg, unsigned long len,
              int nonblock, int flags, int *addr_len, int ret)
 {
@@ -632,6 +649,14 @@ int BPF_PROG(udp_recv_exit, struct sock *sk, struct msghdr *msg,
 }
 
 SEC("fexit/udp_recvmsg")
+int BPF_PROG(udp_recv_exit_4, struct sock *sk, struct msghdr *msg,
+             unsigned long len, int flags, int ret)
+{
+    udp_received(sk, msg, ret, AF_INET);
+    return 0;
+}
+
+SEC("fexit/udp_recvmsg")
 int BPF_PROG(udp_recv_exit_old, struct sock *sk, struct msghdr *msg,
              unsigned long len, int nonblock, int flags, int *addr_len, int ret)
 {
@@ -642,6 +667,14 @@ int BPF_PROG(udp_recv_exit_old, struct sock *sk, struct msghdr *msg,
 SEC("fexit/udpv6_recvmsg")
 int BPF_PROG(udpv6_recv_exit, struct sock *sk, struct msghdr *msg,
              unsigned long len, int flags, int *addr_len, int ret)
+{
+    udp_received(sk, msg, ret, AF_INET6);
+    return 0;
+}
+
+SEC("fexit/udpv6_recvmsg")
+int BPF_PROG(udpv6_recv_exit_4, struct sock *sk, struct msghdr *msg,
+             unsigned long len, int flags, int ret)
 {
     udp_received(sk, msg, ret, AF_INET6);
     return 0;

@@ -43,7 +43,7 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 	} else {
 		delete(spec.Programs, "inet_accept_entry")
 	}
-	kernelbtf.KeepRecvmsgVariants(spec, "tcp_recv_exit", "udp_recv_exit", "udpv6_recv_exit")
+	kernelbtf.KeepRecvmsgVariants(spec, kernelbtf.Params, "tcp_recv_exit", "udp_recv_exit", "udpv6_recv_exit")
 	// Hooks that exist only on some kernels: generic_splice_sendpage is gone
 	// from 6.5, where splice sends through tcp_sendmsg and is counted there.
 	for program, function := range map[string]string{"splice_send_exit": "generic_splice_sendpage", "splice_recv_exit": "tcp_splice_read", "tcp_retransmit_exit": "tcp_retransmit_skb", "tcp_loss_probe_exit": "tcp_send_loss_probe"} {
@@ -55,18 +55,15 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 	// only when the module is loaded at start; one loaded later goes unseen.
 	for program, function := range map[string]string{
 		"ktls_send_exit": "tls_sw_sendmsg", "ktls_device_send_exit": "tls_device_sendmsg",
-		"ktls_recv_exit": "tls_sw_recvmsg", "ktls_recv_exit_old": "tls_sw_recvmsg",
+		"ktls_recv_exit": "tls_sw_recvmsg", "ktls_recv_exit_4": "tls_sw_recvmsg",
+		"ktls_recv_exit_old":    "tls_sw_recvmsg",
 		"ktls_splice_recv_exit": "tls_sw_splice_read",
 	} {
 		if kernelbtf.ModuleParams("tls", function) < 0 {
 			delete(spec.Programs, program)
 		}
 	}
-	if kernelbtf.ModuleParams("tls", "tls_sw_recvmsg") == 6 { // With nonblock, before 5.19.
-		delete(spec.Programs, "ktls_recv_exit")
-	} else {
-		delete(spec.Programs, "ktls_recv_exit_old")
-	}
+	kernelbtf.KeepRecvmsgVariants(spec, func(name string) int { return kernelbtf.ModuleParams("tls", name) }, "ktls_recv_exit")
 	connectStatus := "kernel TCP connect results active"
 	var objects *ebpf.Collection
 	ktlsFallback, connectFallback := false, false

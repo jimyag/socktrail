@@ -37,7 +37,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 内核接口的差异按内核自己的 BTF 处理，不按版本号猜：
 
-- recvmsg 系列在 5.19 去掉了 nonblock 参数，每个 recvmsg 程序都有旧签名的 `_old` 版本，加载器按 `tcp_recvmsg` 的参数个数保留其一；内核 TLS 的 `tls_sw_recvmsg` 同样按 tls 模块的 BTF 选择。
+- recvmsg 系列在 Linux 5.19 去掉了 nonblock 参数，后续内核又去掉了 addr_len 参数。加载器按每个挂载目标函数的 BTF 参数个数，在 `_old`（6 参数）、无后缀（5 参数）和 `_4`（4 参数）变体中保留匹配项；内核 TLS 的 `tls_sw_recvmsg` 通过 `ModuleParams` 查询 BTF，兼容模块和内建形式。
 - accept 在内核有 `__inet_accept`（6.8 起）时挂它的 fentry，否则挂 `inet_csk_accept` 的 fexit：后者在 6.10 改了签名，而且挂载时已经阻塞在 `accept()` 里的调用返回时不经过它。
 - `iov_iter` 在 5.14 之前没有 `iter_type`，用 CO-RE 回退读旧的 `type` 位集合。
 - 5.12 之前 tracing 程序不能调用 `bpf_get_socket_cookie`，加载器用一个极小的探测程序判断，不可用时 socket 层读取以 socket 的内核地址作键，并在 `inet_sock_destruct` 时清掉该地址的预算（`sk_free` 不行，发送路径每次释放写内存引用都会调用它）。

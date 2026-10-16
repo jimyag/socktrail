@@ -42,18 +42,34 @@ func params(spec *btf.Spec, name string) int {
 	return len(proto.Params)
 }
 
-// KeepRecvmsgVariants removes, for each named program, the variant that does
-// not match the kernel: Linux 5.19 dropped the nonblock argument of the
-// recvmsg functions, and a program written for one signature fails the
-// verifier on the other. The variant for earlier kernels is named with an
-// "_old" suffix.
-func KeepRecvmsgVariants(spec *ebpf.CollectionSpec, names ...string) {
-	withNonblock := Params("tcp_recvmsg") == 6
+// recvmsgVariants maps a recvmsg function's parameter count to the program
+// name suffix carrying that signature. Linux 5.19 dropped the nonblock
+// argument (6 to 5) and later kernels dropped addr_len (5 to 4); a program
+// written for one signature fails the verifier on another.
+var recvmsgVariants = map[int]string{4: "_4", 5: "", 6: "_old"}
+
+// KeepRecvmsgVariants keeps, for each named program, the variant whose
+// parameter count matches the kernel function the program attaches to, and
+// removes the others. paramCount resolves a function name against the kernel
+// or the module that defines it; a missing function leaves no variant loaded.
+func KeepRecvmsgVariants(spec *ebpf.CollectionSpec, paramCount func(name string) int, names ...string) {
 	for _, name := range names {
-		if withNonblock {
-			delete(spec.Programs, name)
-		} else {
-			delete(spec.Programs, name+"_old")
+		want := paramCount(attachTo(spec, name))
+		for arity, suffix := range recvmsgVariants {
+			if arity != want {
+				delete(spec.Programs, name+suffix)
+			}
 		}
 	}
+}
+
+// attachTo returns the kernel function the named program attaches to,
+// whichever signature variant still carries it.
+func attachTo(spec *ebpf.CollectionSpec, name string) string {
+	for _, suffix := range recvmsgVariants {
+		if program := spec.Programs[name+suffix]; program != nil {
+			return program.AttachTo
+		}
+	}
+	return ""
 }
