@@ -6,7 +6,66 @@ import (
 	"time"
 
 	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/probe"
 )
+
+func TestHostRefreshKeepsSourcesAndCompletedHistoryIndependent(t *testing.T) {
+	for _, end := range []flowEnd{flowFin, flowFailed} {
+		t.Run(end.String(), func(t *testing.T) {
+			now := time.Now()
+			id := processID{PID: 42}
+			key := keyFor(netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("198.51.100.1:443"), 6)
+			f := &flow{
+				Key: key, First: now, Last: now, IO: map[processID]ioBytes{id: {TX: 10}},
+				Health: tcpHealth{Kernel: new([2]probe.TCPInfo)},
+			}
+			f.Health.Kernel[0].RTT = time.Millisecond
+			collectors := map[string]*collector{"eth0": {flows: map[flowKey]*flow{key: f}}}
+			var state hostViewState
+			refresh := func(at time.Time) {
+				host, _, members := state.collect([]string{"eth0"}, collectors)
+				state.updateAt(host, members, at)
+			}
+			refresh(now)
+			f.IO[id] = ioBytes{TX: 20}
+			refresh(now.Add(time.Second))
+			if f.IO[id].TX != 20 {
+				t.Fatal("refresh mutated the interface observation")
+			}
+			f.Closed = true
+			if end == flowFailed {
+				f.End = flowFailed
+			}
+			refresh(now.Add(3 * time.Second))
+			if len(state.history) != 1 || state.history[0].End != end {
+				t.Fatalf("completed history = %+v", state.history)
+			}
+			f.IO[id] = ioBytes{TX: 99}
+			f.Health.Kernel[0].RTT = 9 * time.Millisecond
+			refresh(now.Add(4 * time.Second))
+			if state.history[0].IO[id].TX != 20 || state.history[0].Health.Kernel[0].RTT != time.Millisecond {
+				t.Fatal("late observations modified completed history")
+			}
+		})
+	}
+}
+
+func TestHostRefreshSeparatesObservationsThatSplit(t *testing.T) {
+	now := time.Now()
+	key := keyFor(netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("198.51.100.1:443"), 6)
+	a := &flow{Key: key, First: now, Last: now, SYNSeen: true, SYNSeq: 1, TX: 10}
+	b := &flow{Key: key, First: now, Last: now, SYNSeen: true, SYNSeq: 1, TX: 20}
+	collectors := map[string]*collector{"one": {flows: map[flowKey]*flow{key: a}}, "two": {flows: map[flowKey]*flow{key: b}}}
+	var state hostViewState
+	host, _, members := state.collect([]string{"one", "two"}, collectors)
+	state.updateAt(host, members, now)
+	b.SYNSeq = 2
+	host, _, members = state.collect([]string{"one", "two"}, collectors)
+	state.updateAt(host, members, now.Add(time.Second))
+	if len(state.displayed) != 2 || host.retired[0] == host.retired[1] || host.bytes != 30 {
+		t.Fatal("split observations reused the same merged connection")
+	}
+}
 
 func TestHostViewKeepsOneCaptureCopyAndDomainEvidence(t *testing.T) {
 	now := time.Now()
@@ -100,7 +159,7 @@ func TestHostViewMergesMidstreamCopyOfKnownHandshake(t *testing.T) {
 
 func TestHostViewPreservesLoopbackDirectionWithOneKnownPID(t *testing.T) {
 	f := &flow{Direction: "local", Client: participant{PID: 123}, TX: 40}
-	merged, _ := mergeObservedFlow([]observedFlow{{flow: f, interfaceName: "lo"}})
+	merged, _ := mergeObservedFlow([]observedFlow{{flow: f, interfaceName: "lo"}}, nil)
 	if merged.Direction != "local" {
 		t.Fatalf("loopback flow direction = %q", merged.Direction)
 	}

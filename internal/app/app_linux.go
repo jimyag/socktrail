@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net/netip"
 	"os"
@@ -214,6 +215,7 @@ type collector struct {
 	roleSeen        map[flowKey]time.Time
 	wildcardSeen    map[wildcardKey]time.Time
 	maxFlows        int
+	evictionBlocked bool // No candidates; retry when an observation makes a flow disposable.
 	filterPort      uint16
 	loopback        bool
 	interfaceIndex  int // Its position in captureInterfaces.
@@ -594,6 +596,9 @@ func (c *collector) packet(p capture.Packet) {
 				f.TCPState = "closing"
 			}
 		}
+	}
+	if disposable(f) {
+		c.evictionBlocked = false
 	}
 }
 
@@ -1107,17 +1112,28 @@ func (c *collector) attachDNSHints() {
 }
 
 func (c *collector) reconcileWildcards() {
-	for key, p := range c.wildcards {
-		var candidates []*flow
-		for _, f := range c.flows {
-			if f.Key.Protocol != key.Protocol {
-				continue
-			}
-			a, b := f.Key.A, f.Key.B
-			if (a == key.Remote && b.Port() == key.LocalPort) || (b == key.Remote && a.Port() == key.LocalPort) {
-				candidates = append(candidates, f)
-			}
+	if len(c.wildcards) == 0 {
+		return
+	}
+	bySocket := make(map[wildcardKey][]*flow, len(c.wildcards))
+	for key := range c.wildcards {
+		key.Role = ""
+		bySocket[key] = nil
+	}
+	for _, f := range c.flows {
+		a := wildcardKey{Remote: f.Key.A, LocalPort: f.Key.B.Port(), Protocol: f.Key.Protocol}
+		b := wildcardKey{Remote: f.Key.B, LocalPort: f.Key.A.Port(), Protocol: f.Key.Protocol}
+		if _, wanted := bySocket[a]; wanted {
+			bySocket[a] = append(bySocket[a], f)
 		}
+		if _, wanted := bySocket[b]; wanted && b != a {
+			bySocket[b] = append(bySocket[b], f)
+		}
+	}
+	for key, p := range c.wildcards {
+		lookup := key
+		lookup.Role = ""
+		candidates := bySocket[lookup]
 		if len(candidates) > 1 {
 			for _, f := range candidates {
 				if f.ClientWildcard != nil && *f.ClientWildcard == key {
@@ -1149,7 +1165,7 @@ func (c *collector) reconcileWildcards() {
 	}
 }
 
-func Run() error {
+func Run() (runErr error) {
 	var interfaceNames interfaceFlags
 	var netnsSpecs interfaceFlags
 	flag.Var(&interfaceNames, "interface", "network interfaces to observe (repeat or comma-separate names or glob patterns; default: up to 8, physical first)")
@@ -1539,13 +1555,17 @@ func Run() error {
 	}
 	var summary sessionSummary
 	var stream *streamSink
+	var outputTarget io.WriteCloser
+	var outputWriter *streamWriter
+	var outputDone <-chan struct{}
 	var streamStart time.Time
 	var lastStats time.Time
 	var lastOutput map[uint64]time.Time
 	if streamingOutput(*output) {
 		streamStart, lastStats = time.Now(), time.Now()
 		if *socketPath == "" {
-			stream, err = newStreamSink(*output, os.Stdout, nil)
+			outputTarget = streamOutput{os.Stdout}
+			stream, err = newStreamSink(*output, outputTarget, nil)
 		} else {
 			hub, hubErr := listenStreamSocket(*socketPath, socketFileMode)
 			if hubErr != nil {
@@ -1562,13 +1582,22 @@ func Run() error {
 		if err != nil {
 			return err
 		}
-		defer func() { _ = writer.Close() }()
+		outputTarget = writer
 		stream, err = newStreamSink("ndjson", writer, nil)
 		if err != nil {
-			return err
+			return errors.Join(err, writer.Close())
 		}
 	}
 	if stream != nil {
+		if outputTarget != nil {
+			outputWriter = newStreamWriter(outputTarget)
+			stream.writer = outputWriter
+			outputDone = outputWriter.done
+			defer func() {
+				cancelRun()
+				runErr = errors.Join(runErr, outputWriter.Close())
+			}()
+		}
 		lastOutput = make(map[uint64]time.Time)
 	}
 	if ui != nil {
@@ -1613,6 +1642,8 @@ func Run() error {
 	stopCh := ctx.Done()
 	for packets != nil || events != nil || tlsEvents != nil || streamChunks != nil || dropUpdates != nil {
 		select {
+		case <-outputDone:
+			return fmt.Errorf("write %s output: %w", stream.format, outputWriter.err)
 		case samples, ok := <-dropUpdates:
 			if !ok {
 				dropUpdates = nil
@@ -1665,9 +1696,10 @@ func Run() error {
 			if sockets.trackListeners {
 				interval = 5 * time.Second
 			}
+			scanPIDs := sync.OnceValue(func() map[uint64]int { return socketPIDs("/proc") })
 			for id, inv := range socketsByNS {
 				if time.Since(inv.read) >= interval {
-					inv.refresh(collectorsByNS[id], time.Now())
+					inv.refresh(collectorsByNS[id], time.Now(), scanPIDs)
 				}
 			}
 			if ui != nil && !ui.closed || stream != nil {
@@ -1676,11 +1708,13 @@ func Run() error {
 				}
 				var sources map[*flow]*flow
 				oldHost := host
-				host, sources, members = hostCollector(interfaceNames, collectors)
+				host, sources, members = hostState.collect(interfaceNames, collectors)
 				correlateProcessDNS(host, hostState.history, collectors, interfaceNames, time.Now())
 				replacements := hostState.update(host, members)
 				if stream != nil {
 					stream.adoptClients()
+				}
+				if stream != nil && stream.active() {
 					scope := newProcessScope(processes, filter)
 					// The handshake, the changes and the refreshes carry the same
 					// connections; a snapshot row outside them would never change
@@ -1723,13 +1757,16 @@ func Run() error {
 							if err := send(row); err != nil {
 								return err
 							}
+							if lastOutput[id].IsZero() {
+								lastOutput[id] = time.Now()
+							}
 						}
 						stats := buildStats(time.Now())
 						return send(streamFrame{Kind: streamKindStats, Stats: &stats})
 					}); err != nil {
 						return fmt.Errorf("write %s handshake: %w", stream.format, err)
 					}
-					if now := time.Now(); now.Sub(lastStats) >= *refresh {
+					if now := time.Now(); stream.hub != nil && now.Sub(lastStats) >= *refresh {
 						stats := buildStats(now)
 						if err := stream.writeFrame(streamFrame{Kind: streamKindStats, Stats: &stats}); err != nil {
 							return fmt.Errorf("write %s stats: %w", stream.format, err)
@@ -1771,6 +1808,11 @@ func Run() error {
 					for merged, source := range sources {
 						ui.rates[replacements[merged]] = ui.rates[source]
 					}
+					trendCollector := collectors[ui.interfaceName]
+					if ui.hostScope {
+						trendCollector = host
+					}
+					ui.sampleTrends(trendCollector, time.Now())
 					ui.render(currentCollector(), probeStats.Received.Load(), probeStats.KernelLost.Load(), probeStats.Dropped.Load())
 				}
 			}
@@ -1954,8 +1996,9 @@ func Run() error {
 			fmt.Printf("NAT lookups %d  NAT'd %d  queue full %d  failed %d\n", total.Lookups, total.Translated, total.QueueFull, total.Failed)
 		}
 	}
+	scanPIDs := sync.OnceValue(func() map[uint64]int { return socketPIDs("/proc") })
 	for id, inv := range socketsByNS {
-		inv.refreshNow(collectorsByNS[id])
+		inv.refreshNow(collectorsByNS[id], scanPIDs)
 	}
 	for _, name := range interfaceNames {
 		c := collectors[name]

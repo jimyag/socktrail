@@ -169,6 +169,11 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 // IP bytes come from one capture point per connection; interface counters are
 // never added together. PID socket I/O is copied once from the global probe.
 func hostCollector(names []string, collectors map[string]*collector) (*collector, map[*flow]*flow, map[*flow][]*flow) {
+	var state hostViewState
+	return state.collect(names, collectors)
+}
+
+func (s *hostViewState) collect(names []string, collectors map[string]*collector) (*collector, map[*flow]*flow, map[*flow][]*flow) {
 	host := &collector{flows: make(map[flowKey]*flow)}
 	sources := make(map[*flow]*flow)
 	members := make(map[*flow][]*flow)
@@ -253,7 +258,19 @@ func hostCollector(names []string, collectors map[string]*collector) (*collector
 	for _, candidates := range byKey {
 		groups := groupObservations(candidates)
 		for _, group := range groups {
-			merged, source := mergeObservedFlow(group)
+			var id uint64
+			reusable := true
+			for _, observation := range group {
+				if id == 0 {
+					id = s.flowIDs[observation.flow]
+				}
+				reusable = reusable && observation.flow.End == flowOngoing
+			}
+			var destination *flow
+			if shown := s.displayed[id]; reusable && shown != nil && shown.End == flowOngoing && len(members[shown]) == 0 {
+				destination = shown
+			}
+			merged, source := mergeObservedFlow(group, destination)
 			host.retired = append(host.retired, merged)
 			sources[merged] = source
 			for _, observation := range group {
@@ -370,7 +387,7 @@ func crossed(a, b string) bool {
 	return in(a) && out(b) || out(a) && in(b)
 }
 
-func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
+func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 	packetSource := group[0].flow
 	evidenceSource := packetSource
 	for _, candidate := range group[1:] {
@@ -382,10 +399,22 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 			evidenceSource = f
 		}
 	}
-	merged := *packetSource
+	if merged == nil {
+		merged = new(flow)
+	}
+	ioBuffer, actorsBuffer, dropsBuffer, kernelBuffer := merged.IO, merged.TLSActors, merged.Drops, merged.Health.Kernel
+	clear(ioBuffer)
+	clear(actorsBuffer)
+	*merged = *packetSource
 	merged.Interfaces = packetSource.Interfaces.clone()
-	// Rebuilt below from every observation, packetSource's too; the view is
-	// rebuilt each second, so maps come only with an entry.
+	if packetSource.Health.Kernel != nil {
+		if kernelBuffer == nil {
+			kernelBuffer = new([2]probe.TCPInfo)
+		}
+		*kernelBuffer = *packetSource.Health.Kernel
+		merged.Health.Kernel = kernelBuffer
+	}
+	// Reuse only active snapshots; completed history keeps its own maps.
 	merged.IO, merged.TLSActors, merged.Drops = nil, nil, nil
 	merged.Domain = evidenceSource.Domain
 	// The observation that supplied the name also parsed the application protocol.
@@ -403,7 +432,10 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		f := candidate.flow
 		for id, actor := range f.TLSActors {
 			if merged.TLSActors == nil {
-				merged.TLSActors = make(map[processID]participant)
+				merged.TLSActors = actorsBuffer
+				if merged.TLSActors == nil {
+					merged.TLSActors = make(map[processID]participant)
+				}
 			}
 			merged.TLSActors[id] = actor
 		}
@@ -429,7 +461,11 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		}
 		if f.Drops != nil {
 			if merged.Drops == nil {
-				merged.Drops = &dropStats{reasons: make(map[string]uint64)}
+				merged.Drops = dropsBuffer
+				if merged.Drops == nil {
+					merged.Drops = &dropStats{reasons: make(map[string]uint64)}
+				}
+				clear(merged.Drops.reasons)
 			}
 			for reason, count := range f.Drops.reasons {
 				merged.Drops.reasons[reason] = max(merged.Drops.reasons[reason], count)
@@ -452,7 +488,10 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 		}
 		for id, io := range f.IO {
 			if merged.IO == nil {
-				merged.IO = make(map[processID]ioBytes)
+				merged.IO = ioBuffer
+				if merged.IO == nil {
+					merged.IO = make(map[processID]ioBytes)
+				}
 			}
 			old := merged.IO[id]
 			merged.IO[id] = ioBytes{RX: max(old.RX, io.RX), TX: max(old.TX, io.TX)}
@@ -485,5 +524,5 @@ func mergeObservedFlow(group []observedFlow) (*flow, *flow) {
 	default:
 		merged.Direction = "unknown"
 	}
-	return &merged, packetSource
+	return merged, packetSource
 }

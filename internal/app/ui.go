@@ -796,17 +796,15 @@ func (u *terminalUI) sampleAll(collectors map[string]*collector, now time.Time) 
 		}
 	}
 	u.lastSample = now
+}
 
+func (u *terminalUI) sampleTrends(collect *collector, now time.Time) {
 	// Per-second trend history for the rows the table currently shows.
 	// Rows under a --process/--pid/--cgroup scope or a filter are skipped,
 	// matching how the main table hides them; their rings age out unused
 	// via trendRowStaleMs, so a brief disappearance keeps history.
 	if u.trend != nil {
 		u.trend.tick(now)
-		collect := collectors[u.interfaceName]
-		if u.hostScope {
-			collect, _, _ = hostCollector(u.interfaces, collectors)
-		}
 		if collect != nil {
 			seen := make(map[string]uint64)
 			for _, row := range u.rows(collect, u.mode) {

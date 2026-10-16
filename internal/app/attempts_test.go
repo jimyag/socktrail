@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
+	"github.com/jimyag/socktrail/internal/probe"
 )
 
 // A scan against closed, filtered and UDP ports becomes one summary line for
@@ -55,5 +56,31 @@ func TestScanIsSummarizedAndEvicted(t *testing.T) {
 	}
 	if got := strings.Join(labels, "|"); !strings.Contains(got, "203.0.113.9  tried 46 ports: refused 31, unanswered 15") {
 		t.Fatalf("source view: %s", got)
+	}
+}
+
+func TestFullTableRetriesEvictionWhenFlowBecomesDisposable(t *testing.T) {
+	for _, event := range []string{"reset", "fin", "failed connect"} {
+		t.Run(event, func(t *testing.T) {
+			key := keyFor(netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("198.51.100.1:443"), 6)
+			f := &flow{Key: key, TCPState: "established"}
+			c := &collector{flows: map[flowKey]*flow{key: f}, maxFlows: 1}
+			now := time.Now()
+			c.evict(now)
+			switch event {
+			case "reset":
+				c.packet(capture.Packet{Source: key.A, Destination: key.B, Protocol: 6, HasPorts: true, RST: true})
+			case "fin":
+				c.packet(capture.Packet{Source: key.A, Destination: key.B, Protocol: 6, HasPorts: true, FIN: true})
+				c.packet(capture.Packet{Source: key.B, Destination: key.A, Protocol: 6, HasPorts: true, FIN: true})
+			case "failed connect":
+				c.connectResult(probe.Event{Local: key.A, Remote: key.B, Result: 111})
+			}
+			newKey := keyFor(netip.MustParseAddrPort("192.0.2.1:40001"), key.B, 6)
+			c.packet(capture.Packet{Source: newKey.A, Destination: newKey.B, Protocol: 6, HasPorts: true, SYN: true})
+			if c.flows[newKey] == nil || c.droppedFlow != 0 || c.expiredFlows != 1 {
+				t.Fatal("new connection did not immediately reclaim the disposable flow")
+			}
+		})
 	}
 }

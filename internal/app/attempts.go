@@ -109,11 +109,18 @@ func disposable(f *flow) bool {
 // flows. One sweep makes room for many new flows, so a flood costs one sort
 // per few thousand of them.
 func (c *collector) evict(now time.Time) {
+	if c.evictionBlocked {
+		return
+	}
 	var candidates []*flow
 	for _, f := range c.flows {
 		if disposable(f) {
 			candidates = append(candidates, f)
 		}
+	}
+	if len(candidates) == 0 {
+		c.evictionBlocked = true
+		return
 	}
 	slices.SortFunc(candidates, func(a, b *flow) int { return a.Last.Compare(b.Last) })
 	for _, f := range candidates[:min(len(candidates), c.maxFlows/10+1)] {
