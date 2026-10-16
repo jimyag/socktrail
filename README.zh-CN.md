@@ -122,6 +122,8 @@ sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 
 显式选择超过八张接口时，程序会列出匹配项并请求确认。默认在内存上限为 512 MiB 的 systemd scope 中运行。非交互运行可加 `--yes`，用 `--memory-limit=1GiB` 调整上限，或用 `--memory-limit=none` 关闭限制。如果无法使用 systemd，受限模式会在抓包前报错。
 
+默认同一台机器上只允许运行一个 socktrail：第二个进程在创建任何抓包资源之前退出，并提示 `another socktrail is already running; use --allow-multiple to run more than one`。互斥基于 `/tmp/socktrail.lock` 上的 `flock`，进程退出（包括崩溃或被 `SIGKILL`）时由内核释放。确实需要并发运行时加 `--allow-multiple`，它完全跳过锁；两个实例会各自加载全套 eBPF 程序。
+
 不使用 `sudo` 时，需要为二进制设置 Linux file capabilities。只有网络权限不足以加载 eBPF 探针；详见[权限设置及限制](docs/user/usage.md#不使用-sudo-运行)。
 
 按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树、可执行文件名和用户之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`7` 看监听端口；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。

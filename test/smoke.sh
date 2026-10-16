@@ -17,10 +17,10 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=s
 	-keyout "$work/key.pem" -out "$work/cert.pem" -days 1 2>/dev/null
 openssl s_server -accept 18443 -cert "$work/cert.pem" -key "$work/key.pem" -quiet </dev/null >/dev/null 2>&1 &
 python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 &
-"$socktrail" --interface lo --duration 20s --limit 1000 --output json >"$work/snapshot.json" &
+"$socktrail" --interface lo --duration 20s --limit 1000 --output json --allow-multiple >"$work/snapshot.json" &
 snapshot=$!
 # The bare MessagePack stream runs alongside, so the same requests cover it.
-"$socktrail" --interface lo --output msgpack --duration 20s >"$work/changes.msgpack" &
+"$socktrail" --interface lo --output msgpack --duration 20s --allow-multiple >"$work/changes.msgpack" &
 changes=$!
 sleep 8 # The window opens once the probes are loaded; the requests fall inside it.
 for _ in 1 2 3; do
@@ -45,7 +45,7 @@ jq -e 'any(.reports[0].flows[]; .evidence.sni == "smoke.test" and (.openssl_pids
 # The socket subscription: a subscriber must receive hello, the current view and
 # a summary. Requests keep running so the snapshot is not empty; the TLS ones
 # fall outside --filter, so no row of theirs may reach the subscriber.
-"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --socket-mode 0640 --filter port:18080 --duration 15s &
+"$socktrail" --interface lo --output msgpack --socket "$work/stream.sock" --socket-mode 0640 --filter port:18080 --duration 15s --allow-multiple &
 stream=$!
 # The socket appears once the probes are loaded.
 for _ in $(seq 300); do [ -S "$work/stream.sock" ] && break; sleep 0.1; done

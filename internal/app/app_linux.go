@@ -1174,6 +1174,7 @@ func Run() error {
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
+	allowMultiple := flag.Bool("allow-multiple", false, "run even when another socktrail is already running")
 	var filter processFilter
 	flag.Var(&filter.names, "process", "show only these processes: names or globs, comma-separated; the kernel keeps 15 bytes of a name")
 	flag.Var(&filter.pids, "pid", "show only these processes and all their descendants: PIDs, comma-separated")
@@ -1245,6 +1246,16 @@ func Run() error {
 			return fmt.Errorf("--read cannot combine with --duration, --output ndjson or msgpack, --netns, --interface, --drops or --record-before")
 		}
 		return replayPCAPNG(*readFile, *output, *limit, uint16(*port), filter, compiledFilter, geo)
+	}
+	// The systemd scope child is the same run as its parent, which holds the lock.
+	if !*allowMultiple && os.Getenv(memoryScopeEnv) == "" {
+		lock, err := lockProcess(processLockPath)
+		if err != nil {
+			return err
+		}
+		if lock != nil {
+			defer func() { _ = lock.Close() }()
+		}
 	}
 	targets, namespaces, err := resolveCaptureTargets(netnsSpecs, interfaceNames)
 	if err != nil {
