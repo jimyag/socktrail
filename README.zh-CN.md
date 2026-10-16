@@ -124,6 +124,10 @@ sudo ./socktrail --netns pid:1 --netns pid:12345 --interface lo
 
 默认同一台机器上只允许运行一个 socktrail：第二个进程在创建任何抓包资源之前退出，并提示 `another socktrail is already running; use --allow-multiple to run more than one`。互斥基于 `/tmp/socktrail.lock` 上的 `flock`，进程退出（包括崩溃或被 `SIGKILL`）时由内核释放。确实需要并发运行时加 `--allow-multiple`，它完全跳过锁；两个实例会各自加载全套 eBPF 程序。
 
+分析 CPU 热点和 Go 堆内存时，加 `--pprof 127.0.0.1:6060`，通过 `/debug/pprof/` 获取 profile。默认关闭，仅允许回环 IP，远程访问使用 SSH 隧道。采集命令和内存统计范围见[性能分析说明](docs/user/usage.md#cpu-与内存分析)。
+
+同时加 `--ebpf-stats`，可通过 `/debug/ebpf?seconds=5` 查看本实例 BPF 探针的执行次数、耗时、CPU 占比和 program/map 内存估计。它临时启用系统范围的 BPF 执行统计，需要 Linux 5.8+ 和足够权限，默认关闭。详见[eBPF 统计说明](docs/user/usage.md#ebpf-内核执行与内存统计)。
+
 不使用 `sudo` 时，需要为二进制设置 Linux file capabilities。只有网络权限不足以加载 eBPF 探针；详见[权限设置及限制](docs/user/usage.md#不使用-sudo-运行)。
 
 按 `1`—`4` 切换 PID、来源 IP、目标 IP 和协议视图；`5` 打开进程分组页，按 `b` 在服务、cgroup、进程树、可执行文件名和用户之间切换；`6` 打开 LOG 页，按 `b` 切换变化分组；`7` 看监听端口；`d` 看域名；`0` 看网卡诊断；`?` 看帮助；`q` 退出。按 `g` 显示或隐藏连接两端的 GeoIP；缺少数据库时，可在界面中确认下载。选中连接或 PID 后按 `c` 开始或停止 PCAPNG 录制；以 `--record-before 10s` 启动可包含按键前十秒的帧。录制文件默认保存在 `$XDG_STATE_HOME/socktrail/captures`（通常为 `~/.local/state/socktrail/captures`），可能包含明文应用数据；临时文件可用 `--capture-dir /tmp/...` 指定目录。

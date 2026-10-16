@@ -30,6 +30,52 @@ sudo ./socktrail --interface lo --allow-multiple  # 与已有实例并发运行
 
 锁路径上的符号链接、FIFO 和目录也会被拒绝，并提示后继续运行而不上锁。使用内存限制启动 systemd scope 时，父进程在启动子进程前释放锁，实际抓包的子进程重新取得锁并持有至退出；交接期间若有其他实例抢先取得锁，子进程会拒绝启动。
 
+### CPU 与内存分析
+
+用 `--pprof 127.0.0.1:6060` 开启 Go 标准 pprof HTTP 接口，默认关闭，仅接受回环 IP 和端口，也支持 `[::1]:6060`。它在实际抓包进程中启动，适用于 systemd 内存受限模式；监听失败会报错退出，进程结束时关闭接口。该参数也可写入配置文件。
+
+```sh
+sudo ./socktrail --interface lo --pprof 127.0.0.1:6060
+```
+
+在另一个终端采集并分析；需要安装 Go，分析时使用与运行进程相同的二进制：
+
+```sh
+curl -fsS -o cpu.pprof 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
+curl -fsS -o heap.pprof 'http://127.0.0.1:6060/debug/pprof/heap?gc=1'
+curl -fsS -o allocs.pprof http://127.0.0.1:6060/debug/pprof/allocs
+go tool pprof -top ./socktrail cpu.pprof
+go tool pprof -top -sample_index=inuse_space ./socktrail heap.pprof
+go tool pprof -top -sample_index=alloc_space ./socktrail allocs.pprof
+```
+
+CPU profile 显示采样期间消耗 CPU 的 Go 调用栈；heap 的 `inuse_space` 显示当前存活的 Go 堆内存及其分配位置，allocs 的 `alloc_space` 显示进程启动以来的累计分配，适合查找频繁分配导致的 GC 压力。把 `-top` 换为 `-http=127.0.0.1:8080` 可打开交互页面查看调用图和火焰图。`/debug/pprof/` 列出其他接口，包括 goroutine 和 trace。CPU 采样只在请求期间开启；堆分配使用 Go 默认采样率。
+
+pprof 不包含 AF_PACKET 的 mmap 抓包环、eBPF map 和其他内核内存，也不能直接解释全部 RSS 或 systemd cgroup 内存；这些需要结合进程和内核统计。接口没有身份认证，本机其他用户也可访问，profile、命令行和调用栈可能包含运行信息。远程分析使用 SSH 隧道，例如在本机执行 `ssh -N -L 6060:127.0.0.1:6060 zj`，再访问本机的 `127.0.0.1:6060`。
+
+### eBPF 内核执行与内存统计
+
+在 pprof 地址上额外开启 `--ebpf-stats`，可查看实际采集进程持有的 eBPF program 和 map，包括已启用的 socket、OpenSSL 和丢包探针。不需要安装 bpftool，也不会枚举或报告其他进程的 eBPF 对象。
+
+```sh
+sudo ./socktrail --pprof 127.0.0.1:6060 --ebpf-stats
+curl -fsS 'http://127.0.0.1:6060/debug/ebpf?seconds=5'
+```
+
+接口返回 JSON，`pid` 是实际采集进程。`seconds` 默认为 1，接受 1–30 的整数；请求会等待该采样窗口，断开连接可取消等待。program 按采样期间的 CPU 占比降序排列，字段含义如下：
+
+- `runtime_ns`、`run_count`：内核累计执行时间和次数；`runtime_delta_ns`、`run_count_delta` 是本次窗口的增量。
+- `runs_per_second`、`average_run_ns`：本次窗口的调用频率和平均单次耗时。
+- `sample_seconds`：该 program 两次读取计数器之间的实际间隔，调用频率和 CPU 占比按此值计算。顶层 `seconds` 是包含 FD 扫描和元数据读取的整体采集耗时，不用于计算各 program 的速率。
+- `cpu_percent_one_core`：执行时间除以实际观测时长，以一个逻辑 CPU 核为 100%；多核汇总可以超过 100%。顶层同名字段汇总本实例各 program。
+- `sampled`：是否有完整的前后两次采样。窗口中新加载或计数器重置的 program 为 false，其速率字段不可用于判断开销。
+- `memory_bytes_estimate`：内核提供的 program/map 内存估计值。map 另有类型、键值大小和最大容量信息；共享对象按 ID 去重，相同名称但不同 ID 的对象分别计数。
+- `program_memory_bytes_estimate`、`map_memory_bytes_estimate`：已取得的估计值之和。单项为 null 表示内核未提供；`memory_complete=false` 或非空 `errors` 表示结果不完整，不能把缺失项当作零占用。
+
+统计使用 `BPF_ENABLE_STATS`，需要 Linux 5.8+ 和足够权限，建议用 sudo；开启失败会报错退出。它临时启用系统范围的 BPF 运行时间统计，有额外测量开销，报告仅筛选当前进程。退出或启动失败时关闭统计描述符，不改写 sysctl；其他工具仍持有统计描述符或已通过 sysctl 开启时，统计会继续。
+
+program/map 内存是估计值，不等于全部内核内存或 cgroup 内存，也不包含 AF_PACKET mmap 抓包环。执行时间仅覆盖 BPF program 运行，不代表所有 tracepoint/kprobe 基础设施和事件传输的成本。结合 pprof、此接口和 RSS/cgroup 数据判断总开销。
+
 ### 配置文件
 
 常用参数可以写进配置文件，每次启动自动生效。默认读取 `$XDG_CONFIG_HOME/socktrail/config`；没有设置绝对路径的 `XDG_CONFIG_HOME` 时为 `~/.config/socktrail/config`。以 root 运行时不看 `XDG_CONFIG_HOME`：通过 `sudo socktrail` 启动时读取发起 `sudo` 的用户的 `~/.config/socktrail/config`，否则读取 root 的这个文件，与 GeoIP 目录的规则相同。文件不存在时忽略。`--config /path/to/file` 指定其他文件，这时文件必须存在；`--config none` 不读任何配置文件。
