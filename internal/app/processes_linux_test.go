@@ -252,16 +252,48 @@ func TestProcessAndCgroupPatterns(t *testing.T) {
 
 func TestServiceOfCgroupPaths(t *testing.T) {
 	id := strings.Repeat("3f", 32)
-	for path, want := range map[string]string{
-		"/system.slice/nginx.service":                               "nginx.service",
-		"/system.slice/docker-" + id + ".scope":                     "docker-3f3f3f3f3f3f.scope",
-		"/user.slice/user-1000.slice/user@1000.service/app.slice/x": "user@1000.service",
-		"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope": "cri-containerd-3f3f3f3f3f3f.scope",
-		"/": "/",
-		"":  "unknown cgroup",
+	for path, want := range map[string][2]string{
+		"/system.slice/nginx.service":                               {"/system.slice/nginx.service", "nginx.service"},
+		"/system.slice/docker-" + id + ".scope":                     {"/system.slice/docker-" + id + ".scope", "docker-3f3f3f3f3f3f.scope"},
+		"/user.slice/user-1000.slice/user@1000.service/app.slice/x": {"/user.slice/user-1000.slice/user@1000.service", "user@1000.service"},
+		"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope": {"/kubepods.slice/pod.slice/cri-containerd-" + id + ".scope", "cri-containerd-3f3f3f3f3f3f.scope"},
+		"//parent.service//child.scope/leaf///":                     {"/parent.service//child.scope", "child.scope"},
+		"worker.service":                                            {"/worker.service", "worker.service"},
+		"/plain/path/":                                              {"/plain/path/", "/plain/path/"},
+		"/":                                                         {"/", "/"},
+		"":                                                          {"", "unknown cgroup"},
 	} {
-		if _, label := serviceOf(path); label != want {
-			t.Errorf("service of %q is %q, want %q", path, label, want)
+		if key, label := serviceOf(path); key != want[0] || label != want[1] {
+			t.Errorf("service of %q is (%q, %q), want %q", path, key, label, want)
+		}
+	}
+}
+
+func BenchmarkServiceOf(b *testing.B) {
+	for name, path := range map[string]string{
+		"systemd":   "/user.slice/user-1000.slice/user@1000.service/app.slice/worker.scope",
+		"container": "/system.slice/docker-" + strings.Repeat("3f", 32) + ".scope/child",
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				serviceOf(path)
+			}
+		})
+	}
+}
+
+func TestShortContainerIDs(t *testing.T) {
+	for _, label := range []string{
+		"nginx.service", "", strings.Repeat("a", 63), strings.Repeat("a", 64),
+		strings.Repeat("a", 65), strings.Repeat("a", 127), strings.Repeat("a", 128),
+		"docker-" + strings.Repeat("0123456789abcdef", 4) + ".scope",
+		strings.Repeat("a", 63) + "g" + strings.Repeat("b", 64),
+		strings.Repeat("A", 64), strings.Repeat("a", 64) + "-" + strings.Repeat("b", 64),
+	} {
+		want := containerID.ReplaceAllStringFunc(label, func(id string) string { return id[:12] })
+		if got := shortContainerIDs(label); got != want {
+			t.Errorf("shortContainerIDs(%q) = %q, want %q", label, got, want)
 		}
 	}
 }

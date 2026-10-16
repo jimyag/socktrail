@@ -268,14 +268,47 @@ func serviceOf(path string) (string, string) {
 	if path == "" {
 		return "", "unknown cgroup"
 	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, part := range slices.Backward(parts) {
-		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
-			short := containerID.ReplaceAllStringFunc(part, func(id string) string { return id[:12] })
-			return "/" + strings.Join(parts[:i+1], "/"), short
+	for unitPath := strings.Trim(path, "/"); unitPath != ""; {
+		parent, part, found := strings.CutLast(unitPath, "/")
+		if !found {
+			parent, part = "", unitPath
 		}
+		if strings.HasSuffix(part, ".service") || strings.HasSuffix(part, ".scope") {
+			return "/" + unitPath, shortContainerIDs(part)
+		}
+		unitPath = parent
 	}
 	return path, path
+}
+
+// shortContainerIDs replaces each non-overlapping 64-byte lowercase hex ID.
+func shortContainerIDs(label string) string {
+	if len(label) < 64 {
+		return label
+	}
+	var short strings.Builder
+	written, hexRun := 0, 0
+	for i := range len(label) {
+		c := label[i]
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+			hexRun++
+		} else {
+			hexRun = 0
+		}
+		if hexRun == 64 {
+			if written == 0 {
+				short.Grow(len(label))
+			}
+			idStart := i + 1 - 64
+			short.WriteString(label[written : idStart+12])
+			written, hexRun = i+1, 0
+		}
+	}
+	if written == 0 {
+		return label
+	}
+	short.WriteString(label[written:])
+	return short.String()
 }
 
 func (t *processTable) serviceFor(path string) (string, string, *containerInfo) {

@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+func TestContainerIdentityRejectsInvalidIDs(t *testing.T) {
+	for _, id := range []string{
+		strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("A", 64),
+		strings.Repeat("a", 63) + "g", strings.Repeat("a", 63) + "/",
+	} {
+		for _, path := range []string{"/system.slice/docker-" + id + ".scope", "/docker/" + id} {
+			if got, runtime := containerIdentity(path); got != "" || runtime != "" {
+				t.Errorf("containerIdentity(%q) = (%q, %q)", path, got, runtime)
+			}
+		}
+	}
+}
+
 func TestContainerNamesFromLocalMetadata(t *testing.T) {
 	root := t.TempDir()
 	dockerID, podID := strings.Repeat("a", 64), strings.Repeat("b", 64)

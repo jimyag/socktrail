@@ -2,12 +2,37 @@ package app
 
 import (
 	"encoding/json"
+	"io"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jimyag/socktrail/internal/capture"
 )
+
+func BenchmarkNDJSONFlow(b *testing.B) {
+	processes := newProcessTable("")
+	id := strings.Repeat("3f", 32)
+	processes.containers.entries["docker:"+id] = containerEntry{info: containerInfo{Name: "web", Runtime: "docker"}, resolved: true}
+	p := participant{PID: 42, StartNS: 1, Name: "worker"}
+	processes.procs[p.id()] = &processMeta{Cgroup: "/system.slice/docker-" + id + ".scope"}
+	f := &flow{
+		Key:    keyFor(netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("198.51.100.1:443"), 6),
+		Client: p, Direction: "outbound", First: time.Now(), Last: time.Now(),
+		IO: map[processID]ioBytes{p.id(): {RX: 10, TX: 20}},
+	}
+	sink, err := newStreamSink("ndjson", io.Discard, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := sink.flow(jsonFlowFor(f, 1, processes, nil)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func TestReportJSONIncludesStableHostFlowIDAndEnd(t *testing.T) {
 	now := time.Now().Add(-3 * time.Second)

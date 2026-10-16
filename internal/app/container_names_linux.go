@@ -62,12 +62,12 @@ func containerIdentity(cgroup string) (string, string) {
 			{"docker-", "docker"}, {"cri-containerd-", "containerd"}, {"libpod-", "podman"},
 		} {
 			if id, ok := strings.CutPrefix(part, prefix.prefix); ok {
-				if id, ok = strings.CutSuffix(id, ".scope"); ok && len(id) == 64 && containerID.MatchString(id) {
+				if id, ok = strings.CutSuffix(id, ".scope"); ok && len(id) == 64 && strings.Trim(id, "0123456789abcdef") == "" {
 					foundID, foundRuntime = id, prefix.runtime
 				}
 			}
 		}
-		if len(part) == 64 && containerID.MatchString(part) && (strings.Contains(cgroup, "/docker/") || strings.Contains(cgroup, "/kubepods/")) {
+		if len(part) == 64 && strings.Trim(part, "0123456789abcdef") == "" && (strings.Contains(cgroup, "/docker/") || strings.Contains(cgroup, "/kubepods/")) {
 			if strings.Contains(cgroup, "/docker/") {
 				foundID, foundRuntime = part, "docker"
 			} else {
