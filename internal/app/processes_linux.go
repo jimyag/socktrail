@@ -50,11 +50,18 @@ type processTable struct {
 	cgroups    map[uint64]string // Paths of the cgroup IDs events carried, learned from /proc.
 	containers *containerNames
 	userNames  map[int]string // User names by UID, looked up once.
+	services   map[string]serviceIdentity
 	expired    time.Time
 }
 
+// serviceIdentity is one cached serviceOf result: the cgroup path through its
+// innermost unit, and the unit's label.
+type serviceIdentity struct {
+	key, label string
+}
+
 func newProcessTable(procRoot string) *processTable {
-	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string), containers: newContainerNames(), userNames: make(map[int]string)}
+	return &processTable{procRoot: procRoot, procs: make(map[processID]*processMeta), cgroups: make(map[uint64]string), containers: newContainerNames(), userNames: make(map[int]string), services: make(map[string]serviceIdentity)}
 }
 
 // observe records the process of a socket event whose start time
@@ -158,7 +165,7 @@ func (t *processTable) ancestry(p participant) string {
 		}
 		label := fmt.Sprintf("%s(%d)", name, id.PID)
 		path := t.cgroupOf(m)
-		unit, _ := serviceOf(path)
+		unit, _ := t.serviceIdentityOf(path)
 		if len(parts) > 0 && unit != "" && childUnit != "" && unit != childUnit {
 			_, boundary, _ := t.serviceFor(path)
 			label = "[" + boundary + "] " + label
@@ -311,8 +318,21 @@ func shortContainerIDs(label string) string {
 	return short.String()
 }
 
-func (t *processTable) serviceFor(path string) (string, string, *containerInfo) {
+// serviceIdentityOf caches only the pure path mapping; container metadata is
+// still resolved by serviceFor so late-arriving names remain visible.
+func (t *processTable) serviceIdentityOf(path string) (string, string) {
+	if cached, ok := t.services[path]; ok {
+		return cached.key, cached.label
+	}
 	key, label := serviceOf(path)
+	if len(t.services) < maxCgroups {
+		t.services[path] = serviceIdentity{key: key, label: label}
+	}
+	return key, label
+}
+
+func (t *processTable) serviceFor(path string) (string, string, *containerInfo) {
+	key, label := t.serviceIdentityOf(path)
 	if t.containers != nil {
 		if info, resolved := t.containers.lookup(path); info != nil {
 			if resolved {
@@ -486,13 +506,13 @@ func (t *processTable) executableName(id processID) string {
 // treeRoot climbs from a process to its farthest ancestor in the same
 // service: the master of a server's workers, or the shell a command ran in.
 func (t *processTable) treeRoot(id processID) processID {
-	service, _ := serviceOf(t.cgroupOf(t.meta(id)))
+	service, _ := t.serviceIdentityOf(t.cgroupOf(t.meta(id)))
 	for range maxAncestors {
 		m := t.procs[id]
 		if m == nil || m.Parent.PID <= 1 {
 			break
 		}
-		parentService, _ := serviceOf(t.cgroupOf(t.procs[m.Parent]))
+		parentService, _ := t.serviceIdentityOf(t.cgroupOf(t.procs[m.Parent]))
 		if t.procs[m.Parent] == nil || parentService != service {
 			break
 		}

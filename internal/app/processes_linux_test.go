@@ -290,6 +290,9 @@ func TestShortContainerIDs(t *testing.T) {
 		"docker-" + strings.Repeat("0123456789abcdef", 4) + ".scope",
 		strings.Repeat("a", 63) + "g" + strings.Repeat("b", 64),
 		strings.Repeat("A", 64), strings.Repeat("a", 64) + "-" + strings.Repeat("b", 64),
+		"cri-containerd-" + strings.Repeat("3f", 32) + ".sco",
+		strings.Repeat("3f", 16) + strings.Repeat("a", 64) + strings.Repeat("3f", 16),
+		strings.Repeat("z", 200) + strings.Repeat("3f", 32),
 	} {
 		want := containerID.ReplaceAllStringFunc(label, func(id string) string { return id[:12] })
 		if got := shortContainerIDs(label); got != want {
@@ -364,5 +367,21 @@ func TestProcessUserGrouping(t *testing.T) {
 		if uid := parseStatusUID([]byte(status)); uid != -1 {
 			t.Fatalf("parseStatusUID(%q) = %d, want -1", status, uid)
 		}
+	}
+}
+
+func TestServiceIdentityCacheLimit(t *testing.T) {
+	table := newProcessTable("")
+	for i := range maxCgroups + 2 {
+		path := fmt.Sprintf("/system.slice/docker-%064x.scope/child", i)
+		wantKey, wantLabel := serviceOf(path)
+		for range 2 {
+			if key, label := table.serviceIdentityOf(path); key != wantKey || label != wantLabel {
+				t.Fatalf("cached service of %q = (%q, %q), want (%q, %q)", path, key, label, wantKey, wantLabel)
+			}
+		}
+	}
+	if len(table.services) != maxCgroups {
+		t.Fatalf("cached %d services, want %d", len(table.services), maxCgroups)
 	}
 }

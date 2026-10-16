@@ -1061,6 +1061,9 @@ func (c *collector) expire(now time.Time) {
 			retained = append(retained, f)
 		}
 	}
+	// The compaction leaves the dropped tail pointing at expired flows, which
+	// would keep them and their parser state alive until the next append.
+	clear(c.retired[len(retained):])
 	c.retired = retained
 	for key, seen := range c.roleSeen {
 		if now.Sub(seen) > time.Minute {
