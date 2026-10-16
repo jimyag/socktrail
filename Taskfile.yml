@@ -27,10 +27,10 @@ tasks:
     cmds:
       - sudo install -o root -g "$(id -gn)" -m 0750 ./socktrail /usr/local/bin/socktrail
       - |
-        caps=cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin
-        case "$(uname -r)" in
-          5.10.*) caps="$caps,cap_sys_resource" ;;
-        esac
+        # cap_sys_resource lets socktrail raise the eBPF memlock rlimit;
+        # required on 5.10 and still needed by some newer kernels (e.g.
+        # Debian 13 with 6.12), so grant it unconditionally.
+        caps=cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource
         sudo setcap "$caps+ep" /usr/local/bin/socktrail
       - getcap /usr/local/bin/socktrail
       - ./socktrail --man | sudo install -D -m 0644 /dev/stdin /usr/local/share/man/man1/socktrail.1

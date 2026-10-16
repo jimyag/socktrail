@@ -50,7 +50,7 @@ func TestTrendRingSorts(t *testing.T) {
 func TestTrendRingWraps(t *testing.T) {
 	var r trendRing
 	r.newest = -1
-	for i := 0; i < trendSeconds+10; i++ {
+	for i := range trendSeconds + 10 {
 		r.add(uint64(i))
 	}
 	if r.count != trendSeconds {

@@ -803,10 +803,9 @@ func (u *terminalUI) sampleAll(collectors map[string]*collector, now time.Time) 
 	// via trendRowStaleMs, so a brief disappearance keeps history.
 	if u.trend != nil {
 		u.trend.tick(now)
-		collect, names := collectors[u.interfaceName], []string{u.interfaceName}
+		collect := collectors[u.interfaceName]
 		if u.hostScope {
-			names = u.interfaces
-			collect, _, _ = hostCollector(names, collectors)
+			collect, _, _ = hostCollector(u.interfaces, collectors)
 		}
 		if collect != nil {
 			seen := make(map[string]uint64)
@@ -1799,7 +1798,7 @@ func (u *terminalUI) renderBottom(lines *[]string, rows []*uiRow, c *collector) 
 			var total, peak uint64
 			var last uint32
 			count := int(min(uint32(trendSeconds), ring.count))
-			for age := 0; age < count; age++ {
+			for age := range count {
 				v, ok := ring.at(age)
 				if !ok {
 					break

@@ -77,19 +77,13 @@ socktrail --download-geoip-db
 
 ### 不使用 sudo 运行
 
-可以给安装后的可执行文件授予 Linux file capabilities，但仅有网络权限不够：AF_PACKET 抓包需要 `CAP_NET_RAW`，eBPF 探针需要 `CAP_BPF` 和 `CAP_PERFMON`，conntrack NAT 查询需要 `CAP_NET_ADMIN`。例如在 5.11 及更新的内核上：
+可以给安装后的可执行文件授予 Linux file capabilities，但仅有网络权限不够：AF_PACKET 抓包需要 `CAP_NET_RAW`，eBPF 探针需要 `CAP_BPF` 和 `CAP_PERFMON`，conntrack NAT 查询需要 `CAP_NET_ADMIN`，提高 eBPF memlock rlimit 需要 `CAP_SYS_RESOURCE`（5.10 内核必需，一些更新的发行版内核同样适用）。例如：
 
 ```sh
 sudo install -o root -g "$(id -gn)" -m 0750 ./socktrail /usr/local/bin/socktrail
-sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin+ep' /usr/local/bin/socktrail
+sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' /usr/local/bin/socktrail
 getcap /usr/local/bin/socktrail
 socktrail --interface lo
-```
-
-5.10 内核的 eBPF map 仍受 `RLIMIT_MEMLOCK` 限制，还需授予 `CAP_SYS_RESOURCE`：
-
-```sh
-sudo setcap 'cap_bpf,cap_perfmon,cap_net_raw,cap_net_admin,cap_sys_resource+ep' /usr/local/bin/socktrail
 ```
 
 安装文件应由 root 持有，并限制可执行用户；这些能力允许读取网络流量。替换二进制后需要重新执行 `setcap`。file capabilities 还会受容器 capability bounding set、`nosuid` 挂载和系统安全策略限制。
