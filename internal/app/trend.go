@@ -43,10 +43,7 @@ type trendRing struct {
 
 // add records one rx+tx total for the current tick.
 func (t *trendRing) add(total uint64) {
-	v := total
-	if v > 0xFFFFFFFF {
-		v = 0xFFFFFFFF
-	}
+	v := min(total, 0xFFFFFFFF)
 	t.newest = (t.newest + 1) % trendSeconds
 	t.samples[t.newest] = uint32(v)
 	if t.count < trendSeconds {
@@ -78,11 +75,8 @@ func sparkRung(v, top uint32) rune {
 	if v == 0 || top == 0 {
 		return ' '
 	}
-	rung := int(uint64(v)*uint64(len(sparkRunes)) / (uint64(top) + 1))
-	if rung > len(sparkRunes)-1 {
-		rung = len(sparkRunes) - 1
-	}
-	return sparkRunes[rung]
+	rung := uint64(v) * uint64(len(sparkRunes)) / (uint64(top) + 1)
+	return sparkRunes[min(rung, uint64(len(sparkRunes))-1)]
 }
 
 // sparkn renders the last width samples as at most width characters,
@@ -101,12 +95,9 @@ func (t *trendRing) sparkn(width int) string {
 		return string(cells)
 	}
 	// Find the max over the samples we will actually draw.
-	shown := width
-	if int(t.count) < shown {
-		shown = int(t.count)
-	}
+	shown := min(width, int(t.count))
 	var top uint32
-	for age := 0; age < shown; age++ {
+	for age := range shown {
 		if v, ok := t.at(age); ok && v > top {
 			top = v
 		}
@@ -114,7 +105,7 @@ func (t *trendRing) sparkn(width int) string {
 	if top == 0 {
 		return string(cells) // All zero: render blanks, no fake floor.
 	}
-	for age := 0; age < shown; age++ {
+	for age := range shown {
 		v, ok := t.at(age)
 		if !ok {
 			break
