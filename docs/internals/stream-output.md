@@ -22,6 +22,7 @@
 | `--output` | 增加 `msgpack` | 编码格式：`text`、`json`、`ndjson`、`msgpack` |
 | `--socket` | 路径 | 输出到 Unix domain socket，替代标准输出。只对 `ndjson` 和 `msgpack` 有效 |
 | `--socket-mode` | 八进制权限位，默认 `0600` | socket 文件的权限。消费方在别的账号时需要 `0660` 加一个共享组 |
+| `--socket-kinds` | `stats,flow`（默认）等 | socket 上发布哪些帧。只做按进程流量汇总的消费方用 `stats`，跳过全部 `flow` 帧 |
 
 用法：
 
@@ -248,6 +249,12 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 - 编码一致性：`internal/app/stream_codec_linux_test.go` 把同一行分别按 JSON 和 MessagePack 编码，解回 `map[string]any` 后逐层比较键集合，并锁住零值省略和时间编码。
 - socket 与订阅：`internal/app/stream_socket_linux_test.go` 覆盖 stale 文件替换、不删除可能仍在使用的 socket、慢客户端断开，以及超过客户端缓冲的握手；`stream_summary_linux_test.go` 覆盖 stats 帧的进程汇总和握手帧顺序。
 - 端到端：CI 的 root job 运行 `test/smoke.sh`，用 `test/streamcheck` 解码标准输出的裸行流，并订阅一个带 `--filter` 的 socket，检查握手顺序、`process_io`，以及快照行都在过滤范围内。`streamcheck` 只用通用的 `map[string]any` 解码，也可以当作不依赖 socktrail 类型的消费方示例。
+
+## 只订阅 stats
+
+`--socket-kinds` 是采集端的发布选项，影响该 socket 上的所有订阅者。只需要进程流量汇总的消费方不需要连接维度数据，选择 `stats` 可跳过握手中的逐连接快照及后续 `flow` 帧，减少编码与订阅带宽。默认值 `stats,flow` 保留完整订阅协议；标准输出与变更日志不受影响。
+
+过滤点在 `streamSink.encodeFrame`，握手和增量走同一条路径，所以一个参数对两者都成立。`hello` 不过滤：没有它消费方无法确认后端会话。
 
 ## 明确不做的取舍
 

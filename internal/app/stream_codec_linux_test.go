@@ -225,7 +225,7 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 	}
 	t.Run("msgpack", func(t *testing.T) {
 		var out bytes.Buffer
-		sink, err := newStreamSink("msgpack", &out, nil)
+		sink, err := newStreamSink("msgpack", &out, nil, allStreamFrameKinds())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestStreamFramesDecodeInSequence(t *testing.T) {
 	})
 	t.Run("ndjson", func(t *testing.T) {
 		var out bytes.Buffer
-		sink, err := newStreamSink("ndjson", &out, nil)
+		sink, err := newStreamSink("ndjson", &out, nil, allStreamFrameKinds())
 		if err != nil {
 			t.Fatal(err)
 		}

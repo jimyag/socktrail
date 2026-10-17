@@ -1192,6 +1192,7 @@ func Run() (runErr error) {
 	logFile := flag.String("log-file", "", "write connection changes to a 0600 NDJSON file while the interactive screen runs")
 	socketPath := flag.String("socket", "", "serve the stream on this Unix domain socket instead of standard output; needs --output ndjson or msgpack")
 	socketMode := flag.String("socket-mode", "0600", "permission bits for the socket file, octal; a consumer running as another user needs 0660 and a shared group")
+	socketKinds := flag.String("socket-kinds", "stats,flow", "frame kinds to publish on --socket, comma-separated: stats, flow. A consumer that only totals per-process traffic sets 'stats' and is spared every flow frame")
 	recordBefore := flag.Duration("record-before", 0, "start each recording with the frames of this long before c was pressed; copies every frame, keeping at most 32 MiB (default: off)")
 	memoryLimit := flag.String("memory-limit", "auto", "large capture memory limit: auto (512MiB for over 8 interfaces), none, or a size such as 1GiB")
 	yes := flag.Bool("yes", false, "confirm capture on more than 8 interfaces without a prompt")
@@ -1258,6 +1259,10 @@ func Run() (runErr error) {
 		return fmt.Errorf("--socket needs --output ndjson or msgpack: it carries the live stream")
 	}
 	socketFileMode, err := parseSocketMode(*socketMode)
+	if err != nil {
+		return err
+	}
+	socketFrameKinds, err := parseSocketKinds(*socketKinds)
 	if err != nil {
 		return err
 	}
@@ -1568,14 +1573,14 @@ func Run() (runErr error) {
 		streamStart, lastStats = time.Now(), time.Now()
 		if *socketPath == "" {
 			outputTarget = streamOutput{os.Stdout}
-			stream, err = newStreamSink(*output, outputTarget, nil)
+			stream, err = newStreamSink(*output, outputTarget, nil, streamFrameKinds{})
 		} else {
 			hub, hubErr := listenStreamSocket(*socketPath, socketFileMode)
 			if hubErr != nil {
 				return hubErr
 			}
 			defer hub.close()
-			stream, err = newStreamSink(*output, nil, hub)
+			stream, err = newStreamSink(*output, nil, hub, socketFrameKinds)
 		}
 		if err != nil {
 			return err
@@ -1586,7 +1591,7 @@ func Run() (runErr error) {
 			return err
 		}
 		outputTarget = writer
-		stream, err = newStreamSink("ndjson", writer, nil)
+		stream, err = newStreamSink("ndjson", writer, nil, streamFrameKinds{})
 		if err != nil {
 			return errors.Join(err, writer.Close())
 		}
