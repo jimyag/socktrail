@@ -1,0 +1,45 @@
+# socktrail as a long-running collector for local subscribers.
+#
+# The unit streams MessagePack over a Unix socket instead of running the
+# interactive screen, so any local consumer can subscribe without spawning or
+# supervising socktrail itself. Install it with install-service.sh, or by hand:
+#
+#   sudo install -m 0644 packaging/socktrail.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now socktrail.service
+#
+# Change the socket path, mode, refresh interval or capture scope with a drop-in
+# rather than editing this file:
+#
+#   sudo systemctl edit socktrail.service
+[Unit]
+Description=socktrail traffic collector
+Documentation=https://github.com/jimyag/socktrail
+After=network.target
+
+[Service]
+Type=simple
+# Streaming output has no interactive screen and no duration, so the collector
+# runs until systemd stops it.
+ExecStart=/usr/local/bin/socktrail --config none --output msgpack --socket /run/socktrail/collector.sock --socket-mode 0660 --refresh 1s
+# systemd creates and cleans /run/socktrail; the collector owns the socket there.
+RuntimeDirectory=socktrail
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=2
+# Packet capture, eBPF, conntrack NAT lookups and raising the eBPF memlock
+# rlimit need these; it is the same set the file-capability install grants.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE
+# CAP_SYS_RESOURCE alone is not enough to raise the rlimit from a unit.
+LimitMEMLOCK=infinity
+# Moderate hardening. RestrictAddressFamilies is deliberately absent: it would
+# block AF_PACKET, which packet capture needs. PrivateTmp is deliberately absent
+# too: the single-instance lock lives at /tmp/socktrail.lock, and a private /tmp
+# would let a manual `socktrail` run start next to this service.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
