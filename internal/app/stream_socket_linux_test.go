@@ -200,7 +200,7 @@ func TestStreamGreetLargerThanClientBuffer(t *testing.T) {
 	defer client.close()
 	hub.clients[client] = struct{}{}
 	hub.pending = []*streamClient{client}
-	sink, err := newStreamSink("msgpack", nil, hub)
+	sink, err := newStreamSink("msgpack", nil, hub, allStreamFrameKinds())
 	if err != nil {
 		t.Fatal(err)
 	}

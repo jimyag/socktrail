@@ -22,7 +22,7 @@ func BenchmarkNDJSONFlow(b *testing.B) {
 		Client: p, Direction: "outbound", First: time.Now(), Last: time.Now(),
 		IO: map[processID]ioBytes{p.id(): {RX: 10, TX: 20}},
 	}
-	sink, err := newStreamSink("ndjson", io.Discard, nil)
+	sink, err := newStreamSink("ndjson", io.Discard, nil, allStreamFrameKinds())
 	if err != nil {
 		b.Fatal(err)
 	}
