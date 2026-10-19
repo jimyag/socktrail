@@ -436,13 +436,15 @@ func TestStreamAccessorsMatchEvidence(t *testing.T) {
 	http.Add(1, []byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
 	tls := New(1)
 	tls.Add(1, clientHello("tls.example.test", false))
-	for _, s := range []*Stream{New(1), http, tls, NewEncryptedDNS("DoT"), NewRecordedLabel("dns api.example.test")} {
+	connect := New(1)
+	connect.Add(1, []byte("CONNECT tunnel.example.test:443 HTTP/1.1\r\nHost: tunnel.example.test:443\r\n\r\n"))
+	for _, s := range []*Stream{New(1), http, tls, connect, NewEncryptedDNS("DoT"), NewRecordedLabel("dns api.example.test")} {
 		e := s.Evidence()
-		if s.Group() != e.Group() || s.Named() != e.Named() || s.Listed() != e.Listed() || s.Kind() != e.Kind {
-			t.Errorf("%+v: stream says %q %t %t %q", e, s.Group(), s.Named(), s.Listed(), s.Kind())
+		if s.Group() != e.Group() || s.Named() != e.Named() || s.Listed() != e.Listed() || s.Kind() != e.Kind || s.ProxyVia() != e.ProxyVia || s.GRPC() != e.GRPC {
+			t.Errorf("%+v: stream says %q %t %t %q %q %t", e, s.Group(), s.Named(), s.Listed(), s.Kind(), s.ProxyVia(), s.GRPC())
 		}
 	}
-	if !http.Named() || http.Group() != "api.example.test" || tls.Group() != "tls.example.test" {
-		t.Fatalf("parsed streams: %q, %q", http.Group(), tls.Group())
+	if !http.Named() || http.Group() != "api.example.test" || tls.Group() != "tls.example.test" || connect.ProxyVia() != "CONNECT" {
+		t.Fatalf("parsed streams: %q, %q, %q", http.Group(), tls.Group(), connect.ProxyVia())
 	}
 }

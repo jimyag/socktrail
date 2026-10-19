@@ -55,7 +55,7 @@ func keyFor(a, b netip.AddrPort, protocol uint8) flowKey {
 	return flowKey{A: a, B: b, Protocol: protocol}
 }
 
-func packetKey(p capture.Packet) flowKey {
+func packetKey(p *capture.Packet) flowKey {
 	key := keyFor(p.Source, p.Destination, p.Protocol)
 	key.EtherType = p.EtherType
 	if p.EtherType == 0 && (p.Protocol == 1 || p.Protocol == 58) {
@@ -366,7 +366,7 @@ func (c *collector) packetAt(p capture.Packet, now time.Time) {
 	} else {
 		c.rxBytes += uint64(p.IPBytes)
 	}
-	key := packetKey(p)
+	key := packetKey(&p)
 	f := c.flows[key]
 	priorGeneration := f != nil && p.Protocol == 6 && p.SYN && !p.ACK && (!f.SYNSeen || f.SYNSeq != p.TCPSeq)
 	if priorGeneration {
@@ -545,24 +545,23 @@ func (c *collector) packetAt(p capture.Packet, now time.Time) {
 		}
 	}
 	if f.WireDomain != nil {
-		e := f.WireDomain.Evidence()
-		via := ""
-		if e.ProxyVia != "" {
-			via = " via " + e.ProxyVia
+		proxyVia, via := f.WireDomain.ProxyVia(), ""
+		if proxyVia != "" {
+			via = " via " + proxyVia
 		}
-		switch e.Kind {
+		switch f.WireDomain.Kind() {
 		case "http":
 			f.AppProtocol, f.AppSource = "HTTP", "HTTP request header"+via
 		case "http2":
 			f.AppProtocol, f.AppSource = "HTTP/2", "HTTP/2 HEADERS"+via
-			if e.GRPC {
+			if f.WireDomain.GRPC() {
 				f.AppProtocol = "gRPC"
 			}
 		case "tls":
 			f.AppProtocol, f.AppSource = "TLS", "ClientHello"+via
 		case "proxy":
-			f.AppProtocol, f.AppSource = e.ProxyVia, "proxy request"
-			if e.ProxyVia == "CONNECT" {
+			f.AppProtocol, f.AppSource = proxyVia, "proxy request"
+			if proxyVia == "CONNECT" {
 				f.AppProtocol = "HTTP CONNECT"
 			}
 		}
@@ -1911,15 +1910,20 @@ func Run() (runErr error) {
 			}
 			// A batch is one ring block of one socket: one interface, one clock read.
 			collector, now := collectors[batch.Packets[0].Interface], time.Now()
-			for _, p := range batch.Packets {
-				collector.packetAt(p, now)
+			for i := range batch.Packets {
+				p := &batch.Packets[i]
+				collector.packetAt(*p, now)
+				if recording == nil && history == nil {
+					continue
+				}
+				f := collector.flows[packetKey(p)]
 				if recording != nil {
-					if err := recording.Write(p, collector.flows[packetKey(p)]); err != nil {
+					if err := recording.Write(*p, f); err != nil {
 						stopRecording(err.Error())
 					}
 				}
 				if history != nil {
-					history.add(p, collector.flows[packetKey(p)])
+					history.add(*p, f)
 				}
 			}
 			batch.Release()

@@ -46,7 +46,7 @@ func TestLocalPingNamesItsProcess(t *testing.T) {
 		other := echo(local, remote, true, 1, time.Now())
 		other.ICMPID, other.Outgoing = 8, true
 		c.packet(other)
-		if f := c.flows[packetKey(other)]; f == nil || f.Client.PID != 0 {
+		if f := c.flows[packetKey(&other)]; f == nil || f.Client.PID != 0 {
 			t.Fatalf("eventFirst=%t: unrelated echo flow took the process: %+v", eventFirst, f)
 		}
 	}

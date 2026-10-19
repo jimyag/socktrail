@@ -225,12 +225,14 @@ func NewEncryptedDNS(kind string) *Stream {
 
 func (s *Stream) Evidence() Evidence { return s.parser.evidence }
 
-// Group, Named and Listed read the evidence in place: the packet path asks
-// them on every packet, and Evidence copies a struct of about 250 bytes.
-func (s *Stream) Group() string { return s.parser.evidence.Group() }
-func (s *Stream) Named() bool   { return s.parser.evidence.Named() }
-func (s *Stream) Listed() bool  { return s.parser.evidence.Listed() }
-func (s *Stream) Kind() string  { return s.parser.evidence.Kind }
+// These read the evidence in place: the packet path asks them on every
+// packet, and Evidence copies a struct of about 250 bytes.
+func (s *Stream) Group() string    { return s.parser.evidence.Group() }
+func (s *Stream) Named() bool      { return s.parser.evidence.Named() }
+func (s *Stream) Listed() bool     { return s.parser.evidence.Listed() }
+func (s *Stream) Kind() string     { return s.parser.evidence.Kind }
+func (s *Stream) ProxyVia() string { return s.parser.evidence.ProxyVia }
+func (s *Stream) GRPC() bool       { return s.parser.evidence.GRPC }
 
 func (s *Stream) SetEncryptedDNS(kind string) {
 	if s.parser.evidence.EncryptedDNS == nil || *s.parser.evidence.EncryptedDNS != kind {

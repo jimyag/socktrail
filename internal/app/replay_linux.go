@@ -76,7 +76,7 @@ func readRecording(r io.Reader, port uint16) (map[string]*collector, []string, *
 		if !c.acceptPort(p.Source, p.Destination) {
 			return nil
 		}
-		f := c.flows[packetKey(p)]
+		f := c.flows[packetKey(&p)]
 		if f == nil {
 			return nil
 		}
