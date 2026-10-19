@@ -63,3 +63,30 @@ func BenchmarkSteadyPacket(b *testing.B) {
 		})
 	}
 }
+
+// A flow none of whose first packets named a protocol is retried only on
+// every appRetryPackets-th packet.
+func TestUnknownFlowRetriesDetectionPeriodically(t *testing.T) {
+	c := newTestCollector()
+	client := netip.MustParseAddrPort("10.0.0.1:40000")
+	server := netip.MustParseAddrPort("192.0.2.1:9000")
+	binary, sip := make([]byte, 64), []byte("SIP/2.0 200 OK\r\nVia: x\r\n\r\n")
+	send := func(payload []byte) string {
+		c.packet(capture.Packet{Source: client, Destination: server, Protocol: 17, HasPorts: true, Payload: payload, PayloadLen: len(payload), IPBytes: uint32(28 + len(payload))})
+		return c.flows[keyFor(client, server, 17)].AppProtocol
+	}
+	for n := 1; n < 50; n++ {
+		if got := send(binary); got != "" {
+			t.Fatalf("packet %d: protocol %q from zero bytes", n, got)
+		}
+	}
+	if got := send(sip); got != "" { // Packet 50: between retries.
+		t.Fatalf("packet 50 was detected as %q; want a retry only every %d packets", got, appRetryPackets)
+	}
+	for n := 51; n < 2*appRetryPackets; n++ {
+		send(binary)
+	}
+	if got := send(sip); got != "SIP" { // Packet 64: a retry.
+		t.Fatalf("packet %d = %q, want SIP", 2*appRetryPackets, got)
+	}
+}

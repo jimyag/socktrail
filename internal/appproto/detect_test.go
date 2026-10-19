@@ -84,3 +84,22 @@ func TestTCPAndUDPProtocolsNeedPayloadEvidence(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkUnknownPayload is a bulk data packet that matches no protocol,
+// the common case for detection on an unidentified flow.
+func BenchmarkUnknownPayload(b *testing.B) {
+	payload := make([]byte, 1400)
+	for i := range payload {
+		payload[i] = byte(i*131 + 7)
+	}
+	b.Run("TCP", func(b *testing.B) {
+		for b.Loop() {
+			TCP(payload, 40000, 9000)
+		}
+	})
+	b.Run("UDP", func(b *testing.B) {
+		for b.Loop() {
+			UDP(payload, 40000, 9000)
+		}
+	})
+}

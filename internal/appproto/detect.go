@@ -202,6 +202,11 @@ func rpcCall(payload []byte, stream bool) string {
 // textProtocol recognizes SIP and RTSP, whose requests look like HTTP but
 // name their own scheme and version.
 func textProtocol(payload []byte) string {
+	// Their lines open with a method or the scheme, in capitals; most
+	// payloads fail here without a scan of the line.
+	if len(payload) == 0 || payload[0] < 'A' || payload[0] > 'Z' {
+		return ""
+	}
 	line, _, _ := bytes.Cut(payload[:min(len(payload), 256)], []byte("\r\n"))
 	switch {
 	case bytes.HasPrefix(line, []byte("SIP/2.0 ")) || bytes.HasSuffix(line, []byte(" SIP/2.0")) && bytes.Contains(line, []byte(" sip:")):

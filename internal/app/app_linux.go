@@ -99,6 +99,10 @@ type pendingIOSample struct {
 
 const maxPendingIOSamples = 4096
 
+// appRetryPackets spaces application protocol detection on a flow that
+// none of its first packets identified.
+const appRetryPackets = 32
+
 type roles struct {
 	Client, Server participant
 	AOwner, BOwner participant // UDP ownership follows endpoints, not send/recv direction.
@@ -486,7 +490,10 @@ func (c *collector) packetAt(p capture.Packet, now time.Time) {
 		}
 		f.WireDomain.Alert(p.Payload, p.Source != f.WireClient)
 	}
-	if f.AppProtocol == "" && len(p.Payload) > 0 {
+	// A flow that stays unrecognized, such as a bulk transfer, is retried on
+	// every 32nd packet after its first 32: often enough to catch a request
+	// on a connection captured midway, without a full detection per packet.
+	if f.AppProtocol == "" && len(p.Payload) > 0 && (f.Packets <= appRetryPackets || f.Packets%appRetryPackets == 0) {
 		var observed appproto.Detection
 		if p.Protocol == 6 {
 			observed = appproto.TCP(p.Payload, p.Source.Port(), p.Destination.Port())

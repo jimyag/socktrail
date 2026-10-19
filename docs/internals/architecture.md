@@ -22,7 +22,7 @@ eBPF socket 与进程事件 ──────────────┼→ 连
 
 ## 采集与关联概览
 
-每张接口各有一个 AF_PACKET socket。内核把帧写入 TPACKET_V3 环，读取方按块交给主循环；[报文解码器](../../internal/capture/packet.go)识别链路层、IP、传输层和分片。主循环按连接键维护流，再把应用协议和域名证据附到流上。
+每张接口各有一个 AF_PACKET socket。内核把帧写入 TPACKET_V3 环，读取方按块交给主循环；[报文解码器](../../internal/capture/packet.go)识别链路层、IP、传输层和分片。主循环按连接键维护流，再把应用协议和域名证据附到流上。前 32 个报文都没认出应用协议的流（例如大块传输），之后每 32 个报文才再识别一次，中途开始采集的连接仍有机会在后续请求上被认出。
 
 显式指定 `--netns` 时，[netns_linux.go](../../internal/app/netns_linux.go) 按路径、名字、PID 或容器 ID 打开目标 netns 文件，用 inode 去重；在锁定的 OS 线程内进入目标 netns，创建接口的 AF_PACKET 与 conntrack netlink socket，再切回原命名空间。BPF 设置 map 以 netns inode 为键，PID、OpenSSL、socket stream 事件只送到对应命名空间的采集器。socket 表在目标 netns 内经 `/proc/thread-self/net` 读取，inode 到进程的反查仍遍历宿主 `/proc/<pid>/fd`。
 
