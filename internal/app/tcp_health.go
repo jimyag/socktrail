@@ -32,7 +32,12 @@ type tcpHealth struct {
 	synSeq      uint32
 	synSeen     [2]bool
 	synSeqByDir [2]uint32
-	seen        [2][]sequenceRange
+	// Per direction, a ring of the last maxTrackedTCPSegments payload ranges,
+	// where the next one goes once it is full, and the furthest end recorded:
+	// in-order data starts there and cannot overlap any of them.
+	seen     [2][]sequenceRange
+	seenNext [2]uint8
+	seenEnd  [2]uint32
 }
 
 // observeKernel records a local end's socket state from a TCP event. The
@@ -230,18 +235,26 @@ func (h *tcpHealth) observe(p capture.Packet, loopback bool) {
 		}
 		//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
 		span := sequenceRange{start: start, end: start + uint32(len(p.Payload))}
-		//nolint:modernize // This packet hot path avoids a callback in the overlap scan.
-		for _, prior := range h.seen[index] {
-			if span.overlaps(prior) {
-				retransmitted = true
-				break
+		seen := h.seen[index]
+		//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
+		if int32(span.start-h.seenEnd[index]) < 0 {
+			//nolint:modernize // This packet hot path avoids a callback in the overlap scan.
+			for _, prior := range seen {
+				if span.overlaps(prior) {
+					retransmitted = true
+					break
+				}
 			}
 		}
-		if len(h.seen[index]) == maxTrackedTCPSegments {
-			copy(h.seen[index], h.seen[index][1:])
-			h.seen[index][len(h.seen[index])-1] = span
+		//nolint:gosec // G115: TCP sequence arithmetic intentionally wraps in its 32-bit wire space.
+		if len(seen) == 0 || int32(span.end-h.seenEnd[index]) > 0 {
+			h.seenEnd[index] = span.end
+		}
+		if len(seen) < maxTrackedTCPSegments {
+			h.seen[index] = append(seen, span)
 		} else {
-			h.seen[index] = append(h.seen[index], span)
+			seen[h.seenNext[index]] = span
+			h.seenNext[index] = (h.seenNext[index] + 1) % maxTrackedTCPSegments
 		}
 	}
 	if retransmitted {

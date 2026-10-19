@@ -651,3 +651,16 @@ func TestProbeCountsKTLSBytes(t *testing.T) {
 		t.Fatalf("kernel TLS bytes counted: sent %d, received %d, want %d each", totals[0], totals[1], size)
 	}
 }
+
+// BenchmarkDecodeEvent measures decoding one socket event, which the probe
+// emits for every send and receive.
+func BenchmarkDecodeEvent(b *testing.B) {
+	raw := BpfEvent{Family: 4, Role: 1, Protocol: 6, Operation: 3}
+	copy(raw.Comm[:], []int8{'n', 'g', 'i', 'n', 'x'})
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := decodeEvent(raw); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

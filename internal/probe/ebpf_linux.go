@@ -234,6 +234,10 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 	return events, done, stats, nil
 }
 
+// operationNames is indexed by the BPF program's operation code; a map
+// literal inside decodeEvent was rebuilt for every event.
+var operationNames = [...]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit", 6: "connect_result", 7: "tcp_metric"}
+
 func decodeEvent(raw BpfEvent) (Event, error) {
 	var local, remote netip.Addr
 	switch raw.Family {
@@ -255,7 +259,10 @@ func decodeEvent(raw BpfEvent) (Event, error) {
 	if raw.Protocol != 6 && raw.Protocol != 17 && raw.Protocol != 1 && raw.Protocol != 58 {
 		return Event{}, fmt.Errorf("invalid eBPF protocol %d", raw.Protocol)
 	}
-	operation := map[uint8]string{1: "connect", 2: "accept", 3: "send", 4: "recv", 5: "retransmit", 6: "connect_result", 7: "tcp_metric"}[raw.Operation]
+	operation := ""
+	if int(raw.Operation) < len(operationNames) {
+		operation = operationNames[raw.Operation]
+	}
 	if operation == "" {
 		return Event{}, fmt.Errorf("invalid eBPF operation %d", raw.Operation)
 	}

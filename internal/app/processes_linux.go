@@ -66,13 +66,15 @@ func newProcessTable(procRoot string) *processTable {
 
 // observe records the process of a socket event whose start time
 // tickStartNS already rounded.
-func (t *processTable) observe(e probe.Event) {
+func (t *processTable) observe(e probe.Event) { t.observeAt(e, time.Now()) }
+
+func (t *processTable) observeAt(e probe.Event, now time.Time) {
 	if e.PID <= 0 {
 		return
 	}
 	id := processID{PID: e.PID, StartNS: e.StartNS}
 	if m := t.procs[id]; m != nil {
-		m.seen = time.Now()
+		m.seen = now
 		if e.Process != "" {
 			if m.Name != e.Process {
 				m.ExecutableName, m.ExeChecked = "", false
@@ -85,7 +87,7 @@ func (t *processTable) observe(e probe.Event) {
 	if len(t.procs) >= maxProcesses {
 		return
 	}
-	m := &processMeta{Name: e.Process, CgroupID: e.CgroupID, seen: time.Now()}
+	m := &processMeta{Name: e.Process, CgroupID: e.CgroupID, seen: now}
 	if e.ParentPID > 0 {
 		m.Parent = processID{PID: e.ParentPID, StartNS: tickStartNS(e.ParentStartNS)}
 	}

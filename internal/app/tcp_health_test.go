@@ -32,6 +32,32 @@ func TestTCPHealthHandshakeAndSequenceOverlap(t *testing.T) {
 	}
 }
 
+// After the ring of tracked segments wraps, a repeat of a segment still in
+// it counts, and one of a segment it already dropped does not.
+func TestTCPHealthOverlapAfterRingWraps(t *testing.T) {
+	local := netip.MustParseAddrPort("192.0.2.10:40000")
+	remote := netip.MustParseAddrPort("198.51.100.20:443")
+	var health tcpHealth
+	send := func(seq uint32) {
+		health.observe(capture.Packet{Protocol: 6, Source: local, Destination: remote, TCPSeq: seq, Payload: make([]byte, 100)}, false)
+	}
+	first := uint32(0xffff_ff00) // Wraps the sequence space midway.
+	for i := range maxTrackedTCPSegments + 10 {
+		send(first + uint32(i)*100)
+	}
+	if health.Retransmits != 0 {
+		t.Fatalf("in-order data counted as retransmitted: %d", health.Retransmits)
+	}
+	send(first + (maxTrackedTCPSegments+5)*100)
+	if health.Retransmits != 1 {
+		t.Fatalf("repeat of a tracked segment missed: %d", health.Retransmits)
+	}
+	send(first + 5*100)
+	if health.Retransmits != 1 {
+		t.Fatalf("repeat of an untracked segment counted: %d", health.Retransmits)
+	}
+}
+
 func TestTCPHealthUnknownWhenHandshakeNotSeen(t *testing.T) {
 	var health tcpHealth
 	health.observe(capture.Packet{Protocol: 6, SYN: true, ACK: true, TCPAck: 1001}, false)

@@ -326,7 +326,12 @@ func (c *collector) joinFragment(p *capture.Packet) {
 	}
 }
 
-func (c *collector) packet(p capture.Packet) {
+func (c *collector) packet(p capture.Packet) { c.packetAt(p, time.Now()) }
+
+// packetAt takes the time from the caller: the capture loop reads the clock
+// once per ring block, not once per packet, which a profile showed to be the
+// largest single cost of a steady flow's packet.
+func (c *collector) packetAt(p capture.Packet, now time.Time) {
 	c.joinFragment(&p)
 	var dnsAddresses []domain.DNSAnswer
 	if port := p.Source.Port(); port == 53 || port == 5353 || port == 5355 {
@@ -343,7 +348,7 @@ func (c *collector) packet(p capture.Packet) {
 			dnsAddresses = addrs
 			if c.dns != nil && port == 53 {
 				// Name hints also serve flows on other interfaces and ports.
-				c.dns.ObserveRecords(name, addrs, time.Now())
+				c.dns.ObserveRecords(name, addrs, now)
 			}
 		}
 	}
@@ -368,7 +373,7 @@ func (c *collector) packet(p capture.Packet) {
 	}
 	if f == nil {
 		if len(c.flows)+len(c.retired) >= c.maxFlows {
-			c.evict(time.Now())
+			c.evict(now)
 		}
 		if len(c.flows)+len(c.retired) >= c.maxFlows {
 			c.droppedFlow++
@@ -379,7 +384,7 @@ func (c *collector) packet(p capture.Packet) {
 			}
 			return
 		}
-		f = &flow{Key: key, Direction: "unknown", First: time.Now()}
+		f = &flow{Key: key, Direction: "unknown", First: now}
 		f.Interfaces.add(c.interfaceIndex)
 		if p.Protocol == 6 {
 			f.TCPState = "midstream"
@@ -388,7 +393,7 @@ func (c *collector) packet(p capture.Packet) {
 		// on the same tuple, unless no older flow existed and the role is
 		// fresh: then the accept event was read before the packets behind it.
 		inboundSYN := p.Protocol == 6 && p.SYN && !p.ACK && !p.Outgoing
-		if r, ok := c.roles[key]; ok && (!inboundSYN || !priorGeneration && time.Since(c.roleSeen[key]) < 2*time.Second) {
+		if r, ok := c.roles[key]; ok && (!inboundSYN || !priorGeneration && now.Sub(c.roleSeen[key]) < 2*time.Second) {
 			if p.Protocol == 17 {
 				f.Client, f.Server = r.owner(p.Source, key), r.owner(p.Destination, key)
 			} else {
@@ -397,7 +402,7 @@ func (c *collector) packet(p capture.Packet) {
 		}
 		c.flows[key] = f
 		if pending, ok := c.pendingTCP[key]; ok {
-			if time.Since(pending.seen) <= 2*time.Second {
+			if now.Sub(pending.seen) <= 2*time.Second {
 				f.Health.Kernel = pending.health.Kernel
 			}
 			delete(c.pendingTCP, key)
@@ -407,7 +412,7 @@ func (c *collector) packet(p capture.Packet) {
 		}
 		c.natFlow(f, p.Protocol, p.Source, p.Destination)
 	}
-	f.Last = time.Now()
+	f.Last = now
 	f.Health.observe(p, c.loopback)
 	f.Packets++
 	if p.Outgoing {
@@ -564,7 +569,7 @@ func (c *collector) packet(p capture.Packet) {
 	}
 	if pending, ok := c.pendingSocket[pendingKey]; ok {
 		delete(c.pendingSocket, pendingKey)
-		if time.Since(pending.seen) <= pendingSocketTTL {
+		if now.Sub(pending.seen) <= pendingSocketTTL {
 			attachSocketDomain(f, pending.stream)
 		}
 	}
@@ -573,7 +578,7 @@ func (c *collector) packet(p capture.Packet) {
 	}
 	if pending, ok := c.pendingTLS[key]; ok {
 		delete(c.pendingTLS, key)
-		if time.Since(pending.seen) <= 2*time.Second {
+		if now.Sub(pending.seen) <= 2*time.Second {
 			c.applyTLSEvent(f, pending.event)
 		}
 	}
@@ -819,7 +824,9 @@ func (c *collector) expirePendingIO(now time.Time, flushAll bool) {
 	}
 }
 
-func (c *collector) event(e probe.Event) {
+func (c *collector) event(e probe.Event) { c.eventAt(e, time.Now()) }
+
+func (c *collector) eventAt(e probe.Event, now time.Time) {
 	if c.debugPID {
 		fmt.Fprintf(os.Stderr, "PID event: proto=%d op=%s app-bytes=%d local=%s remote=%s pid=%d netns=%d\n", e.Protocol, e.Operation, e.AppBytes, e.Local, e.Remote, e.PID, e.NetNS)
 	}
@@ -845,7 +852,7 @@ func (c *collector) event(e probe.Event) {
 				side = 1
 			}
 			pending.health.observeKernel(side, e.TCP)
-			pending.seen = time.Now()
+			pending.seen = now
 			c.pendingTCP[key] = pending
 		}
 	}
@@ -887,17 +894,17 @@ func (c *collector) event(e probe.Event) {
 		if c.pidSeen == nil {
 			c.pidSeen = make(map[processID]time.Time)
 		}
-		c.pidSeen[id] = time.Now()
+		c.pidSeen[id] = now
 		key := keyFor(e.Local, e.Remote, e.Protocol)
 		if !portMatch {
 			c.ioUnmatched += e.AppBytes
-		} else if f := c.flows[key]; f != nil && f.takesEvents(time.Now()) {
+		} else if f := c.flows[key]; f != nil && f.takesEvents(now) {
 			addFlowIO(f, id, e.Operation, e.AppBytes)
 		} else if c.flows[key] == nil && c.pendingIOCount < maxPendingIOSamples {
 			if c.pendingIO == nil {
 				c.pendingIO = make(map[flowKey][]pendingIOSample)
 			}
-			c.pendingIO[key] = append(c.pendingIO[key], pendingIOSample{Process: id, Operation: e.Operation, Bytes: e.AppBytes, Seen: time.Now()})
+			c.pendingIO[key] = append(c.pendingIO[key], pendingIOSample{Process: id, Operation: e.Operation, Bytes: e.AppBytes, Seen: now})
 			c.pendingIOCount++
 		} else {
 			c.ioUnmatched += e.AppBytes
@@ -918,7 +925,7 @@ func (c *collector) event(e probe.Event) {
 			return
 		}
 		c.wildcards[key] = mergeParticipant(c.wildcards[key], p)
-		c.wildcardSeen[key] = time.Now()
+		c.wildcardSeen[key] = now
 		return
 	}
 	key := keyFor(e.Local, e.Remote, e.Protocol)
@@ -936,11 +943,11 @@ func (c *collector) event(e probe.Event) {
 	}
 	if len(c.roles) < c.maxFlows || c.roles[key] != (roles{}) {
 		c.roles[key] = r
-		c.roleSeen[key] = time.Now()
+		c.roleSeen[key] = now
 	} else {
 		c.droppedRole++
 	}
-	if f := c.flows[key]; f != nil && f.takesEvents(time.Now()) {
+	if f := c.flows[key]; f != nil && f.takesEvents(now) {
 		if e.Protocol == 6 {
 			known := f.Client
 			if e.Role == "in" {
@@ -1896,9 +1903,10 @@ func Run() (runErr error) {
 				packets = nil
 				continue
 			}
+			// A batch is one ring block of one socket: one interface, one clock read.
+			collector, now := collectors[batch.Packets[0].Interface], time.Now()
 			for _, p := range batch.Packets {
-				collector := collectors[p.Interface]
-				collector.packet(p)
+				collector.packetAt(p, now)
 				if recording != nil {
 					if err := recording.Write(p, collector.flows[packetKey(p)]); err != nil {
 						stopRecording(err.Error())
@@ -1914,9 +1922,10 @@ func Run() (runErr error) {
 				events = nil
 				continue
 			}
+			now := time.Now()
 			for _, e := range batch {
 				e.StartNS = tickStartNS(e.StartNS)
-				processes.observe(e)
+				processes.observeAt(e, now)
 				inv := socketsByNS[e.NetNS]
 				if e.Operation == "accept" && e.Protocol == 6 && inv != nil && inv.trackListeners {
 					if inv.accepted == nil {
@@ -1926,7 +1935,7 @@ func Run() (runErr error) {
 				}
 				for _, name := range interfaceNames {
 					if collectors[name].netns == e.NetNS {
-						collectors[name].event(e)
+						collectors[name].eventAt(e, now)
 					}
 				}
 			}
