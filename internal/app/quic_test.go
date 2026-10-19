@@ -34,7 +34,7 @@ func TestQUICDomainAppearsInBothDirections(t *testing.T) {
 		if outgoing {
 			wantDirection = "outbound"
 		}
-		if f == nil || f.Domain == nil || f.Domain.Evidence().Group() != "example.com" || f.Domain.Evidence().Kind != "quic" || f.Direction != wantDirection {
+		if f == nil || f.Domain == nil || f.Domain.Group() != "example.com" || f.Domain.Evidence().Kind != "quic" || f.Direction != wantDirection {
 			t.Fatalf("outgoing=%t flow=%+v", outgoing, f)
 		}
 		rows := (&terminalUI{}).rows(c, viewDomain)

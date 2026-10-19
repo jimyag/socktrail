@@ -117,7 +117,7 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 		for _, observation := range observations {
 			newIDs[observation] = id
 		}
-		listed := merged.Domain != nil && merged.Domain.Evidence().Listed()
+		listed := merged.Domain != nil && merged.Domain.Listed()
 		newActive[id] = hostFlowTotal{RX: merged.RX, TX: merged.TX, domain: listed}
 		shown := s.displayed[id]
 		wasEnded := shown != nil && shown.End != flowOngoing

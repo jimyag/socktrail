@@ -18,7 +18,7 @@ func TestOpenSSLProcessSNIForMissedWireHandshake(t *testing.T) {
 	}
 	c.packet(capture.Packet{Source: client, Destination: server, Protocol: 6, TCPSeq: 9000, Payload: []byte("encrypted application data"), IPBytes: 72, Outgoing: true})
 	f := c.flows[keyFor(client, server, 6)]
-	if f == nil || f.Domain == nil || f.Domain.Evidence().Kind != "openssl" || f.Domain.Evidence().Group() != event.Hostname {
+	if f == nil || f.Domain == nil || f.Domain.Evidence().Kind != "openssl" || f.Domain.Group() != event.Hostname {
 		t.Fatalf("OpenSSL evidence missing after midstream packet: %+v", f)
 	}
 	rows := (&terminalUI{}).rows(c, viewDomain)
@@ -41,7 +41,7 @@ func TestWireHostnameWinsOnProcessConflict(t *testing.T) {
 		t.Fatal("process event did not match the socket tuple")
 	}
 	f := c.flows[keyFor(client, server, 6)]
-	if f.Domain.Evidence().Group() != "wire.example.test" || !f.DomainConflict {
+	if f.Domain.Group() != "wire.example.test" || !f.DomainConflict {
 		t.Fatalf("conflicting hostname incorrectly replaced wire Host: %+v", f)
 	}
 }

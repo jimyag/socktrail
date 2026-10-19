@@ -57,7 +57,7 @@ type Evidence struct {
 // extension still groups by its on-wire SNI: Chrome and Firefox send GREASE
 // ECH on every connection, and then that SNI is the real name. With real ECH
 // it is the provider's public name instead; Label marks both cases.
-func (e Evidence) Group() string {
+func (e *Evidence) Group() string {
 	switch e.Kind {
 	case "tls", "quic", "openssl":
 		if e.SNI != "" {
@@ -99,7 +99,7 @@ func (e Evidence) Group() string {
 }
 
 // Named reports whether the evidence identifies a destination name.
-func (e Evidence) Named() bool {
+func (e *Evidence) Named() bool {
 	switch e.Group() {
 	case groupUnknown, groupNoSNI, groupNoHandshake, groupParseFailed, "encrypted DNS":
 		return false
@@ -108,7 +108,7 @@ func (e Evidence) Named() bool {
 }
 
 // Listed reports whether the evidence belongs on the domain page.
-func (e Evidence) Listed() bool {
+func (e *Evidence) Listed() bool {
 	return e.EncryptedDNS != nil || e.Kind != "" && e.Kind != "other" && e.Kind != "upgrade"
 }
 
@@ -224,6 +224,13 @@ func NewEncryptedDNS(kind string) *Stream {
 }
 
 func (s *Stream) Evidence() Evidence { return s.parser.evidence }
+
+// Group, Named and Listed read the evidence in place: the packet path asks
+// them on every packet, and Evidence copies a struct of about 250 bytes.
+func (s *Stream) Group() string { return s.parser.evidence.Group() }
+func (s *Stream) Named() bool   { return s.parser.evidence.Named() }
+func (s *Stream) Listed() bool  { return s.parser.evidence.Listed() }
+func (s *Stream) Kind() string  { return s.parser.evidence.Kind }
 
 func (s *Stream) SetEncryptedDNS(kind string) {
 	if s.parser.evidence.EncryptedDNS == nil || *s.parser.evidence.EncryptedDNS != kind {

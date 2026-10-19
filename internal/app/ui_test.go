@@ -715,7 +715,7 @@ func TestTCPFourTupleReuseKeepsGenerationsSeparate(t *testing.T) {
 	byHost := make(map[string]int)
 	var flowBytes uint64
 	for _, f := range flows {
-		byHost[f.Domain.Evidence().Group()] = f.Client.PID
+		byHost[f.Domain.Group()] = f.Client.PID
 		flowBytes += f.RX + f.TX
 	}
 	if byHost["a.example.test"] != 101 || byHost["b.example.test"] != 303 || flowBytes != c.bytes {

@@ -614,7 +614,7 @@ func (c *collector) packetAt(p capture.Packet, now time.Time) {
 	}
 }
 
-func named(s *domain.Stream) bool { return s != nil && s.Evidence().Named() }
+func named(s *domain.Stream) bool { return s != nil && s.Named() }
 
 // clientBytes returns the parse of the client's own bytes: the captured
 // packets when they named the connection, otherwise the socket-layer copy,
@@ -629,7 +629,7 @@ func clientBytes(f *flow) *domain.Stream {
 		return wire
 	case named(f.SocketDomain):
 		return f.SocketDomain
-	case wire != nil && wire.Evidence().Listed():
+	case wire != nil && wire.Listed():
 		return wire
 	case f.SocketDomain != nil:
 		return f.SocketDomain
@@ -646,10 +646,10 @@ var extraDoHNames []string
 func chooseDomain(f *flow) {
 	wire := clientBytes(f)
 	process := named(f.ProcessDomain)
-	processDNS := named(f.DNSDomain) && f.DNSDomain.Evidence().Kind == "dns_process"
+	processDNS := named(f.DNSDomain) && f.DNSDomain.Kind() == "dns_process"
 	switch {
 	case named(wire) && !((process || processDNS) && wire.Evidence().ECH):
-		if process && f.ProcessDomain.Evidence().Group() != wire.Evidence().Group() {
+		if process && f.ProcessDomain.Group() != wire.Group() {
 			f.DomainConflict = true
 		}
 		f.Domain = wire
@@ -659,7 +659,7 @@ func chooseDomain(f *flow) {
 		f.Domain = f.DNSDomain
 	case named(f.DNSDomain):
 		f.Domain = f.DNSDomain
-	case wire != nil && wire.Evidence().Listed():
+	case wire != nil && wire.Listed():
 		f.Domain = wire
 	case f.ProcessDomain != nil:
 		f.Domain = f.ProcessDomain
@@ -704,11 +704,10 @@ func encryptedDNSKind(f *flow) string {
 	if port != 443 || f.Domain == nil {
 		return ""
 	}
-	e := f.Domain.Evidence()
-	if e.Kind != "tls" && e.Kind != "quic" && e.Kind != "openssl" && e.Kind != "dns" {
+	if kind := f.Domain.Kind(); kind != "tls" && kind != "quic" && kind != "openssl" && kind != "dns" {
 		return ""
 	}
-	name := strings.ToLower(strings.TrimSuffix(e.Group(), "."))
+	name := strings.ToLower(strings.TrimSuffix(f.Domain.Group(), "."))
 	if slices.Contains([]string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, name) || slices.Contains(extraDoHNames, name) {
 		return "DoH"
 	}
@@ -2310,7 +2309,7 @@ func flowLocalAddress(f *flow) netip.Addr {
 func domainSummary(flows []*flow) (map[string]*domainTotals, []string) {
 	totals := make(map[string]*domainTotals)
 	for _, f := range flows {
-		if f.Domain == nil || !f.Domain.Evidence().Listed() {
+		if f.Domain == nil || !f.Domain.Listed() {
 			continue
 		}
 		e := f.Domain.Evidence()

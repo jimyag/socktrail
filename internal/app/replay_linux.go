@@ -115,7 +115,7 @@ func readRecording(r io.Reader, port uint16) (map[string]*collector, []string, *
 		return nil, nil, nil, time.Time{}, fmt.Errorf("PCAPNG has no decodable packets")
 	}
 	for f, label := range labels {
-		if f.Domain == nil || !f.Domain.Evidence().Named() {
+		if f.Domain == nil || !f.Domain.Named() {
 			f.Domain = domain.NewRecordedLabel(label)
 		}
 	}

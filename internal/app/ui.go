@@ -982,7 +982,7 @@ func (u *terminalUI) rows(c *collector, mode viewMode) []*uiRow {
 				}
 				add(label, f, true)
 			case viewDomain:
-				if f.Domain != nil && f.Domain.Evidence().Listed() {
+				if f.Domain != nil && f.Domain.Listed() {
 					row := addWithKey(f.Domain.Evidence().Label(), f.Domain.Evidence().Label(), f, true)
 					switch f.Direction {
 					case "inbound":
@@ -1166,7 +1166,7 @@ func flowName(f *flow) string {
 		return icmpDescription(f)
 	}
 	var name string
-	if f.Domain != nil && f.Domain.Evidence().Listed() {
+	if f.Domain != nil && f.Domain.Listed() {
 		name = f.Domain.Evidence().Label()
 	}
 	switch detail := appDetail(f); {
@@ -1269,7 +1269,7 @@ func observedDomainHints(row *uiRow) []string {
 	names := make(map[string]struct{})
 	var hasUnknownTLS bool
 	for _, f := range row.flows {
-		if f.Domain == nil || !f.Domain.Evidence().Listed() {
+		if f.Domain == nil || !f.Domain.Listed() {
 			continue
 		}
 		e := f.Domain.Evidence()

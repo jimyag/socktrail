@@ -174,7 +174,7 @@ func (s *captureSession) Write(p capture.Packet, observed *flow) error {
 	if p.Truncated || len(p.Frame) < p.FrameLen {
 		comment += " captured_frame_truncated=true"
 	}
-	if observed.Domain != nil && observed.Domain.Evidence().Listed() {
+	if observed.Domain != nil && observed.Domain.Listed() {
 		comment += fmt.Sprintf(" domain=%q", observed.Domain.Evidence().Label())
 	}
 	comment = strings.Map(func(r rune) rune {

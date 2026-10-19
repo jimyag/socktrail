@@ -429,3 +429,20 @@ func TestHTTPMultipleHostsAndBodyFraming(t *testing.T) {
 		t.Fatalf("unexpected HTTP evidence: %+v", e)
 	}
 }
+
+// The in-place accessors answer as the evidence copy does.
+func TestStreamAccessorsMatchEvidence(t *testing.T) {
+	http := New(1)
+	http.Add(1, []byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
+	tls := New(1)
+	tls.Add(1, clientHello("tls.example.test", false))
+	for _, s := range []*Stream{New(1), http, tls, NewEncryptedDNS("DoT"), NewRecordedLabel("dns api.example.test")} {
+		e := s.Evidence()
+		if s.Group() != e.Group() || s.Named() != e.Named() || s.Listed() != e.Listed() || s.Kind() != e.Kind {
+			t.Errorf("%+v: stream says %q %t %t %q", e, s.Group(), s.Named(), s.Listed(), s.Kind())
+		}
+	}
+	if !http.Named() || http.Group() != "api.example.test" || tls.Group() != "tls.example.test" {
+		t.Fatalf("parsed streams: %q, %q", http.Group(), tls.Group())
+	}
+}

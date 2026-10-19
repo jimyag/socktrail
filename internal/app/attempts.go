@@ -134,7 +134,7 @@ func (c *collector) expireFlow(f *flow, now time.Time) {
 	c.expiredFlows++
 	c.expiredRX += f.RX
 	c.expiredTX += f.TX
-	if f.Domain != nil && f.Domain.Evidence().Listed() {
+	if f.Domain != nil && f.Domain.Listed() {
 		c.expiredDomainRX += f.RX
 		c.expiredDomainTX += f.TX
 	}
