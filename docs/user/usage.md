@@ -332,6 +332,34 @@ sudo socktrail --output msgpack --socket /run/socktrail.sock --duration 1h
 
 不带 `--socket` 时，`--output msgpack` 只是把每行换成 MessagePack 编码写到标准输出，字段与 NDJSON 完全相同，可以管交给消费方。带 `--socket` 时走的是订阅协议，见下。
 
+`--socket-kinds` 选择 socket 上发布哪些帧，逗号分隔，默认 `stats,flow`。它是**采集端（发布端）参数**，写在启动采集进程的那条命令上，影响该 socket 上的所有订阅者，不是消费端可以按订阅者区分的过滤条件：
+
+```sh
+# 独立启动的采集进程：该 socket 上不发布任何 flow 帧，所有订阅者只能看到 stats
+sudo socktrail --output msgpack --socket /tmp/socktrail-stats.sock --socket-kinds stats
+```
+
+`hello` 永远发布，没有它消费方无法确认后端会话。只订阅 `stats` 时，握手不再包含每条连接的 `flow` 快照，本机连接数很多时这能省下可观的编码与带宽。标准输出和 `--log-file` 不受这个参数影响：它们始终是裸的行流。
+
+### 常驻服务
+
+用 `install-service.sh` 可以把 socktrail 装成 systemd 常驻服务，让本机其他程序订阅而不必自己拉起和看管 socktrail：
+
+```sh
+task build
+./install-service.sh
+```
+
+脚本按自身所在目录定位二进制和 unit，所以可以在任意工作目录下调用，不需要先 `cd` 到仓库根；用 `--binary PATH` 可以改装其他位置的二进制，`--no-enable` 只安装、不启用也不启动。它把二进制装到 `/usr/local/bin/socktrail`，把 `packaging/socktrail.service` 装到 `/etc/systemd/system` 并启用、启动；需要 root 时自动用 `sudo`，本身以 root 运行时不再套一层。已经安装的服务正在运行时，脚本不擅自重启，只在输出里提示 `sudo systemctl restart socktrail.service`，由你决定何时打断采集。unit 以 root 运行，带抓包和 eBPF 所需的能力，另加 `CAP_SYS_ADMIN` 以启用 OpenSSL、kTLS 探针和 `--netns`，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。socket 默认在 `/run/socktrail/collector.sock`（`0660`，组 root）。改路径、权限、刷新间隔或采集范围用 drop-in：
+
+```sh
+sudo systemctl edit socktrail.service
+```
+
+已安装的常驻服务要调整采集参数时，用上面的 drop-in 改这个 unit，不要再启第二个实例：socktrail 默认单实例运行。确实要并发运行时加 `--allow-multiple`，并给第二个实例另选一个 socket 路径（例如 `/tmp/socktrail-stats.sock`）。
+
+消费方在别的账号时，把 socket 目录和 socket 的组改成共享组，或让消费方以 root 运行。
+
 ### 帧协议
 
 每帧是一个对象，用 `kind` 区分：

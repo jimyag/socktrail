@@ -83,7 +83,7 @@ func TestStreamGreetSendsHandshakeBeforeIncrements(t *testing.T) {
 		t.Fatalf("listenStreamSocket: %v", err)
 	}
 	defer hub.close()
-	sink, err := newStreamSink("msgpack", nil, hub)
+	sink, err := newStreamSink("msgpack", nil, hub, allStreamFrameKinds())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestStreamGreetSendsHandshakeBeforeIncrements(t *testing.T) {
 // Nothing is encoded while nobody is subscribed. A nil codec proves it: the
 // sink would panic reaching it.
 func TestStreamSinkSkipsEncodingWithoutClients(t *testing.T) {
-	sink := &streamSink{format: "msgpack", hub: newStreamHub(nil)}
+	sink := &streamSink{format: "msgpack", hub: newStreamHub(nil), kinds: allStreamFrameKinds()}
 	if err := sink.flow(jsonFlow{Protocol: "tcp"}); err != nil {
 		t.Errorf("the sink encoded a flow with no subscribers: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestStreamSinkSkipsEncodingWithoutClients(t *testing.T) {
 // The CI smoke test caught this as a panic at the first tick of a bare
 // `--output msgpack` run.
 func TestStreamSinkWithoutHubIsANoOp(t *testing.T) {
-	sink := &streamSink{format: "msgpack"}
+	sink := &streamSink{format: "msgpack", kinds: allStreamFrameKinds()}
 	sink.adoptClients()
 	if err := sink.greet(func(send func(any) error) error {
 		t.Error("the handshake ran without a hub")
@@ -158,5 +158,169 @@ func TestStreamSinkWithoutHubIsANoOp(t *testing.T) {
 	}
 	if err := sink.writeFrame(streamFrame{Kind: streamKindStats}); err != nil {
 		t.Errorf("writeFrame without a hub: %v", err)
+	}
+}
+
+// A subscriber that only totals per-process traffic must not have to read every
+// flow frame. --socket-kinds stats keeps the socket to hello plus the periodic
+// summary, which is what such a consumer actually uses.
+func TestSocketKindsStatsSkipsFlowFrames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socktrail.sock")
+	hub, err := listenStreamSocket(path, 0o600)
+	if err != nil {
+		t.Fatalf("listenStreamSocket: %v", err)
+	}
+	defer hub.close()
+	kinds, err := parseSocketKinds("stats")
+	if err != nil {
+		t.Fatalf("parseSocketKinds: %v", err)
+	}
+	sink, err := newStreamSink("msgpack", nil, hub, kinds)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	waitFor(t, "the client to be adopted", func() bool {
+		sink.adoptClients()
+		return hub.active()
+	})
+
+	if err := sink.greet(func(send func(any) error) error {
+		if err := send(streamFrame{Kind: streamKindHello, Hello: &streamHello{Version: 1}}); err != nil {
+			return err
+		}
+		// The handshake still carries the flow snapshot; a stats-only consumer
+		// must not receive it.
+		for range 4 {
+			if err := send(jsonFlow{Protocol: "tcp", Source: "a", Target: "b"}); err != nil {
+				return err
+			}
+		}
+		summary := streamSummary{IPBytes: 7}
+		return send(streamFrame{Kind: streamKindStats, Stats: &summary})
+	}); err != nil {
+		t.Fatalf("greet: %v", err)
+	}
+	// Increments after the handshake are dropped the same way.
+	if err := sink.flow(jsonFlow{Protocol: "tcp", Source: "c", Target: "d"}); err != nil {
+		t.Fatalf("flow: %v", err)
+	}
+	if err := sink.writeFrame(streamFrame{Kind: streamKindStats, Stats: &streamSummary{IPBytes: 9}}); err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	decoder := msgpack.NewDecoder(conn)
+	decoder.SetCustomStructTag("json")
+	// The incremental summary is the last frame sent, so reading up to it sees
+	// everything without waiting out the deadline.
+	var received []streamFrame
+	for {
+		var frame streamFrame
+		if err := decoder.Decode(&frame); err != nil {
+			t.Fatalf("decode after %d frames: %v", len(received), err)
+		}
+		received = append(received, frame)
+		if frame.Kind == streamKindStats && frame.Stats != nil && frame.Stats.IPBytes == 9 {
+			break
+		}
+	}
+	if len(received) < 3 {
+		t.Fatalf("received %d frames, want hello + handshake stats + incremental stats: %+v",
+			len(received), received)
+	}
+	for i, frame := range received {
+		if frame.Kind == streamKindFlow {
+			t.Fatalf("frame %d is a flow frame; --socket-kinds stats must not publish any", i)
+		}
+	}
+	if received[0].Kind != streamKindHello {
+		t.Errorf("first frame = %q, want hello", received[0].Kind)
+	}
+	// The handshake summary is the one that reached the client, since the
+	// incremental frames follow it in order.
+	if received[1].Kind != streamKindStats || received[1].Stats == nil || received[1].Stats.IPBytes != 7 {
+		t.Errorf("second frame = %+v, want the handshake summary", received[1])
+	}
+}
+
+// Turning stats off leaves the socket a bare flow stream, so the flag means what
+// it says in both directions.
+func TestSocketKindsFlowSkipsStatsFrames(t *testing.T) {
+	kinds, err := parseSocketKinds("flow")
+	if err != nil {
+		t.Fatalf("parseSocketKinds: %v", err)
+	}
+	if kinds.stats || !kinds.flow {
+		t.Fatalf("kinds = %+v, want flow only", kinds)
+	}
+	// The default publishes everything.
+	all, err := parseSocketKinds("stats,flow")
+	if err != nil {
+		t.Fatalf("parseSocketKinds: %v", err)
+	}
+	if !all.stats || !all.flow {
+		t.Errorf("kinds = %+v, want both", all)
+	}
+	// An empty or unknown selection is refused rather than silently ignored.
+	for _, value := range []string{"", "transit", "stats,nope", "hello"} {
+		if _, err := parseSocketKinds(value); err == nil {
+			t.Errorf("parseSocketKinds(%q) succeeded, want an error", value)
+		}
+	}
+
+	// The flag decides what the socket encodes, not just how the value parses:
+	// stats frames encode to nothing while hello and flow stay non-empty.
+	sink, err := newStreamSink("msgpack", nil, nil, kinds)
+	if err != nil {
+		t.Fatalf("newStreamSink: %v", err)
+	}
+	stats, err := sink.encodeFrame(streamFrame{Kind: streamKindStats, Stats: &streamSummary{IPBytes: 7}})
+	if err != nil {
+		t.Fatalf("encode stats: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("a flow-only socket encoded %d bytes of stats", len(stats))
+	}
+	hello, err := sink.encodeFrame(streamFrame{Kind: streamKindHello, Hello: &streamHello{Version: 1}})
+	if err != nil {
+		t.Fatalf("encode hello: %v", err)
+	}
+	if len(hello) == 0 {
+		t.Error("a flow-only socket dropped hello, which every subscriber needs")
+	}
+	flow, err := sink.encodeFrame(jsonFlow{Protocol: "tcp", Source: "a", Target: "b"})
+	if err != nil {
+		t.Fatalf("encode flow: %v", err)
+	}
+	if len(flow) == 0 {
+		t.Error("a flow-only socket dropped a flow frame")
+	}
+}
+
+// A filtered kind must not reach the client buffer at all: an empty frame still
+// takes a slot, and a slow stats-only subscriber would be dropped for flow
+// frames it never receives. The client has no writer, so the buffer shows
+// exactly what was offered.
+func TestSocketKindsFilteredFramesTakeNoBufferSlot(t *testing.T) {
+	hub := newStreamHub(nil)
+	client := &streamClient{frames: make(chan []byte, 1), closing: make(chan struct{})}
+	hub.clients[client] = struct{}{}
+	sink, err := newStreamSink("msgpack", nil, hub, streamFrameKinds{stats: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := sink.flow(jsonFlow{Protocol: "tcp"}); err != nil {
+			t.Fatalf("flow: %v", err)
+		}
+	}
+	if len(client.frames) != 0 || !hub.active() {
+		t.Fatalf("filtered flow frames queued %d buffers, client kept: %v", len(client.frames), hub.active())
 	}
 }

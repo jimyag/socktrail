@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -239,6 +240,41 @@ drain:
 	h.pending = nil
 }
 
+// streamFrameKinds selects which frame kinds a socket publishes. A consumer that
+// only totals per-process traffic has no use for flow frames, and skipping them
+// spares both the encode work and the socket bandwidth. The zero value publishes
+// nothing, so every caller states the kinds it wants.
+type streamFrameKinds struct {
+	stats bool
+	flow  bool
+}
+
+func allStreamFrameKinds() streamFrameKinds { return streamFrameKinds{stats: true, flow: true} }
+
+// parseSocketKinds reads the --socket-kinds value. hello is always published:
+// without it a subscriber cannot identify the backend session, and every
+// documented consumer relies on it.
+func parseSocketKinds(value string) (streamFrameKinds, error) {
+	kinds := streamFrameKinds{}
+	for name := range strings.SplitSeq(value, ",") {
+		switch strings.TrimSpace(name) {
+		case "":
+		case "stats":
+			kinds.stats = true
+		case "flow":
+			kinds.flow = true
+		case "hello":
+			return kinds, fmt.Errorf("invalid --socket-kinds %q: hello is always published", value)
+		default:
+			return kinds, fmt.Errorf("invalid --socket-kinds %q: use stats, flow or both", value)
+		}
+	}
+	if !kinds.stats && !kinds.flow {
+		return kinds, fmt.Errorf("invalid --socket-kinds %q: at least one kind is required", value)
+	}
+	return kinds, nil
+}
+
 // streamSink is where encoded frames go: standard output, the change log, or
 // the socket hub.
 type streamSink struct {
@@ -246,14 +282,17 @@ type streamSink struct {
 	format string
 	writer io.Writer // Standard output or the change log; nil when hub is set.
 	hub    *streamHub
+	// Which kinds the socket carries. Ignored without a hub: standard output and
+	// the change log always carry the bare flow row stream.
+	kinds streamFrameKinds
 }
 
-func newStreamSink(format string, writer io.Writer, hub *streamHub) (*streamSink, error) {
+func newStreamSink(format string, writer io.Writer, hub *streamHub, kinds streamFrameKinds) (*streamSink, error) {
 	codec, err := newStreamCodec(format)
 	if err != nil {
 		return nil, err
 	}
-	return &streamSink{codec: codec, format: format, writer: writer, hub: hub}, nil
+	return &streamSink{codec: codec, format: format, writer: writer, hub: hub, kinds: kinds}, nil
 }
 
 // flow emits one connection change.
@@ -269,9 +308,12 @@ func (s *streamSink) active() bool {
 }
 
 // writeFrame broadcasts one metadata frame. Standard output carries no frame
-// kinds, so this is a no-op without a hub.
+// kinds, so this is a no-op without a hub. A kind the socket does not publish
+// returns before broadcast: an empty frame would still take a client buffer
+// slot, and a slow stats-only subscriber would be dropped for flow frames it
+// never receives.
 func (s *streamSink) writeFrame(frame streamFrame) error {
-	if s.hub == nil || !s.hub.active() {
+	if s.hub == nil || !s.hub.active() || !s.publishes(frame.Kind) {
 		return nil
 	}
 	raw, err := s.encodeFrame(frame)
@@ -302,6 +344,7 @@ func (s *streamSink) greet(fill func(send func(any) error) error) error {
 		if err != nil {
 			return err
 		}
+		// A filtered kind encodes to nothing and must not reach the client.
 		handshake = append(handshake, frame...)
 		return nil
 	}
@@ -323,13 +366,34 @@ func (s *streamSink) adoptClients() {
 	}
 }
 
+// publishes reports whether a socket frame of this kind is wanted. The
+// handshake and the incremental path both go through encodeFrame, so
+// --socket-kinds holds for everything a subscriber receives. hello is never
+// filtered: without it a subscriber cannot identify the backend session.
+func (s *streamSink) publishes(kind string) bool {
+	switch kind {
+	case streamKindHello:
+		return true
+	case streamKindStats:
+		return s.kinds.stats
+	case streamKindFlow:
+		return s.kinds.flow
+	default:
+		return true
+	}
+}
+
 // encodeFrame serializes one value for the socket. A bare jsonFlow is wrapped
 // in a frame envelope; metadata already carries its kind. The bytes are the
 // codec's buffer, valid until the next encode: greet appends them to its
-// handshake and broadcast copies them.
+// handshake and broadcast copies them. A kind this sink does not publish
+// encodes to nil, which callers treat as "nothing to send".
 func (s *streamSink) encodeFrame(v any) ([]byte, error) {
 	if row, ok := v.(jsonFlow); ok {
 		v = streamFrame{Kind: streamKindFlow, Flow: &row}
+	}
+	if frame, ok := v.(streamFrame); ok && !s.publishes(frame.Kind) {
+		return nil, nil
 	}
 	return s.codec.encode(v)
 }

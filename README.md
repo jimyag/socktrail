@@ -98,6 +98,37 @@ curl -fsSL https://raw.githubusercontent.com/jimyag/socktrail/main/install.sh | 
 
 The installer asks for `sudo` if the destination is not writable. For releases after v0.0.1, it also verifies the build provenance attestation when GitHub CLI 2.49 or later is installed and signed in; otherwise it checks only the SHA-256 checksum. Run the installed binary with `sudo socktrail`, or follow the [file capability setup](docs/user/usage.md#不使用-sudo-运行).
 
+### 以 systemd 服务运行
+
+要让 socktrail 作为常驻采集进程、供本机其他程序订阅，可以把它装成 systemd 服务：
+
+```sh
+task build
+./install-service.sh
+```
+
+`install-service.sh` 会把二进制装到 `/usr/local/bin/socktrail`，把 `packaging/socktrail.service` 装到 `/etc/systemd/system`，并启用、启动服务。脚本按自身所在目录定位二进制和 unit，因此在任何工作目录下调用都可以；已安装的服务正在运行时它不擅自重启，只在输出里提示下一步。unit 不用交互界面，而是通过 `/run/socktrail/collector.sock`（权限 `0660`，组 root）持续输出 MessagePack 帧，所以消费方不需要抓包权限，也不必自己拉起或看管 socktrail。日常管理：
+
+```sh
+systemctl status socktrail.service
+journalctl -u socktrail.service
+sudo systemctl restart socktrail.service
+```
+
+unit 以 root 运行，带抓包和 eBPF 所需的能力，另加 `CAP_SYS_ADMIN` 以启用 OpenSSL、kTLS 探针和 `--netns`，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。改 socket 路径、权限、刷新间隔或采集范围时用 drop-in，不要直接改 unit 文件：
+
+```sh
+sudo systemctl edit socktrail.service
+```
+
+`--socket-kinds` 是采集端（发布端）的参数，作用于该 socket 上的所有订阅者，不是消费端的过滤条件。只做按进程流量汇总的订阅者可以用它让该 socket 不发布任何 flow 帧：
+
+```sh
+sudo socktrail --output msgpack --socket /tmp/socktrail-stats.sock --socket-kinds stats
+```
+
+上面的例子用一个独立采集进程和另一个 socket 路径，避免与已安装服务的 `/run/socktrail/collector.sock` 冲突：socktrail 默认单实例运行，这条命令不能和已安装的服务同时使用（确实要并发时加 `--allow-multiple`，那时各实例会各自加载全套 eBPF 程序）。已安装的常驻服务要改采集范围或 socket 参数时，用 `sudo systemctl edit socktrail.service`，不要再启第二个实例。
+
 For a source build, `task` (or `task build`) creates a static binary with the Git version and build time, and `task install` installs it to `/usr/local/bin/socktrail` with the file capabilities needed for packet capture and eBPF. Run `task install` as your normal user; it invokes `sudo` only for installation. Then run `socktrail` without `sudo` for core capture. Use `sudo socktrail` when you need all probes, including OpenSSL process SNI and kernel TLS on hosts that restrict module BTF access.
 
 From the repository root, `go install .` installs the binary to your Go binary directory. It does not set Linux file capabilities.
