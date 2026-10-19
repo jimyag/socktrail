@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -135,10 +136,8 @@ func (f *installScriptFixture) calls() []string {
 // wantCall fails unless the script made exactly this call.
 func (f *installScriptFixture) wantCall(want string) {
 	f.t.Helper()
-	for _, call := range f.calls() {
-		if call == want {
-			return
-		}
+	if slices.Contains(f.calls(), want) {
+		return
 	}
 	f.t.Errorf("missing call %q in:\n%s", want, strings.Join(f.calls(), "\n"))
 }

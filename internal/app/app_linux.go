@@ -1573,7 +1573,7 @@ func Run() (runErr error) {
 		streamStart, lastStats = time.Now(), time.Now()
 		if *socketPath == "" {
 			outputTarget = streamOutput{os.Stdout}
-			stream, err = newStreamSink(*output, outputTarget, nil, streamFrameKinds{})
+			stream, err = newStreamSink(*output, outputTarget, nil, allStreamFrameKinds())
 		} else {
 			hub, hubErr := listenStreamSocket(*socketPath, socketFileMode)
 			if hubErr != nil {
@@ -1591,7 +1591,7 @@ func Run() (runErr error) {
 			return err
 		}
 		outputTarget = writer
-		stream, err = newStreamSink("ndjson", writer, nil, streamFrameKinds{})
+		stream, err = newStreamSink("ndjson", writer, nil, allStreamFrameKinds())
 		if err != nil {
 			return errors.Join(err, writer.Close())
 		}

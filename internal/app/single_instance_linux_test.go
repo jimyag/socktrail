@@ -133,8 +133,7 @@ func TestOpenLockFileRejectsSpecialFiles(t *testing.T) {
 					t.Fatal(err)
 				}
 				_ = writer.Close()
-				<-done
-				t.Fatal("opening a non-regular lock file blocked")
+				t.Fatalf("opening a non-regular lock file blocked (then returned %v)", <-done)
 			}
 		})
 	}

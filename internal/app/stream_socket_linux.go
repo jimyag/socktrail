@@ -243,7 +243,7 @@ drain:
 // streamFrameKinds selects which frame kinds a socket publishes. A consumer that
 // only totals per-process traffic has no use for flow frames, and skipping them
 // spares both the encode work and the socket bandwidth. The zero value publishes
-// everything, which is what standard output and the change log need.
+// nothing, so every caller states the kinds it wants.
 type streamFrameKinds struct {
 	stats bool
 	flow  bool
@@ -256,7 +256,7 @@ func allStreamFrameKinds() streamFrameKinds { return streamFrameKinds{stats: tru
 // documented consumer relies on it.
 func parseSocketKinds(value string) (streamFrameKinds, error) {
 	kinds := streamFrameKinds{}
-	for _, name := range strings.Split(value, ",") {
+	for name := range strings.SplitSeq(value, ",") {
 		switch strings.TrimSpace(name) {
 		case "":
 		case "stats":
@@ -292,9 +292,6 @@ func newStreamSink(format string, writer io.Writer, hub *streamHub, kinds stream
 	if err != nil {
 		return nil, err
 	}
-	if kinds == (streamFrameKinds{}) {
-		kinds = allStreamFrameKinds()
-	}
 	return &streamSink{codec: codec, format: format, writer: writer, hub: hub, kinds: kinds}, nil
 }
 
@@ -311,9 +308,12 @@ func (s *streamSink) active() bool {
 }
 
 // writeFrame broadcasts one metadata frame. Standard output carries no frame
-// kinds, so this is a no-op without a hub.
+// kinds, so this is a no-op without a hub. A kind the socket does not publish
+// returns before broadcast: an empty frame would still take a client buffer
+// slot, and a slow stats-only subscriber would be dropped for flow frames it
+// never receives.
 func (s *streamSink) writeFrame(frame streamFrame) error {
-	if s.hub == nil || !s.hub.active() {
+	if s.hub == nil || !s.hub.active() || !s.publishes(frame.Kind) {
 		return nil
 	}
 	raw, err := s.encodeFrame(frame)

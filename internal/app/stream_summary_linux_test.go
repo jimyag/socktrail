@@ -196,7 +196,7 @@ func TestSocketKindsStatsSkipsFlowFrames(t *testing.T) {
 		}
 		// The handshake still carries the flow snapshot; a stats-only consumer
 		// must not receive it.
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			if err := send(jsonFlow{Protocol: "tcp", Source: "a", Target: "b"}); err != nil {
 				return err
 			}
@@ -217,13 +217,18 @@ func TestSocketKindsStatsSkipsFlowFrames(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	decoder := msgpack.NewDecoder(conn)
 	decoder.SetCustomStructTag("json")
+	// The incremental summary is the last frame sent, so reading up to it sees
+	// everything without waiting out the deadline.
 	var received []streamFrame
 	for {
 		var frame streamFrame
 		if err := decoder.Decode(&frame); err != nil {
-			break // nothing left to read
+			t.Fatalf("decode after %d frames: %v", len(received), err)
 		}
 		received = append(received, frame)
+		if frame.Kind == streamKindStats && frame.Stats != nil && frame.Stats.IPBytes == 9 {
+			break
+		}
 	}
 	if len(received) < 3 {
 		t.Fatalf("received %d frames, want hello + handshake stats + incremental stats: %+v",
@@ -295,5 +300,27 @@ func TestSocketKindsFlowSkipsStatsFrames(t *testing.T) {
 	}
 	if len(flow) == 0 {
 		t.Error("a flow-only socket dropped a flow frame")
+	}
+}
+
+// A filtered kind must not reach the client buffer at all: an empty frame still
+// takes a slot, and a slow stats-only subscriber would be dropped for flow
+// frames it never receives. The client has no writer, so the buffer shows
+// exactly what was offered.
+func TestSocketKindsFilteredFramesTakeNoBufferSlot(t *testing.T) {
+	hub := newStreamHub(nil)
+	client := &streamClient{frames: make(chan []byte, 1), closing: make(chan struct{})}
+	hub.clients[client] = struct{}{}
+	sink, err := newStreamSink("msgpack", nil, hub, streamFrameKinds{stats: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := sink.flow(jsonFlow{Protocol: "tcp"}); err != nil {
+			t.Fatalf("flow: %v", err)
+		}
+	}
+	if len(client.frames) != 0 || !hub.active() {
+		t.Fatalf("filtered flow frames queued %d buffers, client kept: %v", len(client.frames), hub.active())
 	}
 }
