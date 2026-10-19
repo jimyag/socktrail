@@ -28,9 +28,11 @@ RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=2
 # Packet capture, eBPF, conntrack NAT lookups and raising the eBPF memlock
-# rlimit need these; it is the same set the file-capability install grants.
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE
-AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE
+# rlimit need the file-capability set. CAP_SYS_ADMIN is added on top: without
+# it the OpenSSL uprobe (perf_event_paranoid > 2, as on Debian) and the kTLS
+# probes (module BTF) are unavailable, and a drop-in cannot use --netns.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE CAP_SYS_ADMIN
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_RESOURCE CAP_SYS_ADMIN
 # CAP_SYS_RESOURCE alone is not enough to raise the rlimit from a unit.
 LimitMEMLOCK=infinity
 # Moderate hardening. RestrictAddressFamilies is deliberately absent: it would

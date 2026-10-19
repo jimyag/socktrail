@@ -350,7 +350,7 @@ task build
 ./install-service.sh
 ```
 
-脚本按自身所在目录定位二进制和 unit，所以可以在任意工作目录下调用，不需要先 `cd` 到仓库根；用 `--binary PATH` 可以改装其他位置的二进制，`--no-enable` 只安装、不启用也不启动。它把二进制装到 `/usr/local/bin/socktrail`，把 `packaging/socktrail.service` 装到 `/etc/systemd/system` 并启用、启动；需要 root 时自动用 `sudo`，本身以 root 运行时不再套一层。已经安装的服务正在运行时，脚本不擅自重启，只在输出里提示 `sudo systemctl restart socktrail.service`，由你决定何时打断采集。unit 以 root 运行，带抓包和 eBPF 所需的能力，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。socket 默认在 `/run/socktrail/collector.sock`（`0660`，组 root）。改路径、权限、刷新间隔或采集范围用 drop-in：
+脚本按自身所在目录定位二进制和 unit，所以可以在任意工作目录下调用，不需要先 `cd` 到仓库根；用 `--binary PATH` 可以改装其他位置的二进制，`--no-enable` 只安装、不启用也不启动。它把二进制装到 `/usr/local/bin/socktrail`，把 `packaging/socktrail.service` 装到 `/etc/systemd/system` 并启用、启动；需要 root 时自动用 `sudo`，本身以 root 运行时不再套一层。已经安装的服务正在运行时，脚本不擅自重启，只在输出里提示 `sudo systemctl restart socktrail.service`，由你决定何时打断采集。unit 以 root 运行，带抓包和 eBPF 所需的能力，另加 `CAP_SYS_ADMIN` 以启用 OpenSSL、kTLS 探针和 `--netns`，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。socket 默认在 `/run/socktrail/collector.sock`（`0660`，组 root）。改路径、权限、刷新间隔或采集范围用 drop-in：
 
 ```sh
 sudo systemctl edit socktrail.service

@@ -115,7 +115,7 @@ journalctl -u socktrail.service
 sudo systemctl restart socktrail.service
 ```
 
-unit 以 root 运行，带抓包和 eBPF 所需的能力，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。改 socket 路径、权限、刷新间隔或采集范围时用 drop-in，不要直接改 unit 文件：
+unit 以 root 运行，带抓包和 eBPF 所需的能力，另加 `CAP_SYS_ADMIN` 以启用 OpenSSL、kTLS 探针和 `--netns`，并用 `LimitMEMLOCK=infinity` 允许提高 eBPF memlock rlimit。改 socket 路径、权限、刷新间隔或采集范围时用 drop-in，不要直接改 unit 文件：
 
 ```sh
 sudo systemctl edit socktrail.service
