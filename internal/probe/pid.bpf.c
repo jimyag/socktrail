@@ -127,6 +127,10 @@ struct event {
     __u64 app_bytes;
     __u64 cgroup_id;       // The cgroup v2 ID: the inode of the process's cgroup directory.
     __u64 parent_start_ns;
+    // Application I/O only: its socket, and when its io_totals entry started.
+    // app_bytes is then the entry's running total.
+    __u64 io_socket;
+    __u64 io_gen;
     __u32 pid;
     __u32 ppid;
     // TCP only: the socket's state after the call, as ss -ti shows it.
@@ -146,7 +150,7 @@ struct event {
     char comm[16];
 };
 
-// The ordinary 128-byte event stays small. A TCP sample has extra fields and
+// The ordinary 144-byte event stays small. A TCP sample has extra fields and
 // is emitted at most once per second per socket during application I/O.
 struct tcp_metric_event {
     __u64 netns;
@@ -186,6 +190,22 @@ struct {
     __uint(max_entries, 1 << 22);
     __type(value, struct ring_value);
 } events SEC(".maps");
+
+// The I/O of each socket and direction. The verifier allows no arithmetic on
+// a socket pointer, so the direction is a field of its own. The reader
+// collects the running totals every second.
+// ponytail: an entry the LRU evicts loses at most its last second of bytes;
+// raise max_entries if a host keeps more active sockets.
+struct io_key {
+    __u64 socket;
+    __u64 receive;
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, struct io_key);
+    __type(value, struct event);
+} io_totals SEC(".maps");
 
 struct connect_start {
     __u64 start_ns;
@@ -264,7 +284,7 @@ int BPF_PROG(tcp_connect_result, const struct sock *sk, int oldstate, int newsta
     e->role = ROLE_SEND;
     e->operation = OP_CONNECT_RESULT;
     e->family = family == AF_INET ? 4 : 6;
-    // These fields are operation-specific, keeping the 128-byte ring event.
+    // These fields are operation-specific, keeping the 144-byte ring event.
     e->srtt_us = newstate == TCP_CLOSE ? BPF_CORE_READ(sk, sk_err) : 0;
     if (newstate == TCP_CLOSE && e->srtt_us == 0) e->srtt_us = 0xffffffff; // Application aborted.
     __u64 elapsed = (bpf_ktime_get_ns() - start->started_at) / 1000;
@@ -289,6 +309,59 @@ done:
     return 0;
 }
 
+static __always_inline struct event *reserve_event(void)
+{
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        __u32 zero = 0;
+        __u64 *count = bpf_map_lookup_elem(&lost, &zero);
+        if (count) __sync_fetch_and_add(count, 1);
+    }
+    return e;
+}
+
+// Waking the reader costs more than handling an event: wake it only once
+// events pile up. It also drains the ring on a timer.
+static __always_inline void submit_event(void *e)
+{
+    __u64 flags = bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) >= WAKEUP_BYTES ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
+    bpf_ringbuf_submit(e, flags);
+}
+
+// copy_total reserves a ring event with an I/O entry's last running total.
+// The caller removes or replaces the entry before submitting the event, so
+// the reader's sweep cannot find the entry again once the event has told the
+// reader to forget it.
+static __always_inline struct event *copy_total(struct event *total)
+{
+    struct event *e = reserve_event();
+    if (e) __builtin_memcpy(e, total, sizeof(*e));
+    return e;
+}
+
+// same_owner tells whether an I/O entry still belongs to this process and
+// these endpoints: a freed socket's address is reused, and an unconnected
+// UDP socket talks to many peers.
+static __always_inline bool same_owner(const struct event *a, const struct event *b)
+{
+    if (a->pid != b->pid || a->start_ns != b->start_ns || a->netns != b->netns ||
+        a->local_port != b->local_port || a->remote_port != b->remote_port) return false;
+    const __u32 *x = (const __u32 *)a->local_ip, *y = (const __u32 *)b->local_ip;
+    for (int i = 0; i < 8; i++) // local_ip, then remote_ip.
+        if (x[i] != y[i]) return false;
+    return true;
+}
+
+static __always_inline void read_tcp(struct event *e, struct sock *sk)
+{
+    struct tcp_sock *tp = (void *)sk;
+    e->srtt_us = BPF_CORE_READ(tp, srtt_us) >> 3;
+    e->rttvar_us = BPF_CORE_READ(tp, mdev_us) >> 2;
+    e->snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
+    e->data_segs_out = BPF_CORE_READ(tp, data_segs_out);
+    e->total_retrans = BPF_CORE_READ(tp, total_retrans);
+}
+
 // local_port overrides the socket's port when non-negative: an ICMP echo
 // flow is keyed by its identifier instead.
 static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
@@ -296,7 +369,6 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
                                   void *remote_override, __u8 family_hint,
                                   __s32 local_port_override)
 {
-    __u32 zero = 0;
     // Not bpf_get_current_task_btf, which needs Linux 5.11.
     struct task_struct *task = (void *)bpf_get_current_task();
     // A retransmission runs in softirq or timer context on behalf of no
@@ -326,31 +398,11 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
     if (cfg->port && operation != OP_SEND && operation != OP_RECV &&
         cfg->port != local_port && cfg->port != remote_port) return 0;
 
-    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        __u64 *count = bpf_map_lookup_elem(&lost, &zero);
-        if (count) __sync_fetch_and_add(count, 1);
-        return 0;
-    }
-    __builtin_memset(e, 0, sizeof(*e));
+    struct event current = {};
+    struct event *e = &current;
     if (operation != OP_RETRANSMIT) {
         e->pid = bpf_get_current_pid_tgid() >> 32;
         e->start_ns = process_start(task);
-        bpf_get_current_comm(&e->comm, sizeof(e->comm));
-        // The parent and cgroup group processes into trees and services;
-        // read here, they survive a process that exits right after.
-        struct task_struct *parent = BPF_CORE_READ(task, real_parent);
-        e->ppid = BPF_CORE_READ(parent, tgid);
-        e->parent_start_ns = process_start(parent);
-        e->cgroup_id = bpf_get_current_cgroup_id();
-    }
-    if (protocol == 6) {
-        struct tcp_sock *tp = (void *)sk;
-        e->srtt_us = BPF_CORE_READ(tp, srtt_us) >> 3;
-        e->rttvar_us = BPF_CORE_READ(tp, mdev_us) >> 2;
-        e->snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
-        e->data_segs_out = BPF_CORE_READ(tp, data_segs_out);
-        e->total_retrans = BPF_CORE_READ(tp, total_retrans);
     }
     e->netns = netns;
     e->app_bytes = app_bytes;
@@ -428,11 +480,69 @@ static __always_inline int output(struct sock *sk, __u8 protocol, __u8 role,
             }
         }
     }
-    // Waking the reader costs more than handling an event, and a busy host
-    // makes one per socket call: wake it only once events pile up. It also
-    // drains the ring on a timer.
-    __u64 flags = bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) >= WAKEUP_BYTES ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
-    bpf_ringbuf_submit(e, flags);
+
+    // A busy host makes one socket call after another. Their bytes add up in
+    // the socket's io_totals entry, which the reader collects every second;
+    // the process and its parent are read only when the entry starts.
+    struct event *total = 0;
+    struct io_key io_key = {.socket = (__u64)sk, .receive = operation == OP_RECV};
+    bool io = app_bytes && (protocol == 6 || protocol == 17) && (operation == OP_SEND || operation == OP_RECV);
+    if (io) {
+        total = bpf_map_lookup_elem(&io_totals, &io_key);
+        if (total && same_owner(total, e)) {
+            __sync_fetch_and_add(&total->app_bytes, app_bytes);
+            if (protocol == 6) read_tcp(total, sk);
+            return 0;
+        }
+    }
+    if (operation != OP_RETRANSMIT) {
+        bpf_get_current_comm(&e->comm, sizeof(e->comm));
+        // The parent and cgroup group processes into trees and services;
+        // read here, they survive a process that exits right after.
+        struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+        e->ppid = BPF_CORE_READ(parent, tgid);
+        e->parent_start_ns = process_start(parent);
+        e->cgroup_id = bpf_get_current_cgroup_id();
+    }
+    if (protocol == 6) read_tcp(e, sk);
+    if (!io) {
+        struct event *ring = reserve_event();
+        if (ring) {
+            __builtin_memcpy(ring, e, sizeof(*ring));
+            submit_event(ring);
+        }
+        return 0;
+    }
+    e->io_socket = io_key.socket;
+    e->io_gen = bpf_ktime_get_ns();
+    // Another process or peer takes the entry over: its total so far goes
+    // through the ring.
+    struct event *last = total ? copy_total(total) : 0;
+    if (bpf_map_update_elem(&io_totals, &io_key, e, total ? BPF_ANY : BPF_NOEXIST)) {
+        // Another CPU started the entry first.
+        total = bpf_map_lookup_elem(&io_totals, &io_key);
+        if (total) __sync_fetch_and_add(&total->app_bytes, app_bytes);
+    }
+    if (last) submit_event(last);
+    return 0;
+}
+
+// A socket's I/O entries go when the socket does, their last totals through
+// the ring. inet_sock_destruct runs once as an inet socket is destroyed.
+static __always_inline void flush_total(struct io_key key)
+{
+    struct event *total = bpf_map_lookup_elem(&io_totals, &key);
+    if (!total) return;
+    struct event *last = copy_total(total);
+    bpf_map_delete_elem(&io_totals, &key);
+    if (last) submit_event(last);
+}
+
+SEC("fentry/inet_sock_destruct")
+int BPF_PROG(socket_destroyed, struct sock *sk)
+{
+    flush_total((struct io_key){.socket = (__u64)sk});
+    flush_total((struct io_key){.socket = (__u64)sk, .receive = 1});
     return 0;
 }
 

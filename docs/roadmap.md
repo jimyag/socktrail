@@ -76,7 +76,7 @@
 
 主循环和性能：
 - 抓包、PID 事件、按键和界面都在同一个 goroutine 里。周期性工作放进现有的每秒 tick，不要另开 goroutine 读写 collector；需要后台执行的任务（下载、探测）通过 channel 把结果送回主循环。
-- 探针的 `struct event` 现在是 128 B，经 ring buffer 批量唤醒。新数据优先用新的操作类型或只在需要的事件里填，不要让所有 socket 事件都变大；大量同类事件（如丢包）在内核里聚合计数，不要逐条上报。
+- 探针的 `struct event` 现在是 144 B，经 ring buffer 批量唤醒；应用 I/O 在内核按 socket 累加，不逐次上报。新数据优先用新的操作类型或只在需要的事件里填，不要让所有 socket 事件都变大；大量同类事件（如丢包）在内核里聚合计数，不要逐条上报。
 - 每条连接的存活堆用 `go test -run '^$' -bench BenchmarkFlowMemory ./internal/app` 测，加字段前后都要对比。
 - `flow` 结构体的大小用 `go run golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment@latest ./internal/app/` 检查，它会给出当前大小、最优大小和对应的分配规格。第 0 项完成后应不超过 768 B；新字段放进已有的对齐空隙，或者用按需分配的指针，不要越过这个规格。
 

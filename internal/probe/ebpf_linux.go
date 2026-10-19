@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"runtime"
@@ -171,6 +172,22 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 		var readErr error
 		var record ringbuf.Record // Reused: every event is copied out of it.
 		var batch []Event
+		io := ioTotals{entries: make(map[ioID]ioEntry)}
+		ioMap, lastSweep := objects.Maps["io_totals"], time.Now()
+		keys, values := make([]struct{ Socket, Receive uint64 }, 256), make([]BpfEvent, 256)
+		appendIO := func(raw *BpfEvent, bytes uint64) {
+			if bytes == 0 {
+				return
+			}
+			event, err := decodeEvent(*raw)
+			if err != nil {
+				stats.Invalid.Add(1)
+				return
+			}
+			event.AppBytes = bytes
+			stats.Received.Add(1)
+			batch = append(batch, event)
+		}
 		send := func() {
 			if len(batch) == 0 {
 				return
@@ -182,12 +199,36 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 			}
 			batch = nil
 		}
+		// sweep collects what io_totals added since the last sweep.
+		sweep := func() {
+			io.sweep++
+			var cursor ebpf.MapBatchCursor
+			for {
+				n, err := ioMap.BatchLookup(&cursor, keys, values, nil)
+				for i := range values[:n] {
+					appendIO(&values[i], io.running(&values[i]))
+				}
+				if len(batch) >= maxBatch {
+					send()
+				}
+				if errors.Is(err, ebpf.ErrKeyNotExist) {
+					io.prune() // Only a complete sweep shows what the LRU evicted.
+				}
+				if err != nil {
+					return
+				}
+			}
+		}
 		for {
 			// The program wakes the reader only once events pile up; the
 			// deadline drains the ring at least this often.
 			reader.SetDeadline(time.Now().Add(100 * time.Millisecond))
 			err := reader.ReadInto(&record)
 			if errors.Is(err, os.ErrDeadlineExceeded) {
+				if time.Since(lastSweep) >= time.Second {
+					lastSweep = time.Now()
+					sweep()
+				}
 				send() // Everything pending has been read.
 				continue
 			}
@@ -208,7 +249,15 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 				event, err = decodeMetric(*(*BpfTcpMetricEvent)(unsafe.Pointer(&record.RawSample[0])))
 			} else {
 				//nolint:gosec // G103: the checked record uses the generated BPF layout.
-				event, err = decodeEvent(*(*BpfEvent)(unsafe.Pointer(&record.RawSample[0])))
+				raw := (*BpfEvent)(unsafe.Pointer(&record.RawSample[0]))
+				if raw.IoGen != 0 {
+					appendIO(raw, io.last(raw))
+					if record.Remaining == 0 || len(batch) >= maxBatch {
+						send()
+					}
+					continue
+				}
+				event, err = decodeEvent(*raw)
 			}
 			if err != nil {
 				stats.Invalid.Add(1)
@@ -232,6 +281,46 @@ func StartEmbeddedNamespaces(ctx context.Context, netNS []uint64, port uint16) (
 		done <- readErr
 	}()
 	return events, done, stats, nil
+}
+
+// ioID names one io_totals entry: a socket and direction, and when the
+// entry started, since a socket's address is reused once it is freed.
+type ioID struct {
+	socket, gen uint64
+	operation   uint8
+}
+
+type ioEntry struct {
+	total uint64
+	sweep uint64
+}
+
+// ioTotals turns the running totals of io_totals into the bytes added since
+// the reader last saw each entry.
+type ioTotals struct {
+	entries map[ioID]ioEntry
+	sweep   uint64
+}
+
+// running takes an entry's total from a sweep of the map.
+func (t *ioTotals) running(raw *BpfEvent) uint64 {
+	id := ioID{raw.IoSocket, raw.IoGen, raw.Operation}
+	added := raw.AppBytes - t.entries[id].total
+	t.entries[id] = ioEntry{total: raw.AppBytes, sweep: t.sweep}
+	return added
+}
+
+// last takes an entry's final total from the ring: the entry is gone.
+func (t *ioTotals) last(raw *BpfEvent) uint64 {
+	id := ioID{raw.IoSocket, raw.IoGen, raw.Operation}
+	added := raw.AppBytes - t.entries[id].total
+	delete(t.entries, id)
+	return added
+}
+
+// prune forgets entries the last complete sweep did not find.
+func (t *ioTotals) prune() {
+	maps.DeleteFunc(t.entries, func(_ ioID, entry ioEntry) bool { return entry.sweep != t.sweep })
 }
 
 // operationNames is indexed by the BPF program's operation code; a map

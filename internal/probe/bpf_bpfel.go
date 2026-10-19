@@ -40,6 +40,8 @@ type BpfEvent struct {
 	AppBytes      uint64
 	CgroupId      uint64
 	ParentStartNs uint64
+	IoSocket      uint64
+	IoGen         uint64
 	Pid           uint32
 	Ppid          uint32
 	SrttUs        uint32
@@ -57,6 +59,12 @@ type BpfEvent struct {
 	RemoteIp      [16]uint8
 	Comm          [16]int8
 	_             [4]byte
+}
+
+type BpfIoKey struct {
+	_       structs.HostLayout
+	Socket  uint64
+	Receive uint64
 }
 
 type BpfRingValue struct {
@@ -94,6 +102,7 @@ type BpfTcpMetricEvent struct {
 const (
 	BpfMapConnecting          = "connecting"
 	BpfMapEvents              = "events"
+	BpfMapIoTotals            = "io_totals"
 	BpfMapLost                = "lost"
 	BpfMapSettings            = "settings"
 	BpfMapTcpMetricSampled    = "tcp_metric_sampled"
@@ -108,6 +117,7 @@ const (
 	BpfProgPingSendEnter      = "ping_send_enter"
 	BpfProgRawSendEnter       = "raw_send_enter"
 	BpfProgRawv6SendEnter     = "rawv6_send_enter"
+	BpfProgSocketDestroyed    = "socket_destroyed"
 	BpfProgSpliceRecvExit     = "splice_recv_exit"
 	BpfProgSpliceSendExit     = "splice_send_exit"
 	BpfProgTcpAcceptExit      = "tcp_accept_exit"
@@ -183,6 +193,7 @@ type BpfProgramSpecs struct {
 	PingSendEnter      *ebpf.ProgramSpec `ebpf:"ping_send_enter"`
 	RawSendEnter       *ebpf.ProgramSpec `ebpf:"raw_send_enter"`
 	Rawv6SendEnter     *ebpf.ProgramSpec `ebpf:"rawv6_send_enter"`
+	SocketDestroyed    *ebpf.ProgramSpec `ebpf:"socket_destroyed"`
 	SpliceRecvExit     *ebpf.ProgramSpec `ebpf:"splice_recv_exit"`
 	SpliceSendExit     *ebpf.ProgramSpec `ebpf:"splice_send_exit"`
 	TcpAcceptExit      *ebpf.ProgramSpec `ebpf:"tcp_accept_exit"`
@@ -211,6 +222,7 @@ type BpfProgramSpecs struct {
 type BpfMapSpecs struct {
 	Connecting       *ebpf.MapSpec `ebpf:"connecting"`
 	Events           *ebpf.MapSpec `ebpf:"events"`
+	IoTotals         *ebpf.MapSpec `ebpf:"io_totals"`
 	Lost             *ebpf.MapSpec `ebpf:"lost"`
 	Settings         *ebpf.MapSpec `ebpf:"settings"`
 	TcpMetricSampled *ebpf.MapSpec `ebpf:"tcp_metric_sampled"`
@@ -244,6 +256,7 @@ func (o *BpfObjects) Close() error {
 type BpfMaps struct {
 	Connecting       *ebpf.Map `ebpf:"connecting"`
 	Events           *ebpf.Map `ebpf:"events"`
+	IoTotals         *ebpf.Map `ebpf:"io_totals"`
 	Lost             *ebpf.Map `ebpf:"lost"`
 	Settings         *ebpf.Map `ebpf:"settings"`
 	TcpMetricSampled *ebpf.Map `ebpf:"tcp_metric_sampled"`
@@ -253,6 +266,7 @@ func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.Connecting,
 		m.Events,
+		m.IoTotals,
 		m.Lost,
 		m.Settings,
 		m.TcpMetricSampled,
@@ -280,6 +294,7 @@ type BpfPrograms struct {
 	PingSendEnter      *ebpf.Program `ebpf:"ping_send_enter"`
 	RawSendEnter       *ebpf.Program `ebpf:"raw_send_enter"`
 	Rawv6SendEnter     *ebpf.Program `ebpf:"rawv6_send_enter"`
+	SocketDestroyed    *ebpf.Program `ebpf:"socket_destroyed"`
 	SpliceRecvExit     *ebpf.Program `ebpf:"splice_recv_exit"`
 	SpliceSendExit     *ebpf.Program `ebpf:"splice_send_exit"`
 	TcpAcceptExit      *ebpf.Program `ebpf:"tcp_accept_exit"`
@@ -315,6 +330,7 @@ func (p *BpfPrograms) Close() error {
 		p.PingSendEnter,
 		p.RawSendEnter,
 		p.Rawv6SendEnter,
+		p.SocketDestroyed,
 		p.SpliceRecvExit,
 		p.SpliceSendExit,
 		p.TcpAcceptExit,

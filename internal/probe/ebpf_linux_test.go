@@ -21,8 +21,8 @@ import (
 )
 
 func TestRingEventSize(t *testing.T) {
-	if size := unsafe.Sizeof(BpfEvent{}); size != 128 {
-		t.Fatalf("PID ring event is %d B, want 128 B", size)
+	if size := unsafe.Sizeof(BpfEvent{}); size != 144 {
+		t.Fatalf("PID ring event is %d B, want 144 B", size)
 	}
 	if size := unsafe.Sizeof(BpfTcpMetricEvent{}); size != 112 {
 		t.Fatalf("TCP metric event is %d B, want 112 B", size)
@@ -187,6 +187,113 @@ func TestProbeReportsSocketEvents(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("events never seen: %v", slices.Sorted(maps.Keys(want)))
 		}
+	}
+}
+
+func TestIOTotalsReportEachByteOnce(t *testing.T) {
+	io := ioTotals{entries: make(map[ioID]ioEntry)}
+	entry := BpfEvent{IoSocket: 0x1000, IoGen: 7, AppBytes: 10}
+	io.sweep++
+	if got := io.running(&entry); got != 10 {
+		t.Fatalf("first sweep = %d, want 10", got)
+	}
+	entry.AppBytes = 25
+	if got := io.running(&entry); got != 15 {
+		t.Fatalf("second sweep = %d, want 15", got)
+	}
+	entry.AppBytes = 30
+	if got := io.last(&entry); got != 5 {
+		t.Fatalf("final total = %d, want 5", got)
+	}
+	// The socket's address is reused: a new entry starts from zero.
+	reused := BpfEvent{IoSocket: 0x1000, IoGen: 9, AppBytes: 4}
+	if got := io.last(&reused); got != 4 {
+		t.Fatalf("reused socket = %d, want 4", got)
+	}
+	evicted := BpfEvent{IoSocket: 0x2000, IoGen: 1, AppBytes: 3}
+	io.running(&evicted)
+	io.sweep++
+	io.prune()
+	if len(io.entries) != 0 {
+		t.Fatalf("entries after an empty sweep: %v", io.entries)
+	}
+}
+
+// Application I/O adds up in the kernel: many calls make few events, and
+// a socket's last bytes arrive when it closes.
+func TestProbeAddsUpSocketIO(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("loading eBPF programs needs root")
+	}
+	info, err := os.Stat("/proc/thread-self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := startProbe(t, info.Sys().(*syscall.Stat_t).Ino)
+
+	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = receiver.Close() }()
+	sender, err := net.DialUDP("udp", nil, receiver.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sender.Close() }()
+	for range 200 {
+		_, _ = sender.Write([]byte("0123456789"))
+	}
+	udp := netip.MustParseAddrPort(sender.LocalAddr().String())
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	received := make(chan netip.AddrPort, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		received <- netip.MustParseAddrPort(conn.LocalAddr().String())
+		buf := make([]byte, 10)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				break
+			}
+		}
+		_ = conn.Close() // The final total of a short connection comes from here.
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		_, _ = conn.Write([]byte("0123456789"))
+	}
+	_ = conn.Close()
+	server := <-received
+
+	var udpBytes, udpEvents, tcpBytes uint64
+	deadline := time.After(5 * time.Second)
+	for udpBytes != 2000 || tcpBytes != 1000 {
+		select {
+		case e := <-events:
+			switch {
+			case e.Protocol == 17 && e.Operation == "send" && e.Local == udp:
+				udpBytes += e.AppBytes
+				udpEvents++
+			case e.Protocol == 6 && e.Operation == "recv" && e.Local.Port() == server.Port():
+				tcpBytes += e.AppBytes
+			}
+		case <-deadline:
+			t.Fatalf("UDP sent %d B, TCP received %d B; want 2000 and 1000", udpBytes, tcpBytes)
+		}
+	}
+	if udpEvents >= 200 {
+		t.Fatalf("200 datagrams made %d events", udpEvents)
 	}
 }
 
