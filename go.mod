@@ -2,6 +2,8 @@ module github.com/jimyag/socktrail
 
 go 1.27
 
+toolchain go1.27.3
+
 require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/cilium/ebpf v0.22.0
