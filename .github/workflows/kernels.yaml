@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   list:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       kernels: ${{ steps.list.outputs.kernels }}
     steps:
@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.list.outputs.kernels) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30 # arm64 is emulated: a few minutes a kernel.
     steps:
       - uses: actions/checkout@v7
