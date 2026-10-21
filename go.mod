@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/cilium/ebpf v0.22.0
 	github.com/jimmicro/version v1.1.0
-	github.com/oschwald/geoip2-golang/v2 v2.4.0
+	github.com/oschwald/geoip2-golang/v2 v2.5.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
