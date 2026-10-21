@@ -10,9 +10,9 @@ require (
 	github.com/jimmicro/version v1.1.0
 	github.com/oschwald/geoip2-golang/v2 v2.4.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	golang.org/x/net v0.59.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 )
 
 require (
