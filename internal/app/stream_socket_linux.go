@@ -13,13 +13,19 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
+
+	"github.com/jimyag/socktrail/internal/domain"
+	"github.com/jimyag/socktrail/internal/geoip"
 )
 
 // streamClientBuffer is how far one subscriber may fall behind. At roughly
 // 1 KiB per flow frame this absorbs a few MiB of jitter; past it the client is
 // closed rather than allowed to stall the capture loop.
-const streamClientBuffer = 1024
-const streamClientByteBudget = 16 << 20
+const (
+	streamClientBuffer     = 1024
+	streamClientByteBudget = 16 << 20
+)
 
 // streamClient is one connected subscriber. Frames reach it through a bounded
 // channel written by its own goroutine, so a client that stops reading never
@@ -305,22 +311,331 @@ type streamSink struct {
 	kinds    streamFrameKinds
 	batch    []byte
 	batching bool
+	// sentFlow stores content fingerprints, not rows with shared mutable maps.
+	// Unchanged refreshes can then skip serialization as well as socket writes.
+	sentFlow map[uint64]streamFlowFingerprint
 }
+
+type streamFlowFingerprint struct {
+	hash uint64
+	at   time.Time
+}
+
+// Periodic full refreshes bound hash-collision delays and let bounded consumer
+// caches rediscover idle rows they may have evicted.
+const streamFullRefreshInterval = time.Minute
 
 func newStreamSink(format string, writer io.Writer, hub *streamHub, kinds streamFrameKinds) (*streamSink, error) {
 	codec, err := newStreamCodec(format)
 	if err != nil {
 		return nil, err
 	}
-	return &streamSink{codec: codec, format: format, writer: writer, hub: hub, kinds: kinds}, nil
+	sink := &streamSink{codec: codec, format: format, writer: writer, hub: hub, kinds: kinds}
+	if hub != nil && kinds.flow {
+		// Bare stdout/log rows and stats-only sockets need no flow cache.
+		sink.sentFlow = make(map[uint64]streamFlowFingerprint)
+	}
+	return sink, nil
 }
 
-// flow emits one connection change.
+// flowContentHash folds the content of a row into a fingerprint, without
+// encoding it. The comparison must cost less than the serialization it avoids,
+// so the fields are walked directly rather than through reflection.
+//
+// Every published field is folded here, changes excepted: it describes the
+// reason for the frame, not the connection's content. A field missed here would
+// suppress an update until the next full refresh, so coverage is asserted by
+// TestFlowContentHashCoversEveryEncodedField, which mutates one field at a time
+// and requires the fingerprint to move.
+func flowContentHash(row *jsonFlow) uint64 {
+	h := uint64(flowHashSeed)
+	str := func(s string) {
+		for i := range len(s) {
+			h ^= uint64(s[i])
+			h *= flowHashPrime
+		}
+		h ^= uint64(len(s))
+		h *= flowHashPrime
+	}
+	num := func(v uint64) {
+		h ^= v
+		h *= flowHashPrime
+	}
+	// Signed values are folded by bit pattern: two equal int64s must fold
+	// identically, which is what uint64(signed) gives.
+	signed := func(v int64) { num(uint64(v)) } //nolint:gosec // G115: bit pattern comparison.
+	proc := func(p *jsonProcess) {
+		if p == nil {
+			num(0)
+			return
+		}
+		num(1)
+		num(uint64(p.PID)) //nolint:gosec // G115: the bit pattern is what gets compared.
+		num(p.StartNS)
+		num(uint64(p.PPID)) //nolint:gosec // G115: see above.
+		str(p.Name)
+		str(p.Cgroup)
+		str(p.Service)
+		if p.Container == nil {
+			num(0)
+		} else {
+			num(1)
+			str(p.Container.Name)
+			str(p.Container.Runtime)
+			str(p.Container.Pod)
+			str(p.Container.Namespace)
+			str(p.Container.ComposeProject)
+			str(p.Container.ComposeService)
+		}
+	}
+
+	num(row.ID)
+	str(row.End)
+	str(row.Protocol)
+	str(row.App)
+	str(row.State)
+	str(row.Direction)
+	num(uint64(len(row.Interfaces)))
+	for _, s := range row.Interfaces {
+		str(s)
+	}
+	str(row.Source)
+	str(row.Target)
+	loc := func(l *geoip.Location) {
+		if l == nil {
+			num(0)
+			return
+		}
+		num(1)
+		str(l.CountryCode)
+		str(l.Country)
+		num(uint64(l.ASN))
+		str(l.Organization)
+	}
+	loc(row.SourceGeo)
+	loc(row.TargetGeo)
+	num(boolToUint(row.InitiatorUnknown))
+	num(row.RXBytes)
+	num(row.TXBytes)
+	num(row.Packets)
+	signed(row.FirstSeen.UnixNano())
+	signed(row.LastSeen.UnixNano())
+	signed(row.SYNRTTMicros)
+	str(row.ConnectResult)
+	num(uint64(row.ConnectLatencyUS))
+	signed(row.RTTMicros)
+	str(row.RTTSource)
+	num(row.Retransmits)
+	str(row.RetransmitSource)
+	num(uint64(len(row.KernelTCP)))
+	for i := range row.KernelTCP {
+		kt := &row.KernelTCP[i]
+		str(kt.Local)
+		signed(kt.RTTMicros)
+		signed(kt.RTTVarMicros)
+		num(uint64(kt.Cwnd))
+		num(uint64(kt.DataSegsOut))
+		num(uint64(kt.Retransmits))
+		num(kt.BusyMS)
+		num(kt.RwndMS)
+		num(kt.SndbufMS)
+		num(kt.DeliveryBPS)
+		if kt.AppLimited == nil {
+			num(0)
+		} else {
+			num(1 + boolToUint(*kt.AppLimited))
+		}
+		str(kt.Limit)
+	}
+	proc(row.Client)
+	proc(row.Server)
+	num(uint64(len(row.IO)))
+	for i := range row.IO {
+		proc(&row.IO[i].jsonProcess)
+		num(row.IO[i].RXBytes)
+		num(row.IO[i].TXBytes)
+	}
+	str(row.Name)
+	str(row.Detail)
+	if row.Evidence == nil {
+		num(0)
+	} else {
+		num(1)
+		num(hashEvidence(row.Evidence)) // The evidence is a shared, mutable struct; hash its content.
+	}
+	if row.DNS == nil {
+		num(0)
+	} else {
+		num(1)
+		d := row.DNS
+		num(d.Queries)
+		num(d.Responses)
+		num(d.Failures)
+		str(d.Name)
+		str(d.Type)
+		str(d.RCode)
+		signed(d.RTTMicros)
+		num(uint64(len(d.Recent)))
+		for i := range d.Recent {
+			q := &d.Recent[i]
+			str(q.Name)
+			str(q.Type)
+			str(q.RCode)
+			num(uint64(len(q.Addresses)))
+			for _, a := range q.Addresses {
+				str(a)
+			}
+			signed(q.RTTMicros)
+			signed(q.At.UnixNano())
+			num(boolToUint(q.Answered))
+		}
+	}
+	num(uint64(len(row.OpenSSLPIDs)))
+	for _, id := range row.OpenSSLPIDs {
+		num(uint64(id)) //nolint:gosec // G115: the bit pattern is what gets compared.
+	}
+	num(boolToUint(row.DomainConflict))
+	str(row.NAT)
+	num(uint64(len(row.Drops)))
+	// Map order is random, so keys are folded commutatively.
+	var drops uint64
+	for k, v := range row.Drops {
+		var e uint64 = flowHashSeed
+		for i := range len(k) {
+			e ^= uint64(k[i])
+			e *= flowHashPrime
+		}
+		e ^= v
+		e *= flowHashPrime
+		drops += e
+	}
+	num(drops)
+	str(row.Diagnosis)
+	return h
+}
+
+// hashEvidence folds a domain evidence record, whose maps make the order of
+// iteration unstable, so its parts are summed instead of chained.
+func hashEvidence(e *domain.Evidence) uint64 {
+	var h uint64 = flowHashSeed
+	str := func(s string) {
+		for i := range len(s) {
+			h ^= uint64(s[i])
+			h *= flowHashPrime
+		}
+		h ^= uint64(len(s))
+		h *= flowHashPrime
+	}
+	num := func(v uint64) {
+		h ^= v
+		h *= flowHashPrime
+	}
+	ptr := func(p *string) {
+		if p == nil {
+			num(0)
+		} else {
+			num(1)
+			str(*p)
+		}
+	}
+	str(e.Kind)
+	str(e.SNI)
+	str(e.Proxy)
+	str(e.ProxyVia)
+	str(e.ProxyClient)
+	ptr(e.ProxyAuthority)
+	ptr(e.Upgrade)
+	ptr(e.EncryptedDNS)
+	str(e.DNS)
+	str(e.ParseError)
+	str(e.TLSVersion)
+	str(e.ServerALPN)
+	str(e.Alert)
+	ptr(e.JA4)
+	num(boolToUint(e.GRPC))
+	num(boolToUint(e.NoSNI))
+	num(boolToUint(e.ECH))
+	num(boolToUint(e.NoHandshake))
+	num(uint64(len(e.ALPN)))
+	for _, p := range e.ALPN {
+		str(p)
+	}
+	num(uint64(len(e.Certificate)))
+	for _, c := range e.Certificate {
+		str(c)
+	}
+	num(uint64(len(e.Hosts)))
+	var hosts uint64
+	for k, v := range e.Hosts {
+		var x uint64 = flowHashSeed
+		for i := range len(k) {
+			x ^= uint64(k[i])
+			x *= flowHashPrime
+		}
+		x ^= v
+		x *= flowHashPrime
+		hosts += x
+	}
+	num(hosts)
+	return h
+}
+
+func boolToUint(b bool) uint64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// flowHashPrime is the FNV-64 prime; flowHashSeed its offset basis.
+const (
+	flowHashPrime = 1099511628211
+	flowHashSeed  = 14695981039346656037
+)
+
+// flow emits one connection change. The row is remembered, so the periodic
+// refresh that follows an unchanged connection is recognized as a repeat.
 func (s *streamSink) flow(row jsonFlow) error {
 	if s.hub == nil {
 		return s.writeRow(row)
 	}
-	return s.writeFrame(streamFrame{Kind: streamKindFlow, Flow: &row})
+	if !s.hub.active() || !s.kinds.flow {
+		return nil
+	}
+	hash := flowContentHash(&row)
+	if err := s.writeFrame(streamFrame{Kind: streamKindFlow, Flow: &row}); err != nil {
+		return err
+	}
+	s.sentFlow[row.ID] = streamFlowFingerprint{hash: hash, at: time.Now()}
+	return nil
+}
+
+// refreshFlow skips unchanged socket rows until their next full refresh.
+// Stdout and change logs retain every row; new/state/end frames are never deduplicated.
+func (s *streamSink) refreshFlow(row jsonFlow) error {
+	if s.hub == nil {
+		return s.writeRow(row)
+	}
+	if !s.hub.active() || !s.kinds.flow {
+		return nil
+	}
+	hash := flowContentHash(&row)
+	now := time.Now()
+	if seen, ok := s.sentFlow[row.ID]; ok && seen.hash == hash && now.Sub(seen.at) < streamFullRefreshInterval {
+		return nil
+	}
+	row.Changes = []string{"refresh"}
+	if err := s.writeFrame(streamFrame{Kind: streamKindFlow, Flow: &row}); err != nil {
+		return err
+	}
+	s.sentFlow[row.ID] = streamFlowFingerprint{hash: hash, at: now}
+	return nil
+}
+
+// forgetFlow drops the fingerprint of a connection that is gone, so a later
+// connection reusing the ID can never be mistaken for an unchanged one.
+func (s *streamSink) forgetFlow(id uint64) {
+	delete(s.sentFlow, id)
 }
 
 func (s *streamSink) active() bool {

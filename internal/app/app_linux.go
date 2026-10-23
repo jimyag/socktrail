@@ -1811,7 +1811,8 @@ func Run() (runErr error) {
 						}
 						row := jsonFlowFor(f, id, processes, geo)
 						row.Changes = []string{"refresh"}
-						if err := stream.flow(row); err != nil {
+						// Skip redundant socket refreshes; stdout/log rows stay unchanged.
+						if err := stream.refreshFlow(row); err != nil {
 							return fmt.Errorf("write %s refresh: %w", stream.format, err)
 						}
 						lastOutput[id] = time.Now()
@@ -1819,6 +1820,7 @@ func Run() (runErr error) {
 					for id := range lastOutput {
 						if hostState.displayed[id] == nil {
 							delete(lastOutput, id)
+							stream.forgetFlow(id)
 						}
 					}
 					stream.flushBatch()

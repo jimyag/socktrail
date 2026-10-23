@@ -9,8 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // waitFor polls until ok reports true, which is how the tests wait on the
@@ -304,5 +309,238 @@ func TestStreamClientBoundsQueuedBytes(t *testing.T) {
 	}
 	if got := client.queuedBytes.Load(); got > streamClientByteBudget {
 		t.Fatalf("queued %d bytes, budget %d", got, streamClientByteBudget)
+	}
+}
+
+// A refresh is dropped when its fingerprint matches, so a field the fingerprint
+// misses would never reach a subscriber again. The check walks the encoded
+// output instead of the struct: whatever the codec writes must move the hash.
+func TestFlowContentHashCoversEveryEncodedField(t *testing.T) {
+	baseline := testFlowRow()
+	baselineHash := flowContentHash(&baseline)
+	var walk func(reflect.Type, string, []int)
+	walk = func(typ reflect.Type, path string, indices []int) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+		}
+		if typ.Kind() == reflect.Struct && typ != reflect.TypeFor[time.Time]() {
+			for i := range typ.NumField() {
+				field := typ.Field(i)
+				name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+				if name == "changes" || name == "-" {
+					continue
+				}
+				walk(field.Type, path+"/"+field.Name, append(slices.Clone(indices), i))
+			}
+			return
+		}
+		t.Run(path, func(t *testing.T) {
+			mutated := testFlowRow()
+			mutateJSONField(t, &mutated, indices)
+			if reflect.DeepEqual(decodedMsgpack(t, mutated), decodedMsgpack(t, baseline)) {
+				t.Fatal("mutation did not change the encoded field")
+			}
+			if flowContentHash(&mutated) == baselineHash {
+				t.Fatal("wire field does not move the fingerprint; refresh would be suppressed")
+			}
+		})
+	}
+	walk(reflect.TypeFor[jsonFlow](), "flow", nil)
+}
+
+// Go randomizes map iteration order per range, so a fingerprint that depended
+// on it would drop and re-send the same refresh at random. Repeating the hash
+// over one map is what catches that.
+func TestFlowContentHashIgnoresMapIterationOrder(t *testing.T) {
+	m := map[string]uint64{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8}
+	row := testFlowRow()
+	row.Drops = m
+	row.Evidence.Hosts = m
+	first := flowContentHash(&row)
+	for i := range 500 {
+		if h := flowContentHash(&row); h != first {
+			t.Fatalf("hash changed across iterations: %d != %d at round %d", h, first, i)
+		}
+	}
+	row.Drops = map[string]uint64{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 9}
+	if flowContentHash(&row) == first {
+		t.Error("different map content hashed the same")
+	}
+	// The same content in a different drops map must fold identically through
+	// the production path too.
+	build := func(values map[string]uint64) uint64 {
+		row := testFlowRow()
+		row.Drops = values
+		return flowContentHash(&row)
+	}
+	if build(m) != build(map[string]uint64{"h": 8, "g": 7, "f": 6, "e": 5, "d": 4, "c": 3, "b": 2, "a": 1}) {
+		t.Error("drops map folding depends on insertion order")
+	}
+}
+
+// A refresh repeating the last row must not reach the socket, and the same row
+// must go out again once a field changes.
+func TestStreamRefreshFlowDropsUnchangedRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socktrail.sock")
+	hub, err := listenStreamSocket(path, 0o600)
+	if err != nil {
+		t.Fatalf("listenStreamSocket: %v", err)
+	}
+	defer hub.close()
+	sink, err := newStreamSink("msgpack", nil, hub, allStreamFrameKinds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	waitFor(t, "the client to be adopted", func() bool {
+		sink.adoptClients()
+		return hub.active()
+	})
+	sink.beginBatch()
+
+	row := testFlowRow()
+	row.ID = 7
+	if err := sink.flow(row); err != nil {
+		t.Fatalf("flow: %v", err)
+	}
+	// An identical refresh carries no information: it must be dropped.
+	row.Changes = []string{"refresh"}
+	if err := sink.refreshFlow(row); err != nil {
+		t.Fatalf("refreshFlow: %v", err)
+	}
+	// A changed counter must be published.
+	row.RXBytes++
+	if err := sink.refreshFlow(row); err != nil {
+		t.Fatalf("refreshFlow after a change: %v", err)
+	}
+	// A changed field far from the counters must be published too.
+	row.Name = "moved.example"
+	if err := sink.refreshFlow(row); err != nil {
+		t.Fatalf("refreshFlow after a name change: %v", err)
+	}
+	sink.flushBatch()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	decoder := msgpack.NewDecoder(conn)
+	decoder.SetCustomStructTag("json")
+	var frames []streamFrame
+	for {
+		var frame streamFrame
+		if err := decoder.Decode(&frame); err != nil {
+			break
+		}
+		frames = append(frames, frame)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("received %d frames, want 3 (first flow, counter change, name change): %+v", len(frames), frames)
+	}
+	if frames[1].Flow == nil || frames[1].Flow.RXBytes != row.RXBytes {
+		t.Errorf("second frame = %+v, want the changed counter", frames[1].Flow)
+	}
+	if frames[2].Flow == nil || frames[2].Flow.Name != "moved.example" {
+		t.Errorf("third frame = %+v, want the changed name", frames[2].Flow)
+	}
+}
+
+// The sink must publish the changes marker the caller set. It is tempting to
+// clear it while computing the content fingerprint, which silently drops every
+// new/state/end marker and leaves subscribers unable to tell a change from a
+// refresh.
+func TestStreamFlowKeepsTheChangesMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socktrail.sock")
+	hub, err := listenStreamSocket(path, 0o600)
+	if err != nil {
+		t.Fatalf("listenStreamSocket: %v", err)
+	}
+	defer hub.close()
+	sink, err := newStreamSink("msgpack", nil, hub, allStreamFrameKinds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	waitFor(t, "the client to be adopted", func() bool {
+		sink.adoptClients()
+		return hub.active()
+	})
+	sink.beginBatch()
+	row := testFlowRow()
+	row.ID = 21
+	row.Changes = []string{"new", "state"}
+	if err := sink.flow(row); err != nil {
+		t.Fatalf("flow: %v", err)
+	}
+	sink.flushBatch()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	decoder := msgpack.NewDecoder(conn)
+	decoder.SetCustomStructTag("json")
+	var frame streamFrame
+	if err := decoder.Decode(&frame); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if frame.Flow == nil {
+		t.Fatal("no flow row in the published frame")
+	}
+	if !slices.Equal(frame.Flow.Changes, []string{"new", "state"}) {
+		t.Errorf("changes = %v, want [new state]: the sink altered the caller's marker", frame.Flow.Changes)
+	}
+}
+
+// A forgotten connection must be published again even if it repeats its last
+// row: the ID may have been reused by a different connection in between.
+func TestStreamRefreshFlowRepublishesAfterForget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socktrail.sock")
+	hub, err := listenStreamSocket(path, 0o600)
+	if err != nil {
+		t.Fatalf("listenStreamSocket: %v", err)
+	}
+	defer hub.close()
+	sink, err := newStreamSink("msgpack", nil, hub, allStreamFrameKinds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	waitFor(t, "the client to be adopted", func() bool {
+		sink.adoptClients()
+		return hub.active()
+	})
+	sink.beginBatch()
+	row := testFlowRow()
+	row.ID = 11
+	row.Changes = []string{"refresh"}
+	if err := sink.refreshFlow(row); err != nil {
+		t.Fatalf("refreshFlow: %v", err)
+	}
+	sink.forgetFlow(row.ID)
+	if err := sink.refreshFlow(row); err != nil {
+		t.Fatalf("refreshFlow after forget: %v", err)
+	}
+	sink.flushBatch()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	decoder := msgpack.NewDecoder(conn)
+	decoder.SetCustomStructTag("json")
+	var frames []streamFrame
+	for {
+		var frame streamFrame
+		if err := decoder.Decode(&frame); err != nil {
+			break
+		}
+		frames = append(frames, frame)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("received %d frames, want 2 (before and after forget): %+v", len(frames), frames)
 	}
 }

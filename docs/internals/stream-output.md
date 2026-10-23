@@ -133,6 +133,12 @@ type streamHello struct {
 
 `flow` 帧里的 `rx_bytes`、`tx_bytes` 和 `io[].rx_bytes`、`io[].tx_bytes` 都是**累计值**，不是自上次以来的增量。消费方必须按 `id` 覆盖，不能累加。`end` 非空的帧是连接的最终快照，之后不会再变。连接 ID 只在本次运行内稳定，客户端重连后不保证延续。
 
+Socket 订阅会在编码前跳过内容未变的周期 refresh；`changes` 标记不属于内容指纹，
+new/state/end 等变化事件仍原样发布，stdout 和日志也不去重。每条连接至少每分钟有机会
+完整刷新一次（仍受 `--refresh` 调度），避免消费端有界缓存淘汰后永远见不到空闲连接，
+并限制 64 位指纹碰撞导致的延迟。新订阅者始终收到完整快照，不受已有指纹影响。
+没有订阅者或未启用 flow kind 时不计算指纹；连接离开 displayed 视图时回收指纹。
+
 ### stats 帧
 
 订阅者要按进程统计流量，只有 `flow` 帧里的 `io[]` 是不够的。`io[]` 是"这条连接上这个进程实际收发的字节"，而进程的 socket I/O 总量还包括没有匹配到任何流的字节（`internal/app/app_linux.go` 的 `collectSocketIO`）：
