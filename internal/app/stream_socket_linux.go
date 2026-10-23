@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -18,22 +19,26 @@ import (
 // 1 KiB per flow frame this absorbs a few MiB of jitter; past it the client is
 // closed rather than allowed to stall the capture loop.
 const streamClientBuffer = 1024
+const streamClientByteBudget = 16 << 20
 
 // streamClient is one connected subscriber. Frames reach it through a bounded
 // channel written by its own goroutine, so a client that stops reading never
 // blocks the capture loop.
 type streamClient struct {
-	conn    io.WriteCloser
-	frames  chan []byte
-	closing chan struct{}
-	once    sync.Once
+	conn        io.WriteCloser
+	frames      chan []byte
+	closing     chan struct{}
+	once        sync.Once
+	queuedBytes atomic.Int64
+	byteBudget  int64 // Capture-loop owned; includes the in-flight write.
 }
 
 func newStreamClient(conn io.WriteCloser) *streamClient {
 	client := &streamClient{
-		conn:    conn,
-		frames:  make(chan []byte, streamClientBuffer),
-		closing: make(chan struct{}),
+		conn:       conn,
+		frames:     make(chan []byte, streamClientBuffer),
+		closing:    make(chan struct{}),
+		byteBudget: streamClientByteBudget,
 	}
 	go client.writeLoop()
 	return client
@@ -44,7 +49,9 @@ func (c *streamClient) writeLoop() {
 	for {
 		select {
 		case frame := <-c.frames:
-			if _, err := c.conn.Write(frame); err != nil {
+			n, err := c.conn.Write(frame)
+			c.queuedBytes.Add(-int64(len(frame)))
+			if err != nil || n != len(frame) {
 				return
 			}
 		case <-c.closing:
@@ -61,10 +68,21 @@ func (c *streamClient) offer(frame []byte) bool {
 		return false
 	default:
 	}
+	size := int64(len(frame))
+	// A large handshake may exceed the normal budget; allow that batch plus
+	// one comparable refresh, not an unbounded queue of whole snapshots.
+	if size*2 > c.byteBudget {
+		c.byteBudget = size * 2
+	}
+	if c.queuedBytes.Add(size) > c.byteBudget {
+		c.queuedBytes.Add(-size)
+		return false
+	}
 	select {
 	case c.frames <- frame:
 		return true
 	default:
+		c.queuedBytes.Add(-size)
 		return false
 	}
 }
@@ -284,7 +302,9 @@ type streamSink struct {
 	hub    *streamHub
 	// Which kinds the socket carries. Ignored without a hub: standard output and
 	// the change log always carry the bare flow row stream.
-	kinds streamFrameKinds
+	kinds    streamFrameKinds
+	batch    []byte
+	batching bool
 }
 
 func newStreamSink(format string, writer io.Writer, hub *streamHub, kinds streamFrameKinds) (*streamSink, error) {
@@ -320,8 +340,30 @@ func (s *streamSink) writeFrame(frame streamFrame) error {
 	if err != nil {
 		return err
 	}
-	s.hub.broadcast(raw)
+	if s.batching {
+		s.batch = append(s.batch, raw...)
+	} else {
+		s.hub.broadcast(raw)
+	}
 	return nil
+}
+
+// beginBatch coalesces one capture refresh into one client queue entry. Without
+// this, a fast producer can fill 1024 slots while a healthy reader is still
+// receiving its handshake, disconnecting it before the handshake's stats.
+func (s *streamSink) beginBatch() {
+	if s.hub != nil {
+		s.batch = s.batch[:0]
+		s.batching = true
+	}
+}
+
+func (s *streamSink) flushBatch() {
+	if s.hub != nil && len(s.batch) > 0 {
+		s.hub.broadcast(s.batch)
+	}
+	s.batch = s.batch[:0]
+	s.batching = false
 }
 
 // greet sends the handshake to the clients that connected since the last tick.

@@ -269,3 +269,13 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 - [vmihailenco/msgpack](https://pkg.go.dev/github.com/vmihailenco/msgpack/v5)：`SetCustomStructTag` 与 struct tag 选项。
 - [MessagePack 规范](https://github.com/msgpack/msgpack/blob/master/spec.md)：timestamp extension type 定义。
 - [实现原理](architecture.md)：主循环停顿与丢包的关系、流表容量与状态页可见性约定。
+
+## 大连接表的刷新背压
+
+握手之后，每个采集刷新周期的 stats 与 flow 帧也合并为一个队列条目，MessagePack
+对象顺序与字段不变。否则超过 1024 条连接时，主循环的一次刷新就可能填满队列，
+在正常消费者尚未读完握手时将其断开，表现为反复收到部分 flow 却收不到 stats。
+
+每个客户端同时保留条目数与排队字节数上限：字节预算默认 16 MiB，包含正在写出的数据；
+若单个合法握手或刷新批次更大，预算最多提高到该批次的两倍。持续不读取的客户端仍会
+被断开，不能因批次合并使队列扩大到 1024 份完整连接快照。标准输出保持原有逐行行为。

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -230,5 +232,77 @@ func TestParseSocketMode(t *testing.T) {
 		if _, err := parseSocketMode(bad); err == nil {
 			t.Errorf("parseSocketMode(%q) should be rejected", bad)
 		}
+	}
+}
+
+// A large greeting followed by a refresh must not spend a slot for every flow.
+// The blocked writer models a healthy subscriber still decoding the greeting.
+func TestStreamRefreshBatchKeepsGreetedClient(t *testing.T) {
+	hub := newStreamHub(nil)
+	_, blocked := io.Pipe()
+	client := newStreamClient(blocked)
+	defer client.close()
+	hub.clients[client] = struct{}{}
+	hub.pending = []*streamClient{client}
+	sink, err := newStreamSink("ndjson", nil, hub, allStreamFrameKinds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.greet(func(send func(any) error) error {
+		return send(streamFrame{Kind: streamKindHello, Hello: &streamHello{Version: 1}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sink.beginBatch()
+	const count = streamClientBuffer + 100
+	for i := range count {
+		if err := sink.flow(jsonFlow{ID: uint64(i + 1), Protocol: "tcp"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sink.writeFrame(streamFrame{Kind: streamKindStats, Stats: &streamSummary{}}); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(sink.batch))
+	for range count {
+		var frame streamFrame
+		if err := decoder.Decode(&frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.Kind != streamKindFlow {
+			t.Fatalf("batch frame kind = %q, want flow", frame.Kind)
+		}
+	}
+	var last streamFrame
+	if err := decoder.Decode(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last.Kind != streamKindStats {
+		t.Fatalf("last kind = %q, want stats", last.Kind)
+	}
+	sink.flushBatch()
+	if !hub.active() {
+		t.Fatal("refresh burst dropped a client still receiving its greeting")
+	}
+	if len(client.frames) > 2 {
+		t.Fatalf("batch used %d queue slots", len(client.frames))
+	}
+}
+
+func TestStreamClientBoundsQueuedBytes(t *testing.T) {
+	hub := newStreamHub(nil)
+	_, blocked := io.Pipe()
+	client := newStreamClient(blocked)
+	defer client.close()
+	hub.clients[client] = struct{}{}
+	frame := make([]byte, 4<<20)
+	for range 5 {
+		hub.broadcast(frame)
+	}
+	if hub.active() {
+		t.Fatal("byte budget did not drop a blocked client")
+	}
+	if got := client.queuedBytes.Load(); got > streamClientByteBudget {
+		t.Fatalf("queued %d bytes, budget %d", got, streamClientByteBudget)
 	}
 }

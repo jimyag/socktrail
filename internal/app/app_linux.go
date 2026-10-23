@@ -1786,6 +1786,7 @@ func Run() (runErr error) {
 					}); err != nil {
 						return fmt.Errorf("write %s handshake: %w", stream.format, err)
 					}
+					stream.beginBatch()
 					if now := time.Now(); stream.hub != nil && now.Sub(lastStats) >= *refresh {
 						stats := buildStats(now)
 						if err := stream.writeFrame(streamFrame{Kind: streamKindStats, Stats: &stats}); err != nil {
@@ -1820,6 +1821,7 @@ func Run() (runErr error) {
 							delete(lastOutput, id)
 						}
 					}
+					stream.flushBatch()
 				}
 				if ui != nil && !ui.closed {
 					for _, previous := range oldHost.allFlows() {
