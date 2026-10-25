@@ -1,5 +1,12 @@
 package app
 
+//go:generate go run github.com/tinylib/msgp@v1.6.5 -file $GOFILE -o container_msgp_gen.go -tests=false -io=false -unexported
+//msgp:tag msg msgpack json
+//msgp:newtime
+//msgp:timezone utc
+//msgp:clearomitted
+//msgp:ignore containerNames containerEntry
+
 import (
 	jsonv2 "encoding/json/v2"
 	"io"

@@ -285,3 +285,35 @@ ID uint64 `json:"id,omitzero" msgpack:"id,omitempty"`
 每个客户端同时保留条目数与排队字节数上限：字节预算默认 16 MiB，包含正在写出的数据；
 若单个合法握手或刷新批次更大，预算最多提高到该批次的两倍。持续不读取的客户端仍会
 被断开，不能因批次合并使队列扩大到 1024 份完整连接快照。标准输出保持原有逐行行为。
+
+
+## 生成式 MessagePack 编码
+
+流式输出仍使用 MessagePack map，不改协议版本，也不要求订阅方切换协议。
+`streamFrame` 和裸 `jsonFlow` 使用 msgp 生成的 `MarshalMsg`，直接复用 codec 的字节切片；
+JSON/NDJSON 和非流式类型保留原路径。生成文件随源码提交，普通 `go build` 不需要生成器。
+
+修改流式结构体或其嵌套类型后运行：
+
+```sh
+go generate ./internal/app ./internal/domain ./internal/geoip
+go test ./...
+go test ./internal/app -run '^$' -bench 'BenchmarkMessagePack' -benchmem
+```
+
+也可以运行 `task generate-stream`。各文件的 `go:generate` 固定 msgp v1.6.5；
+CI 重生成并检查差异，防止生成文件落后于类型定义。
+
+生成配置是协议的一部分：
+
+- tag 按 `msg` → `msgpack` → `json` 选取，保留原有 JSON 定义和 `omitzero` 的显式 MessagePack 覆盖。
+- `newtime` 输出标准 timestamp 扩展（类型 -1），不是 msgp 默认的私有时间扩展；业务字段仍是 `time.Time`。
+- `jsonProcessIO` 的嵌入进程用 `msg:",flatten"` 展开，`io[].pid/name` 不增加嵌套层。
+- 必需切片通过 `allownil` 保留 nil 与空数组的区别。可选的非 nil 空切片/map 会显式编码为 `[]`/`{}`，
+  而旧反射编码器会省略它们；两者表示同样的空集合，消费者应同时接受。可选指针的存在性不被合并。
+- 整数采用紧凑宽度，不依赖固定的 int64/uint64 标记；消费者按 MessagePack 整数值读取。
+- map 的遍历顺序不稳定，不把编码字节用作相等性判断，也不额外排序。
+
+`stream_msgp_test.go` 将生成路径与旧反射编码结果逐字段比较（只归一化上述可选空集合差异），
+覆盖嵌套字段、时间戳边界、负数、uint64 上限、nil/空集合、连续帧及 decoder 复用。
+此优化只降低编码成本，不省略 `jsonFlowFor` 行构造，也不能把单行编码提速直接当成进程 CPU 降幅。

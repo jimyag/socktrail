@@ -26,6 +26,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Verify streaming codecs
+        run: |
+          go generate ./internal/app ./internal/domain ./internal/geoip
+          git diff --exit-code -- internal/app/*msgp_gen.go internal/domain/msgp_gen.go internal/geoip/msgp_gen.go
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
