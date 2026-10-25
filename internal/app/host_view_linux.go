@@ -36,6 +36,18 @@ type hostViewState struct {
 	expired       ioBytes
 	expiredDomain ioBytes
 	expiredFlows  uint64
+	// observationGroups is collect's scratch index from tuple to the interface
+	// observations of it. The groups are rebuilt every tick, but the map and
+	// its backing buckets are as large as the flow table, so they are kept
+	// across ticks instead of allocated fresh each second.
+	observationGroups map[observationKey][]observedFlow
+}
+
+// observationKey groups one connection's observations across interfaces. A
+// gateway's LAN and WAN tuples carry the same NAT origin, so they merge.
+type observationKey struct {
+	key   flowKey
+	netns uint64
 }
 
 const maxFlowHistory = 5000
@@ -199,10 +211,20 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 	host.ioUnindexed = base.ioUnindexed
 	host.ioUnmatched = base.ioUnmatched
 	seenNetNS := map[uint64]bool{base.netns: true}
-	byKey := make(map[struct {
-		key   flowKey
-		netns uint64
-	}][]observedFlow)
+	byKey := s.observationGroups
+	if byKey == nil {
+		byKey = make(map[observationKey][]observedFlow)
+		s.observationGroups = byKey
+	}
+	// Reset the groups, keeping each slice's capacity: their length follows the
+	// flow table, which stays roughly constant between ticks. Clearing to the
+	// slice length, not just to [:0], releases the previous tick's *flow
+	// pointers so an expired connection is not kept alive by a stale group.
+	for key := range byKey {
+		group := byKey[key]
+		clear(group)
+		byKey[key] = group[:0]
+	}
 	for _, name := range names {
 		c := collectors[name]
 		if c == nil {
@@ -255,11 +277,15 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 			if f.NAT != nil {
 				key = f.NAT.orig // A gateway's LAN and WAN tuples are one connection.
 			}
-			groupKey := struct {
-				key   flowKey
-				netns uint64
-			}{key, c.netns}
+			groupKey := observationKey{key, c.netns}
 			byKey[groupKey] = append(byKey[groupKey], observedFlow{flow: f, interfaceName: name})
+		}
+	}
+	// A tuple that no interface observed this tick keeps no group: dropping the
+	// empty key bounds the scratch map to the live flow table.
+	for key, group := range byKey {
+		if len(group) == 0 {
+			delete(byKey, key)
 		}
 	}
 	for _, candidates := range byKey {
