@@ -41,6 +41,11 @@ type hostViewState struct {
 	// its backing buckets are as large as the flow table, so they are kept
 	// across ticks instead of allocated fresh each second.
 	observationGroups map[observationKey][]observedFlow
+	// replacements and absorbed are scratch maps owned by updateAt. They are
+	// cleared and refilled each tick, which keeps their buckets: both grow with
+	// the flow table and neither is read before it is written.
+	replacements map[*flow]*flow
+	absorbed     map[uint64]bool
 }
 
 // observationKey groups one connection's observations across interfaces. A
@@ -108,8 +113,18 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 	newIDs := make(map[*flow]uint64, memberFlows)
 	newActive := make(map[uint64]hostFlowTotal, mergedFlows)
 	newDisplayed := make(map[uint64]*flow, mergedFlows)
-	replacements := make(map[*flow]*flow, mergedFlows)
-	absorbed := make(map[uint64]bool, len(s.active))
+	replacements := s.replacements
+	if replacements == nil {
+		replacements = make(map[*flow]*flow, mergedFlows)
+		s.replacements = replacements
+	}
+	clear(replacements)
+	absorbed := s.absorbed
+	if absorbed == nil {
+		absorbed = make(map[uint64]bool, len(s.active))
+		s.absorbed = absorbed
+	}
+	clear(absorbed)
 	for index, merged := range host.retired {
 		observations := members[merged]
 		var id uint64
