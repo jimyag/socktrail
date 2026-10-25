@@ -1,6 +1,13 @@
 // Package geoip reads optional, locally stored DB-IP Lite country and ASN databases.
 package geoip
 
+//go:generate go run github.com/tinylib/msgp@v1.6.5 -file $GOFILE -o msgp_gen.go -tests=false -io=false
+//msgp:tag msg msgpack json
+//msgp:newtime
+//msgp:timezone utc
+//msgp:clearomitted
+//msgp:ignore DB
+
 import (
 	"fmt"
 	"net/netip"

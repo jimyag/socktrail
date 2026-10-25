@@ -43,10 +43,7 @@ func changeKey(f *flow) flowChangeKey {
 			k.hosts ^= maphash.String(flowNameSeed, host)
 		}
 	}
-	for id := range f.IO {
-		//nolint:gosec // G115: socket I/O map keys are positive kernel PIDs.
-		k.actors ^= uint64(id.PID)*0x9e3779b97f4a7c15 ^ id.StartNS*0xbf58476d1ce4e5b9
-	}
+	k.actors = f.ioActors
 	if f.Drops != nil {
 		for _, count := range f.Drops.reasons {
 			k.drops += count

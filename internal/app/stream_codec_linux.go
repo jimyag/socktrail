@@ -1,5 +1,12 @@
 package app
 
+//go:generate go run github.com/tinylib/msgp@v1.6.5 -file $GOFILE -o stream_msgp_gen.go -tests=false -io=false -unexported
+//msgp:tag msg msgpack json
+//msgp:newtime
+//msgp:timezone utc
+//msgp:clearomitted
+//msgp:ignore streamCodec
+
 import (
 	"bytes"
 	"encoding/json"
@@ -28,7 +35,7 @@ const (
 type streamHello struct {
 	Version    int        `json:"version"`
 	Mode       string     `json:"mode"`
-	Interfaces []string   `json:"interfaces"`
+	Interfaces []string   `json:"interfaces" msg:"interfaces,allownil"`
 	Filter     string     `json:"filter,omitempty"`
 	Probes     jsonProbes `json:"probes"`
 	Started    time.Time  `json:"started"`
@@ -41,7 +48,7 @@ type streamSummary struct {
 	At               time.Time       `json:"at"`
 	IPPackets        uint64          `json:"ip_packets"`
 	IPBytes          uint64          `json:"ip_bytes"`
-	ProcessIO        []jsonProcessIO `json:"process_io"`
+	ProcessIO        []jsonProcessIO `json:"process_io" msg:"process_io,allownil"`
 	IOUnmatchedBytes uint64          `json:"io_unmatched_bytes"`
 	IOUnindexed      streamIOBytes   `json:"io_unindexed"`
 	ExpiredPIDIO     streamIOBytes   `json:"expired_pid_io"`
@@ -67,8 +74,9 @@ func streamingOutput(format string) bool {
 // and a socket hub that broadcasts to several clients.
 type streamCodec struct {
 	json    *json.Encoder
-	msgpack *msgpack.Encoder
+	msgpack *msgpack.Encoder // Fallback for values outside the streaming schema.
 	buf     bytes.Buffer
+	scratch []byte // Generated MessagePack encoders reuse this buffer.
 }
 
 func newStreamCodec(format string) (*streamCodec, error) {
@@ -90,17 +98,29 @@ func newStreamCodec(format string) (*streamCodec, error) {
 // encode returns the bytes of one row. json.Encoder appends a newline;
 // MessagePack frames carry their own length and need no separator.
 //
-// The returned slice points into the codec's buffer and is valid only until
-// the next call. A caller that keeps it longer must copy.
-// ponytail: one reused buffer, per-row allocation only if a future caller has
-// to retain frames alongside the next encode.
+// The returned slice belongs to the codec and is valid only until the next
+// call. A caller that keeps it longer must copy.
 func (c *streamCodec) encode(v any) ([]byte, error) {
-	c.buf.Reset()
-	if c.msgpack != nil {
-		if err := c.msgpack.Encode(v); err != nil {
+	if c.msgpack == nil {
+		c.buf.Reset()
+		if err := c.json.Encode(v); err != nil {
 			return nil, err
 		}
-	} else if err := c.json.Encode(v); err != nil {
+		return c.buf.Bytes(), nil
+	}
+	// Keep reflection off the flow and subscription-frame hot paths.
+	switch row := v.(type) {
+	case streamFrame:
+		var err error
+		c.scratch, err = row.MarshalMsg(c.scratch[:0])
+		return c.scratch, err
+	case jsonFlow:
+		var err error
+		c.scratch, err = row.MarshalMsg(c.scratch[:0])
+		return c.scratch, err
+	}
+	c.buf.Reset()
+	if err := c.msgpack.Encode(v); err != nil {
 		return nil, err
 	}
 	return c.buf.Bytes(), nil

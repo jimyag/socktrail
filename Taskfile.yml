@@ -11,6 +11,11 @@ tasks:
     desc: Build socktrail
     deps: [build]
 
+  generate-stream:
+    desc: Regenerate the MessagePack streaming codecs
+    cmds:
+      - go generate ./internal/app ./internal/domain ./internal/geoip
+
   build:
     desc: Build a static Linux binary
     env:

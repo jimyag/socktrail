@@ -36,6 +36,30 @@ type hostViewState struct {
 	expired       ioBytes
 	expiredDomain ioBytes
 	expiredFlows  uint64
+	// observationGroups is collect's scratch index from tuple to the interface
+	// observations of it. The groups are rebuilt every tick, but the map and
+	// its backing buckets are as large as the flow table, so they are kept
+	// across ticks instead of allocated fresh each second.
+	observationGroups map[observationKey][]observedFlow
+	// replacements and absorbed are scratch maps owned by updateAt. They are
+	// cleared and refilled each tick, which keeps their buckets: both grow with
+	// the flow table and neither is read before it is written.
+	replacements map[*flow]*flow
+	absorbed     map[uint64]bool
+	// The three view maps are rebuilt every tick while the previous tick's maps
+	// are still read, so they rotate through two generations: the spare group
+	// is cleared and refilled, then swapped in, and next tick it becomes the
+	// one being read. Both generations keep their buckets.
+	spareIDs       map[*flow]uint64
+	spareActive    map[uint64]hostFlowTotal
+	spareDisplayed map[uint64]*flow
+}
+
+// observationKey groups one connection's observations across interfaces. A
+// gateway's LAN and WAN tuples carry the same NAT origin, so they merge.
+type observationKey struct {
+	key   flowKey
+	netns uint64
 }
 
 const maxFlowHistory = 5000
@@ -93,11 +117,36 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 	for _, merged := range host.retired {
 		memberFlows += len(members[merged])
 	}
-	newIDs := make(map[*flow]uint64, memberFlows)
-	newActive := make(map[uint64]hostFlowTotal, mergedFlows)
-	newDisplayed := make(map[uint64]*flow, mergedFlows)
-	replacements := make(map[*flow]*flow, mergedFlows)
-	absorbed := make(map[uint64]bool, len(s.active))
+	newIDs := s.spareIDs
+	if newIDs == nil {
+		newIDs = make(map[*flow]uint64, memberFlows)
+		s.spareIDs = newIDs
+	}
+	clear(newIDs)
+	newActive := s.spareActive
+	if newActive == nil {
+		newActive = make(map[uint64]hostFlowTotal, mergedFlows)
+		s.spareActive = newActive
+	}
+	clear(newActive)
+	newDisplayed := s.spareDisplayed
+	if newDisplayed == nil {
+		newDisplayed = make(map[uint64]*flow, mergedFlows)
+		s.spareDisplayed = newDisplayed
+	}
+	clear(newDisplayed)
+	replacements := s.replacements
+	if replacements == nil {
+		replacements = make(map[*flow]*flow, mergedFlows)
+		s.replacements = replacements
+	}
+	clear(replacements)
+	absorbed := s.absorbed
+	if absorbed == nil {
+		absorbed = make(map[uint64]bool, len(s.active))
+		s.absorbed = absorbed
+	}
+	clear(absorbed)
 	for index, merged := range host.retired {
 		observations := members[merged]
 		var id uint64
@@ -156,6 +205,8 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 		}
 	}
 	oldDisplayed := s.displayed
+	// The outgoing generation becomes next tick's spare group.
+	s.spareIDs, s.spareActive, s.spareDisplayed = s.flowIDs, s.active, oldDisplayed
 	s.flowIDs, s.active, s.displayed = newIDs, newActive, newDisplayed
 	s.lastChanges = s.detectChanges(newDisplayed, oldDisplayed, now)
 	for _, change := range s.lastChanges {
@@ -199,10 +250,20 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 	host.ioUnindexed = base.ioUnindexed
 	host.ioUnmatched = base.ioUnmatched
 	seenNetNS := map[uint64]bool{base.netns: true}
-	byKey := make(map[struct {
-		key   flowKey
-		netns uint64
-	}][]observedFlow)
+	byKey := s.observationGroups
+	if byKey == nil {
+		byKey = make(map[observationKey][]observedFlow)
+		s.observationGroups = byKey
+	}
+	// Reset the groups, keeping each slice's capacity: their length follows the
+	// flow table, which stays roughly constant between ticks. Clearing to the
+	// slice length, not just to [:0], releases the previous tick's *flow
+	// pointers so an expired connection is not kept alive by a stale group.
+	for key := range byKey {
+		group := byKey[key]
+		clear(group)
+		byKey[key] = group[:0]
+	}
 	for _, name := range names {
 		c := collectors[name]
 		if c == nil {
@@ -255,11 +316,15 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 			if f.NAT != nil {
 				key = f.NAT.orig // A gateway's LAN and WAN tuples are one connection.
 			}
-			groupKey := struct {
-				key   flowKey
-				netns uint64
-			}{key, c.netns}
+			groupKey := observationKey{key, c.netns}
 			byKey[groupKey] = append(byKey[groupKey], observedFlow{flow: f, interfaceName: name})
+		}
+	}
+	// A tuple that no interface observed this tick keeps no group: dropping the
+	// empty key bounds the scratch map to the live flow table.
+	for key, group := range byKey {
+		if len(group) == 0 {
+			delete(byKey, key)
 		}
 	}
 	for _, candidates := range byKey {
@@ -293,6 +358,12 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 }
 
 func groupObservations(candidates []observedFlow) [][]observedFlow {
+	// One observation needs no grouping: most tuples reach the host view from a
+	// single interface, and sorting plus a per-key SYN index for them is pure
+	// overhead on the per-tick rebuild.
+	if len(candidates) == 1 {
+		return [][]observedFlow{candidates}
+	}
 	slices.SortFunc(candidates, func(a, b observedFlow) int {
 		return a.flow.First.Compare(b.flow.First)
 	})
@@ -435,6 +506,7 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 	}
 	merged.First, merged.Last = time.Time{}, time.Time{}
 	var direction string
+	var actors uint64
 	for _, candidate := range group {
 		f := candidate.flow
 		for id, actor := range f.TLSActors {
@@ -500,7 +572,12 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 					merged.IO = make(map[processID]ioBytes)
 				}
 			}
-			old := merged.IO[id]
+			old, seen := merged.IO[id]
+			if !seen {
+				// Fold only a key's first appearance: the union must hash the
+				// same whether one interface or three reported the process.
+				actors ^= actorHash(id)
+			}
 			merged.IO[id] = ioBytes{RX: max(old.RX, io.RX), TX: max(old.TX, io.TX)}
 		}
 		if f.Direction != "" && f.Direction != "unknown" {
@@ -531,5 +608,13 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 	default:
 		merged.Direction = "unknown"
 	}
+	merged.ioActors = actors
 	return merged, packetSource
+}
+
+// actorHash folds one IO participant identity. changeKey compares the folded
+// set instead of walking the map, so the mixing here must stay in sync with it.
+func actorHash(id processID) uint64 {
+	//nolint:gosec // G115: socket I/O map keys are positive kernel PIDs.
+	return uint64(id.PID)*0x9e3779b97f4a7c15 ^ id.StartNS*0xbf58476d1ce4e5b9
 }

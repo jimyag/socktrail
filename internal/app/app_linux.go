@@ -202,6 +202,11 @@ type flow struct {
 	FinA, FinB       bool
 	Closed           bool
 	End              flowEnd
+	// ioActors folds the IO map's keys, never its counters, so change detection
+	// can tell whether a different process joined or left without walking the
+	// map again every tick. mergeObservedFlow fills it while it already visits
+	// each member's IO.
+	ioActors uint64
 }
 
 type collector struct {
@@ -1786,6 +1791,7 @@ func Run() (runErr error) {
 					}); err != nil {
 						return fmt.Errorf("write %s handshake: %w", stream.format, err)
 					}
+					stream.beginBatch()
 					if now := time.Now(); stream.hub != nil && now.Sub(lastStats) >= *refresh {
 						stats := buildStats(now)
 						if err := stream.writeFrame(streamFrame{Kind: streamKindStats, Stats: &stats}); err != nil {
@@ -1810,7 +1816,8 @@ func Run() (runErr error) {
 						}
 						row := jsonFlowFor(f, id, processes, geo)
 						row.Changes = []string{"refresh"}
-						if err := stream.flow(row); err != nil {
+						// Skip redundant socket refreshes; stdout/log rows stay unchanged.
+						if err := stream.refreshFlow(row); err != nil {
 							return fmt.Errorf("write %s refresh: %w", stream.format, err)
 						}
 						lastOutput[id] = time.Now()
@@ -1818,8 +1825,10 @@ func Run() (runErr error) {
 					for id := range lastOutput {
 						if hostState.displayed[id] == nil {
 							delete(lastOutput, id)
+							stream.forgetFlow(id)
 						}
 					}
+					stream.flushBatch()
 				}
 				if ui != nil && !ui.closed {
 					for _, previous := range oldHost.allFlows() {

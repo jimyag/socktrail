@@ -1,5 +1,12 @@
 package app
 
+//go:generate go run github.com/tinylib/msgp@v1.6.5 -file $GOFILE -o report_msgp_gen.go -tests=false -io=false -unexported
+//msgp:tag msg msgpack json
+//msgp:newtime
+//msgp:timezone utc
+//msgp:clearomitted
+//msgp:ignore jsonSnapshot jsonDrop jsonListener jsonFailure jsonService jsonReport jsonDomain jsonAttempt
+
 import (
 	"cmp"
 	"slices"
@@ -227,9 +234,9 @@ type jsonProcess struct {
 }
 
 type jsonProcessIO struct {
-	jsonProcess
-	RXBytes uint64 `json:"rx_bytes"`
-	TXBytes uint64 `json:"tx_bytes"`
+	jsonProcess `msg:",flatten"`
+	RXBytes     uint64 `json:"rx_bytes"`
+	TXBytes     uint64 `json:"tx_bytes"`
 }
 
 type jsonDNS struct {

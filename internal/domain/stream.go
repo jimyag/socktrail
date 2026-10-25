@@ -1,5 +1,12 @@
 package domain
 
+//go:generate go run github.com/tinylib/msgp@v1.6.5 -file $GOFILE -o msgp_gen.go -tests=false -io=false
+//msgp:tag msg msgpack json
+//msgp:newtime
+//msgp:timezone utc
+//msgp:clearomitted
+//msgp:ignore Stream parser
+
 import (
 	"bytes"
 	"encoding/binary"
