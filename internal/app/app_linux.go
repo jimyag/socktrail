@@ -202,6 +202,11 @@ type flow struct {
 	FinA, FinB       bool
 	Closed           bool
 	End              flowEnd
+	// ioActors folds the IO map's keys, never its counters, so change detection
+	// can tell whether a different process joined or left without walking the
+	// map again every tick. mergeObservedFlow fills it while it already visits
+	// each member's IO.
+	ioActors uint64
 }
 
 type collector struct {

@@ -67,3 +67,35 @@ func BenchmarkUnchangedConnectionScan(b *testing.B) {
 		state.detectChanges(current, current, now.Add(3*time.Second))
 	}
 }
+
+// An IO participant identity is folded into the change key. It must move when
+// a different process joins, whether or not its counters do, and it must not
+// move when only the counters of a known participant change.
+func TestChangeKeyTracksIOActorsThroughMerge(t *testing.T) {
+	now := time.Now()
+	a := netip.MustParseAddrPort("192.0.2.1:40000")
+	b := netip.MustParseAddrPort("198.51.100.1:80")
+	key := keyFor(a, b, 6)
+	member := func(pid int, rx uint64) *flow {
+		return &flow{
+			Key: key, First: now, Last: now, RX: rx,
+			IO: map[processID]ioBytes{{PID: pid, StartNS: 1}: {RX: rx}},
+		}
+	}
+	merge := func(f *flow) *flow {
+		merged, _ := mergeObservedFlow([]observedFlow{{flow: f, interfaceName: "eno1"}}, nil)
+		return merged
+	}
+	first := merge(member(100, 10))
+	if got := changeKey(first).actors; got == 0 {
+		t.Fatal("IO actor was not folded into the change key")
+	}
+	// The same participant with a different counter folds identically.
+	if got, want := changeKey(merge(member(100, 99))).actors, changeKey(first).actors; got != want {
+		t.Fatalf("counter change moved the actor key: %d != %d", got, want)
+	}
+	// Another participant is a different key.
+	if got, want := changeKey(merge(member(200, 10))).actors, changeKey(first).actors; got == want {
+		t.Fatalf("a different IO actor folded identically: %d", got)
+	}
+}

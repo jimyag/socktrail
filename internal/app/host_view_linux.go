@@ -461,6 +461,7 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 	}
 	merged.First, merged.Last = time.Time{}, time.Time{}
 	var direction string
+	var actors uint64
 	for _, candidate := range group {
 		f := candidate.flow
 		for id, actor := range f.TLSActors {
@@ -526,7 +527,12 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 					merged.IO = make(map[processID]ioBytes)
 				}
 			}
-			old := merged.IO[id]
+			old, seen := merged.IO[id]
+			if !seen {
+				// Fold only a key's first appearance: the union must hash the
+				// same whether one interface or three reported the process.
+				actors ^= actorHash(id)
+			}
 			merged.IO[id] = ioBytes{RX: max(old.RX, io.RX), TX: max(old.TX, io.TX)}
 		}
 		if f.Direction != "" && f.Direction != "unknown" {
@@ -557,5 +563,13 @@ func mergeObservedFlow(group []observedFlow, merged *flow) (*flow, *flow) {
 	default:
 		merged.Direction = "unknown"
 	}
+	merged.ioActors = actors
 	return merged, packetSource
+}
+
+// actorHash folds one IO participant identity. changeKey compares the folded
+// set instead of walking the map, so the mixing here must stay in sync with it.
+func actorHash(id processID) uint64 {
+	//nolint:gosec // G115: socket I/O map keys are positive kernel PIDs.
+	return uint64(id.PID)*0x9e3779b97f4a7c15 ^ id.StartNS*0xbf58476d1ce4e5b9
 }
