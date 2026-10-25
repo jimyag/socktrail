@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"io/fs"
 	"net"
@@ -348,15 +349,8 @@ func newStreamSink(format string, writer io.Writer, hub *streamHub, kinds stream
 // TestFlowContentHashCoversEveryEncodedField, which mutates one field at a time
 // and requires the fingerprint to move.
 func flowContentHash(row *jsonFlow) uint64 {
-	h := uint64(flowHashSeed)
-	str := func(s string) {
-		for i := range len(s) {
-			h ^= uint64(s[i])
-			h *= flowHashPrime
-		}
-		h ^= uint64(len(s))
-		h *= flowHashPrime
-	}
+	h := uint64(flowHashStart)
+	str := func(s string) { h = foldString(h, s) }
 	num := func(v uint64) {
 		h ^= v
 		h *= flowHashPrime
@@ -500,11 +494,7 @@ func flowContentHash(row *jsonFlow) uint64 {
 	// Map order is random, so keys are folded commutatively.
 	var drops uint64
 	for k, v := range row.Drops {
-		var e uint64 = flowHashSeed
-		for i := range len(k) {
-			e ^= uint64(k[i])
-			e *= flowHashPrime
-		}
+		e := foldString(flowHashStart, k)
 		e ^= v
 		e *= flowHashPrime
 		drops += e
@@ -517,15 +507,8 @@ func flowContentHash(row *jsonFlow) uint64 {
 // hashEvidence folds a domain evidence record, whose maps make the order of
 // iteration unstable, so its parts are summed instead of chained.
 func hashEvidence(e *domain.Evidence) uint64 {
-	var h uint64 = flowHashSeed
-	str := func(s string) {
-		for i := range len(s) {
-			h ^= uint64(s[i])
-			h *= flowHashPrime
-		}
-		h ^= uint64(len(s))
-		h *= flowHashPrime
-	}
+	var h uint64 = flowHashStart
+	str := func(s string) { h = foldString(h, s) }
 	num := func(v uint64) {
 		h ^= v
 		h *= flowHashPrime
@@ -567,11 +550,7 @@ func hashEvidence(e *domain.Evidence) uint64 {
 	num(uint64(len(e.Hosts)))
 	var hosts uint64
 	for k, v := range e.Hosts {
-		var x uint64 = flowHashSeed
-		for i := range len(k) {
-			x ^= uint64(k[i])
-			x *= flowHashPrime
-		}
+		x := foldString(flowHashStart, k)
 		x ^= v
 		x *= flowHashPrime
 		hosts += x
@@ -587,11 +566,25 @@ func boolToUint(b bool) uint64 {
 	return 0
 }
 
-// flowHashPrime is the FNV-64 prime; flowHashSeed its offset basis.
+// flowHashPrime mixes the accumulator after each field, so neighbouring rows
+// do not collapse into the same fingerprint. flowHashStart is the FNV-64 offset
+// basis, kept because it makes the accumulator differ per row from the start.
 const (
 	flowHashPrime = 1099511628211
-	flowHashSeed  = 14695981039346656037
+	flowHashStart = 14695981039346656037
 )
+
+// flowHashSeed starts every fingerprint. maphash's seed is per process, which
+// is all a comparison inside one streamSink needs.
+var flowHashSeed = maphash.MakeSeed()
+
+// foldString mixes one string into h. maphash.String uses the hardware hash
+// (AES-NI where available) instead of the byte-at-a-time FNV loop it replaced:
+// cgroup paths alone run to 80 bytes and this is the hot path per refresh.
+func foldString(h uint64, s string) uint64 {
+	h ^= maphash.String(flowHashSeed, s)
+	return h * flowHashPrime
+}
 
 // flow emits one connection change. The row is remembered, so the periodic
 // refresh that follows an unchanged connection is recognized as a repeat.
