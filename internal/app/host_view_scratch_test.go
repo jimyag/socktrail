@@ -69,3 +69,22 @@ func buildScratchFixture(n int) (map[string]*collector, []string) {
 	}
 	return map[string]*collector{"eno1": c}, []string{"eno1"}
 }
+
+// A tuple observed once needs no grouping, and the fast path must still return
+// that observation as a group. Two interfaces reporting one connection keep
+// their own grouping path.
+func TestGroupObservationsSingleAndMerged(t *testing.T) {
+	now := time.Now()
+	a := netip.MustParseAddrPort("192.0.2.10:51000")
+	b := netip.MustParseAddrPort("198.51.100.20:443")
+	key := keyFor(a, b, 6)
+	one := &flow{Key: key, First: now, Last: now}
+	if groups := groupObservations([]observedFlow{{flow: one, interfaceName: "eno1"}}); len(groups) != 1 || len(groups[0]) != 1 || groups[0][0].flow != one {
+		t.Fatalf("single observation = %+v", groups)
+	}
+	two := &flow{Key: key, First: now.Add(time.Millisecond), Last: now}
+	groups := groupObservations([]observedFlow{{flow: one, interfaceName: "eno1"}, {flow: two, interfaceName: "br0"}})
+	if len(groups) != 1 || len(groups[0]) != 2 {
+		t.Fatalf("two interfaces of one connection = %+v", groups)
+	}
+}

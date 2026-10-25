@@ -319,6 +319,12 @@ func (s *hostViewState) collect(names []string, collectors map[string]*collector
 }
 
 func groupObservations(candidates []observedFlow) [][]observedFlow {
+	// One observation needs no grouping: most tuples reach the host view from a
+	// single interface, and sorting plus a per-key SYN index for them is pure
+	// overhead on the per-tick rebuild.
+	if len(candidates) == 1 {
+		return [][]observedFlow{candidates}
+	}
 	slices.SortFunc(candidates, func(a, b observedFlow) int {
 		return a.flow.First.Compare(b.flow.First)
 	})
