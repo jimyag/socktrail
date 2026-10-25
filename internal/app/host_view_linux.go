@@ -46,6 +46,13 @@ type hostViewState struct {
 	// the flow table and neither is read before it is written.
 	replacements map[*flow]*flow
 	absorbed     map[uint64]bool
+	// The three view maps are rebuilt every tick while the previous tick's maps
+	// are still read, so they rotate through two generations: the spare group
+	// is cleared and refilled, then swapped in, and next tick it becomes the
+	// one being read. Both generations keep their buckets.
+	spareIDs       map[*flow]uint64
+	spareActive    map[uint64]hostFlowTotal
+	spareDisplayed map[uint64]*flow
 }
 
 // observationKey groups one connection's observations across interfaces. A
@@ -110,9 +117,24 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 	for _, merged := range host.retired {
 		memberFlows += len(members[merged])
 	}
-	newIDs := make(map[*flow]uint64, memberFlows)
-	newActive := make(map[uint64]hostFlowTotal, mergedFlows)
-	newDisplayed := make(map[uint64]*flow, mergedFlows)
+	newIDs := s.spareIDs
+	if newIDs == nil {
+		newIDs = make(map[*flow]uint64, memberFlows)
+		s.spareIDs = newIDs
+	}
+	clear(newIDs)
+	newActive := s.spareActive
+	if newActive == nil {
+		newActive = make(map[uint64]hostFlowTotal, mergedFlows)
+		s.spareActive = newActive
+	}
+	clear(newActive)
+	newDisplayed := s.spareDisplayed
+	if newDisplayed == nil {
+		newDisplayed = make(map[uint64]*flow, mergedFlows)
+		s.spareDisplayed = newDisplayed
+	}
+	clear(newDisplayed)
 	replacements := s.replacements
 	if replacements == nil {
 		replacements = make(map[*flow]*flow, mergedFlows)
@@ -183,6 +205,8 @@ func (s *hostViewState) updateAt(host *collector, members map[*flow][]*flow, now
 		}
 	}
 	oldDisplayed := s.displayed
+	// The outgoing generation becomes next tick's spare group.
+	s.spareIDs, s.spareActive, s.spareDisplayed = s.flowIDs, s.active, oldDisplayed
 	s.flowIDs, s.active, s.displayed = newIDs, newActive, newDisplayed
 	s.lastChanges = s.detectChanges(newDisplayed, oldDisplayed, now)
 	for _, change := range s.lastChanges {
