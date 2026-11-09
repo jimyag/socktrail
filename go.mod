@@ -11,8 +11,8 @@ require (
 	github.com/oschwald/geoip2-golang/v2 v2.5.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/net v0.61.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.47.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
 )
 
 require (
