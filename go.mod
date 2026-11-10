@@ -2,7 +2,7 @@ module github.com/jimyag/socktrail
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/charmbracelet/x/ansi v0.11.9
