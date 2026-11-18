@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27.3
 
 require (
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/cilium/ebpf v0.22.0
 	github.com/jimmicro/version v1.1.0
 	github.com/oschwald/geoip2-golang/v2 v2.5.0
